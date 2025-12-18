@@ -1,0 +1,28 @@
+[workspace]
+name = "dnp3"
+version = "0.1.0"
+description = "Pure Python DNP3 implementation (IEEE 1815-2012)"
+channels = ["conda-forge"]
+platforms = ["linux-64", "osx-arm64", "win-64"]
+
+[dependencies]
+python = ">=3.10"
+pip = "*"
+pytest = ">=8.0"
+pytest-asyncio = ">=0.23"
+pytest-cov = ">=4.0"
+hypothesis = ">=6.0"
+mypy = ">=1.8"
+ruff = ">=0.8"
+
+[tasks]
+dev-install = "pip install -e ."
+test = "pytest tests/ -v"
+test-unit = "pytest tests/unit/ -v"
+test-integration = "pytest tests/integration/ -v"
+test-cov = "pytest tests/ --cov=src/dnp3 --cov-report=html --cov-fail-under=100"
+lint = "ruff check src/ tests/"
+format = "ruff format src/ tests/"
+format-check = "ruff format --check src/ tests/"
+typecheck = "mypy src/"
+check = { depends-on = ["lint", "format-check", "typecheck"] }
