@@ -79,6 +79,9 @@ class DoubleBitQuality(IntFlag):
     STATE_BIT_1 = 0x80  # High bit of state
 
 
+IIN_SIZE = 2  # IIN is 2 bytes
+
+
 class IIN(IntFlag):
     """Internal Indications (IIN) - 2 bytes in response header (Table 4-4).
 
@@ -105,3 +108,30 @@ class IIN(IntFlag):
     CONFIG_CORRUPT = 0x2000  # Configuration is corrupt
     RESERVED_2 = 0x4000  # Reserved
     RESERVED_1 = 0x8000  # Reserved
+
+    def to_bytes(self) -> bytes:
+        """Serialize IIN to 2 bytes (IIN1, IIN2).
+
+        Returns:
+            2-byte IIN value (little-endian: IIN1 first, IIN2 second).
+        """
+        return int(self).to_bytes(2, byteorder="little")
+
+    @classmethod
+    def from_bytes(cls, data: bytes) -> "IIN":
+        """Parse IIN from 2 bytes.
+
+        Args:
+            data: 2 bytes (IIN1, IIN2).
+
+        Returns:
+            IIN instance.
+
+        Raises:
+            ValueError: If data is too short.
+        """
+        if len(data) < IIN_SIZE:
+            msg = f"IIN requires {IIN_SIZE} bytes, got {len(data)}"
+            raise ValueError(msg)
+        value = int.from_bytes(data[:2], byteorder="little")
+        return cls(value)
