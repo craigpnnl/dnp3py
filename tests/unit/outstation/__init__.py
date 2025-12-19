@@ -1,0 +1,1 @@
+"""Outstation tests."""

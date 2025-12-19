@@ -40,6 +40,8 @@ select = [
     "RUF",    # ruff-specific
 ]
 ignore = [
+    "PLR0911",  # too many return statements (expected for protocol handlers)
+    "PLR0912",  # too many branches (expected for protocol handlers)
     "PLR0913",  # too many arguments (we need this for configs)
 ]
 

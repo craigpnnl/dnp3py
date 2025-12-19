@@ -151,10 +151,16 @@ def _parse_object_block(
     consumed += parsed_range.bytes_consumed
     remaining = data[consumed:]
 
-    # If we don't know object size or count is 0, return header-only block
-    if object_size is None or parsed_range.count == 0:
+    # If count is 0, just return range data
+    if parsed_range.count == 0:
         range_data = data[OBJECT_HEADER_SIZE:consumed]
         return ObjectBlock(header=header, data=range_data), consumed
+
+    # If we don't know object size, include all remaining data after the header
+    # This works for single-block requests (common for control operations)
+    if object_size is None:
+        all_data = data[OBJECT_HEADER_SIZE:]
+        return ObjectBlock(header=header, data=all_data), len(data)
 
     # Calculate total data size
     prefix_size = get_prefix_size(header.prefix_code)
