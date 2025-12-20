@@ -26,19 +26,15 @@ format = "ruff format src/ tests/"
 format-check = "ruff format --check src/ tests/"
 typecheck = "mypy src/"
 check = { depends-on = ["lint", "format-check", "typecheck"] }
-test-all = { depends-on = ["test-py310", "test-py311", "test-py312", "test-py313", "test-py314"] }
+test-all = { depends-on = ["test-py311", "test-py312", "test-py313", "test-py314"] }
 
 # Per-environment test tasks
-test-py310 = { cmd = "pytest tests/ -v", depends-on = ["dev-install"] }
 test-py311 = { cmd = "pytest tests/ -v", depends-on = ["dev-install"] }
 test-py312 = { cmd = "pytest tests/ -v", depends-on = ["dev-install"] }
 test-py313 = { cmd = "pytest tests/ -v", depends-on = ["dev-install"] }
 test-py314 = { cmd = "pytest tests/ -v", depends-on = ["dev-install"] }
 
 # Python version features
-[feature.py310.dependencies]
-python = "3.10.*"
-
 [feature.py311.dependencies]
 python = "3.11.*"
 
@@ -54,7 +50,6 @@ python = "3.14.*"
 # Environments
 [environments]
 default = { features = ["py314"], solve-group = "default" }
-py310 = { features = ["py310"], solve-group = "py310" }
 py311 = { features = ["py311"], solve-group = "py311" }
 py312 = { features = ["py312"], solve-group = "py312" }
 py313 = { features = ["py313"], solve-group = "py313" }
