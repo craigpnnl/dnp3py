@@ -18,9 +18,7 @@ from dnp3.objects.binary_input import (
 )
 
 # Quality flags valid for binary input (bits 0-6 only, not STATE bit 7)
-VALID_QUALITY_FLAGS = [
-    q for q in BinaryQuality if q != BinaryQuality.STATE and q.value <= 0x7F
-]
+VALID_QUALITY_FLAGS = [q for q in BinaryQuality if q != BinaryQuality.STATE and q.value <= 0x7F]
 
 
 class TestConstants:
@@ -281,9 +279,7 @@ class TestBinaryInputEventTime:
         st.booleans(),
         st.integers(min_value=0, max_value=2**48 - 1),
     )
-    def test_roundtrip_hypothesis(
-        self, quality: BinaryQuality, state: bool, ms: int
-    ) -> None:
+    def test_roundtrip_hypothesis(self, quality: BinaryQuality, state: bool, ms: int) -> None:
         """Property: roundtrip preserves all values."""
         ts = DNP3Timestamp(milliseconds=ms)
         original = BinaryInputEventTime(quality=quality, state=state, timestamp=ts)

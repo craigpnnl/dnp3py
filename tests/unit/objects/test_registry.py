@@ -73,6 +73,7 @@ class TestRegisterDecorator:
 
     def test_register_object(self) -> None:
         """Register an object class."""
+
         @register
         class TestObj(StaticObject):
             GROUP = 100
@@ -91,6 +92,7 @@ class TestRegisterDecorator:
 
     def test_register_returns_class(self) -> None:
         """Register decorator returns the class."""
+
         @register
         class TestObj(StaticObject):
             GROUP = 101
@@ -140,6 +142,7 @@ class TestRegisterDecorator:
 
     def test_register_duplicate_raises(self) -> None:
         """Register same group/variation twice raises error."""
+
         @register
         class TestObj1(StaticObject):
             GROUP = 102

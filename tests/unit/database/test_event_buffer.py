@@ -57,9 +57,7 @@ class TestBinaryEvent:
     def test_create_with_timestamp(self) -> None:
         """Create event with timestamp."""
         ts = DNP3Timestamp(milliseconds=5000)
-        event = BinaryEvent(
-            index=5, value=False, quality=BinaryQuality.COMM_LOST, timestamp=ts
-        )
+        event = BinaryEvent(index=5, value=False, quality=BinaryQuality.COMM_LOST, timestamp=ts)
         assert event.timestamp == ts
 
     def test_create_binary_output_event(self) -> None:
@@ -93,9 +91,7 @@ class TestAnalogEvent:
     def test_create_with_timestamp(self) -> None:
         """Create event with timestamp."""
         ts = DNP3Timestamp(milliseconds=10000)
-        event = AnalogEvent(
-            index=3, value=-50.0, quality=AnalogQuality.OVER_RANGE, timestamp=ts
-        )
+        event = AnalogEvent(index=3, value=-50.0, quality=AnalogQuality.OVER_RANGE, timestamp=ts)
         assert event.timestamp == ts
 
     def test_is_frozen(self) -> None:
@@ -130,9 +126,7 @@ class TestCounterEvent:
     def test_create_with_timestamp(self) -> None:
         """Create event with timestamp."""
         ts = DNP3Timestamp(milliseconds=15000)
-        event = CounterEvent(
-            index=2, value=99999, quality=CounterQuality.ROLLOVER, timestamp=ts
-        )
+        event = CounterEvent(index=2, value=99999, quality=CounterQuality.ROLLOVER, timestamp=ts)
         assert event.timestamp == ts
 
     def test_is_frozen(self) -> None:
@@ -184,10 +178,7 @@ class TestClassBuffer:
     def test_add_multiple_events(self) -> None:
         """Add multiple events maintains order."""
         buffer = ClassBuffer()
-        events = [
-            BinaryEvent(index=i, value=True, quality=BinaryQuality.ONLINE)
-            for i in range(5)
-        ]
+        events = [BinaryEvent(index=i, value=True, quality=BinaryQuality.ONLINE) for i in range(5)]
         for event in events:
             buffer.add(event)
         assert buffer.count == 5
@@ -237,10 +228,7 @@ class TestClassBuffer:
     def test_overflow_drops_oldest(self) -> None:
         """Overflow drops oldest event."""
         buffer = ClassBuffer(max_size=3)
-        events = [
-            BinaryEvent(index=i, value=True, quality=BinaryQuality.ONLINE)
-            for i in range(5)
-        ]
+        events = [BinaryEvent(index=i, value=True, quality=BinaryQuality.ONLINE) for i in range(5)]
         for event in events:
             buffer.add(event)
 
@@ -598,9 +586,7 @@ class TestEventBuffer:
 
     def test_has_overflow(self) -> None:
         """has_overflow detects any class overflow."""
-        config = EventBufferConfig(
-            max_binary_events=1, max_analog_events=1, max_counter_events=1
-        )
+        config = EventBufferConfig(max_binary_events=1, max_analog_events=1, max_counter_events=1)
         buffer = EventBuffer(config=config)
 
         # Add enough events to cause overflow (max_size = 3 per class)
@@ -616,9 +602,7 @@ class TestEventBuffer:
 
     def test_get_overflow_counts(self) -> None:
         """get_overflow_counts returns counts by class."""
-        config = EventBufferConfig(
-            max_binary_events=1, max_analog_events=1, max_counter_events=1
-        )
+        config = EventBufferConfig(max_binary_events=1, max_analog_events=1, max_counter_events=1)
         buffer = EventBuffer(config=config)
 
         # Cause overflow in class 1 only
@@ -678,9 +662,7 @@ class TestEventBufferPropertyBased:
             max_size=50,
         )
     )
-    def test_event_count_matches_added(
-        self, events: list[tuple[EventClass, int, bool]]
-    ) -> None:
+    def test_event_count_matches_added(self, events: list[tuple[EventClass, int, bool]]) -> None:
         """Total count matches number of events added."""
         buffer = EventBuffer()
         for event_class, index, value in events:

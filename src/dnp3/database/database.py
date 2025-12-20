@@ -511,9 +511,7 @@ class Database:
 
     # Range access methods
 
-    def get_binary_inputs_range(
-        self, start: int, stop: int
-    ) -> list[BinaryInputPoint]:
+    def get_binary_inputs_range(self, start: int, stop: int) -> list[BinaryInputPoint]:
         """Get binary inputs in index range [start, stop].
 
         Args:
@@ -524,47 +522,29 @@ class Database:
             List of points in range (may be sparse).
         """
         return [
-            point
-            for index, point in sorted(self.binary_inputs.items())
-            if start <= index <= stop
+            point for index, point in sorted(self.binary_inputs.items()) if start <= index <= stop
         ]
 
-    def get_binary_outputs_range(
-        self, start: int, stop: int
-    ) -> list[BinaryOutputPoint]:
+    def get_binary_outputs_range(self, start: int, stop: int) -> list[BinaryOutputPoint]:
         """Get binary outputs in index range [start, stop]."""
         return [
-            point
-            for index, point in sorted(self.binary_outputs.items())
-            if start <= index <= stop
+            point for index, point in sorted(self.binary_outputs.items()) if start <= index <= stop
         ]
 
-    def get_analog_inputs_range(
-        self, start: int, stop: int
-    ) -> list[AnalogInputPoint]:
+    def get_analog_inputs_range(self, start: int, stop: int) -> list[AnalogInputPoint]:
         """Get analog inputs in index range [start, stop]."""
         return [
-            point
-            for index, point in sorted(self.analog_inputs.items())
-            if start <= index <= stop
+            point for index, point in sorted(self.analog_inputs.items()) if start <= index <= stop
         ]
 
     def get_counters_range(self, start: int, stop: int) -> list[CounterPoint]:
         """Get counters in index range [start, stop]."""
-        return [
-            point
-            for index, point in sorted(self.counters.items())
-            if start <= index <= stop
-        ]
+        return [point for index, point in sorted(self.counters.items()) if start <= index <= stop]
 
-    def get_frozen_counters_range(
-        self, start: int, stop: int
-    ) -> list[FrozenCounterPoint]:
+    def get_frozen_counters_range(self, start: int, stop: int) -> list[FrozenCounterPoint]:
         """Get frozen counters in index range [start, stop]."""
         return [
-            point
-            for index, point in sorted(self.frozen_counters.items())
-            if start <= index <= stop
+            point for index, point in sorted(self.frozen_counters.items()) if start <= index <= stop
         ]
 
     # Class data access (all static data)
@@ -629,9 +609,7 @@ class Database:
 
     # Event class data access
 
-    def get_class_binary_inputs(
-        self, event_class: EventClass
-    ) -> list[BinaryInputPoint]:
+    def get_class_binary_inputs(self, event_class: EventClass) -> list[BinaryInputPoint]:
         """Get binary inputs assigned to event class."""
         return [
             point
@@ -639,9 +617,7 @@ class Database:
             if point.config.event_class == event_class
         ]
 
-    def get_class_binary_outputs(
-        self, event_class: EventClass
-    ) -> list[BinaryOutputPoint]:
+    def get_class_binary_outputs(self, event_class: EventClass) -> list[BinaryOutputPoint]:
         """Get binary outputs assigned to event class."""
         return [
             point
@@ -649,9 +625,7 @@ class Database:
             if point.config.event_class == event_class
         ]
 
-    def get_class_analog_inputs(
-        self, event_class: EventClass
-    ) -> list[AnalogInputPoint]:
+    def get_class_analog_inputs(self, event_class: EventClass) -> list[AnalogInputPoint]:
         """Get analog inputs assigned to event class."""
         return [
             point
@@ -662,14 +636,10 @@ class Database:
     def get_class_counters(self, event_class: EventClass) -> list[CounterPoint]:
         """Get counters assigned to event class."""
         return [
-            point
-            for point in self.get_all_counters()
-            if point.config.event_class == event_class
+            point for point in self.get_all_counters() if point.config.event_class == event_class
         ]
 
-    def get_class_frozen_counters(
-        self, event_class: EventClass
-    ) -> list[FrozenCounterPoint]:
+    def get_class_frozen_counters(self, event_class: EventClass) -> list[FrozenCounterPoint]:
         """Get frozen counters assigned to event class."""
         return [
             point

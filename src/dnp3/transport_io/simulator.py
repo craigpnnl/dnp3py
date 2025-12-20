@@ -35,9 +35,7 @@ class SimulatorChannel:
     name: str = ""
 
     _state: ChannelState = field(default=ChannelState.CLOSED, init=False)
-    _statistics: ChannelStatistics = field(
-        default_factory=ChannelStatistics, init=False
-    )
+    _statistics: ChannelStatistics = field(default_factory=ChannelStatistics, init=False)
     _read_queue: asyncio.Queue[bytes] = field(default=None, init=False)  # type: ignore[assignment]
     _peer: "SimulatorChannel | None" = field(default=None, init=False)
     _read_buffer: bytes = field(default=b"", init=False)

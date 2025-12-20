@@ -342,9 +342,7 @@ class TestFrozenCounter32Time:
         st.integers(min_value=0, max_value=2**32 - 1),
         st.integers(min_value=0, max_value=2**48 - 1),
     )
-    def test_roundtrip_hypothesis(
-        self, quality: CounterQuality, value: int, ms: int
-    ) -> None:
+    def test_roundtrip_hypothesis(self, quality: CounterQuality, value: int, ms: int) -> None:
         """Property: roundtrip preserves all values."""
         ts = DNP3Timestamp(milliseconds=ms)
         original = FrozenCounter32Time(quality=quality, value=value, timestamp=ts)
@@ -374,9 +372,7 @@ class TestFrozenCounter16Time:
         st.integers(min_value=0, max_value=2**16 - 1),
         st.integers(min_value=0, max_value=2**48 - 1),
     )
-    def test_roundtrip_hypothesis(
-        self, quality: CounterQuality, value: int, ms: int
-    ) -> None:
+    def test_roundtrip_hypothesis(self, quality: CounterQuality, value: int, ms: int) -> None:
         """Property: roundtrip preserves all values."""
         ts = DNP3Timestamp(milliseconds=ms)
         original = FrozenCounter16Time(quality=quality, value=value, timestamp=ts)
@@ -478,9 +474,7 @@ class TestCounterEvent32Time:
         st.integers(min_value=0, max_value=2**32 - 1),
         st.integers(min_value=0, max_value=2**48 - 1),
     )
-    def test_roundtrip_hypothesis(
-        self, quality: CounterQuality, value: int, ms: int
-    ) -> None:
+    def test_roundtrip_hypothesis(self, quality: CounterQuality, value: int, ms: int) -> None:
         """Property: roundtrip preserves all values."""
         ts = DNP3Timestamp(milliseconds=ms)
         original = CounterEvent32Time(quality=quality, value=value, timestamp=ts)
@@ -516,9 +510,7 @@ class TestCounterEvent16Time:
         st.integers(min_value=0, max_value=2**16 - 1),
         st.integers(min_value=0, max_value=2**48 - 1),
     )
-    def test_roundtrip_hypothesis(
-        self, quality: CounterQuality, value: int, ms: int
-    ) -> None:
+    def test_roundtrip_hypothesis(self, quality: CounterQuality, value: int, ms: int) -> None:
         """Property: roundtrip preserves all values."""
         ts = DNP3Timestamp(milliseconds=ms)
         original = CounterEvent16Time(quality=quality, value=value, timestamp=ts)

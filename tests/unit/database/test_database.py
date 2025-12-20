@@ -92,9 +92,7 @@ class TestBinaryInputOperations:
     def test_add_binary_input_with_initial_value(self) -> None:
         """Add binary input with initial value."""
         db = Database()
-        point = db.add_binary_input(
-            index=0, value=True, quality=BinaryQuality.ONLINE
-        )
+        point = db.add_binary_input(index=0, value=True, quality=BinaryQuality.ONLINE)
         assert point.value is True
         assert point.quality == BinaryQuality.ONLINE
 
@@ -132,9 +130,7 @@ class TestBinaryInputOperations:
         """Updating with same value generates no event."""
         db = Database()
         db.add_binary_input(index=0, value=True, quality=BinaryQuality.ONLINE)
-        result = db.update_binary_input(
-            index=0, value=True, quality=BinaryQuality.ONLINE
-        )
+        result = db.update_binary_input(index=0, value=True, quality=BinaryQuality.ONLINE)
         assert result is False
         assert db.event_buffer.total_count == 0
 
@@ -538,9 +534,7 @@ class TestPropertyBased:
             max_size=20,
         )
     )
-    def test_updates_generate_correct_event_count(
-        self, updates: list[tuple[int, bool]]
-    ) -> None:
+    def test_updates_generate_correct_event_count(self, updates: list[tuple[int, bool]]) -> None:
         """Updates generate correct number of events."""
         db = Database()
         # Add all unique indices first

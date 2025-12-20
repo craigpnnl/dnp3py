@@ -448,11 +448,7 @@ class EventBuffer:
     @property
     def has_overflow(self) -> bool:
         """Check if any class has overflow."""
-        return (
-            self.class1.has_overflow
-            or self.class2.has_overflow
-            or self.class3.has_overflow
-        )
+        return self.class1.has_overflow or self.class2.has_overflow or self.class3.has_overflow
 
     def get_overflow_counts(self) -> dict[EventClass, int]:
         """Get overflow counts by class.

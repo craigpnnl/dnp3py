@@ -506,9 +506,7 @@ class TestAnalogInputEvent32Time:
         st.integers(min_value=-(2**31), max_value=2**31 - 1),
         st.integers(min_value=0, max_value=2**48 - 1),
     )
-    def test_roundtrip_hypothesis(
-        self, quality: AnalogQuality, value: int, ms: int
-    ) -> None:
+    def test_roundtrip_hypothesis(self, quality: AnalogQuality, value: int, ms: int) -> None:
         """Property: roundtrip preserves all values."""
         ts = DNP3Timestamp(milliseconds=ms)
         original = AnalogInputEvent32Time(quality=quality, value=value, timestamp=ts)
@@ -538,9 +536,7 @@ class TestAnalogInputEvent16Time:
         st.integers(min_value=-(2**15), max_value=2**15 - 1),
         st.integers(min_value=0, max_value=2**48 - 1),
     )
-    def test_roundtrip_hypothesis(
-        self, quality: AnalogQuality, value: int, ms: int
-    ) -> None:
+    def test_roundtrip_hypothesis(self, quality: AnalogQuality, value: int, ms: int) -> None:
         """Property: roundtrip preserves all values."""
         ts = DNP3Timestamp(milliseconds=ms)
         original = AnalogInputEvent16Time(quality=quality, value=value, timestamp=ts)

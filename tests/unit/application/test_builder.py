@@ -145,9 +145,7 @@ class TestBuildAllObjectsRequest:
 
     def test_read_all_binary_inputs(self) -> None:
         """Read all binary inputs."""
-        fragment = build_all_objects_request(
-            function=FunctionCode.READ, group=1, variation=2
-        )
+        fragment = build_all_objects_request(function=FunctionCode.READ, group=1, variation=2)
         assert fragment.header.function == FunctionCode.READ
         assert len(fragment.objects) == 1
         assert fragment.objects[0].header.group == 1
@@ -188,17 +186,13 @@ class TestBuildCountRequest:
 
     def test_1_byte_count(self) -> None:
         """Build request with 1-byte count."""
-        fragment = build_count_request(
-            function=FunctionCode.READ, group=2, variation=1, count=10
-        )
+        fragment = build_count_request(function=FunctionCode.READ, group=2, variation=1, count=10)
         assert fragment.objects[0].header.range_code == RangeCode.UINT8_COUNT
         assert fragment.objects[0].data == b"\x0a"
 
     def test_2_byte_count(self) -> None:
         """Build request with 2-byte count."""
-        fragment = build_count_request(
-            function=FunctionCode.READ, group=2, variation=1, count=1000
-        )
+        fragment = build_count_request(function=FunctionCode.READ, group=2, variation=1, count=1000)
         assert fragment.objects[0].header.range_code == RangeCode.UINT16_COUNT
 
     def test_4_byte_count(self) -> None:
@@ -333,9 +327,7 @@ class TestBuildUnsolicitedControl:
 
     def test_enable_unsolicited_class_1_only(self) -> None:
         """Enable unsolicited for Class 1 only."""
-        fragment = build_enable_unsolicited_request(
-            class_1=True, class_2=False, class_3=False
-        )
+        fragment = build_enable_unsolicited_request(class_1=True, class_2=False, class_3=False)
         assert len(fragment.objects) == 1
         assert fragment.objects[0].header.variation == 2
 
@@ -347,7 +339,5 @@ class TestBuildUnsolicitedControl:
 
     def test_disable_unsolicited_class_2_3(self) -> None:
         """Disable unsolicited for Classes 2 and 3."""
-        fragment = build_disable_unsolicited_request(
-            class_1=False, class_2=True, class_3=True
-        )
+        fragment = build_disable_unsolicited_request(class_1=False, class_2=True, class_3=True)
         assert len(fragment.objects) == 2

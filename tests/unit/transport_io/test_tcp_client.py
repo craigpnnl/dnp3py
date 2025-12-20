@@ -83,6 +83,7 @@ class TestTcpClientWithServer:
     @pytest.mark.asyncio
     async def test_connect_to_server(self) -> None:
         """Client can connect to server."""
+
         # Start a simple echo server
         async def echo_handler(
             reader: asyncio.StreamReader,
@@ -129,6 +130,7 @@ class TestTcpClientWithServer:
     @pytest.mark.asyncio
     async def test_write_and_read(self) -> None:
         """Client can write and read data."""
+
         async def echo_handler(
             reader: asyncio.StreamReader,
             writer: asyncio.StreamWriter,
@@ -173,6 +175,7 @@ class TestTcpClientWithServer:
     @pytest.mark.asyncio
     async def test_read_exactly(self) -> None:
         """Client can read exact number of bytes."""
+
         async def handler(
             reader: asyncio.StreamReader,
             writer: asyncio.StreamWriter,
@@ -245,6 +248,7 @@ class TestTcpClientWithServer:
     @pytest.mark.asyncio
     async def test_read_exactly_eof(self) -> None:
         """read_exactly raises on EOF before requested bytes."""
+
         async def handler(
             reader: asyncio.StreamReader,
             writer: asyncio.StreamWriter,
@@ -279,6 +283,7 @@ class TestTcpClientWithServer:
     @pytest.mark.asyncio
     async def test_context_manager(self) -> None:
         """Channel works as async context manager."""
+
         async def handler(
             reader: asyncio.StreamReader,
             writer: asyncio.StreamWriter,
@@ -308,6 +313,7 @@ class TestTcpClientWithServer:
     @pytest.mark.asyncio
     async def test_connect_helper(self) -> None:
         """connect() helper creates connected channel."""
+
         async def handler(
             reader: asyncio.StreamReader,
             writer: asyncio.StreamWriter,
@@ -367,6 +373,7 @@ class TestTcpClientErrors:
     @pytest.mark.asyncio
     async def test_read_eof(self) -> None:
         """Reading after server closes returns empty bytes."""
+
         async def handler(
             reader: asyncio.StreamReader,
             writer: asyncio.StreamWriter,
@@ -402,6 +409,7 @@ class TestTcpClientErrors:
     @pytest.mark.asyncio
     async def test_read_timeout(self) -> None:
         """Read timeout raises appropriate error."""
+
         async def handler(
             reader: asyncio.StreamReader,
             writer: asyncio.StreamWriter,
@@ -443,6 +451,7 @@ class TestTcpClientStatistics:
     @pytest.mark.asyncio
     async def test_bytes_sent_tracking(self) -> None:
         """Bytes sent are tracked correctly."""
+
         async def handler(
             reader: asyncio.StreamReader,
             writer: asyncio.StreamWriter,
@@ -478,6 +487,7 @@ class TestTcpClientStatistics:
     @pytest.mark.asyncio
     async def test_bytes_received_tracking(self) -> None:
         """Bytes received are tracked correctly."""
+
         async def handler(
             reader: asyncio.StreamReader,
             writer: asyncio.StreamWriter,

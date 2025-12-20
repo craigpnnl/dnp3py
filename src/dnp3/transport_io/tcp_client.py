@@ -32,9 +32,7 @@ class TcpClientChannel:
     config: TcpConfig = field(default_factory=TcpConfig)
 
     _state: ChannelState = field(default=ChannelState.CLOSED, init=False)
-    _statistics: ChannelStatistics = field(
-        default_factory=ChannelStatistics, init=False
-    )
+    _statistics: ChannelStatistics = field(default_factory=ChannelStatistics, init=False)
     _reader: asyncio.StreamReader | None = field(default=None, init=False)
     _writer: asyncio.StreamWriter | None = field(default=None, init=False)
 
@@ -188,9 +186,7 @@ class TcpClientChannel:
             raise ChannelClosedError("Channel is not open")
 
         try:
-            timeout = (
-                self.config.read_timeout if self.config.read_timeout > 0 else None
-            )
+            timeout = self.config.read_timeout if self.config.read_timeout > 0 else None
             data = await asyncio.wait_for(
                 self._reader.read(max_bytes),
                 timeout=timeout,
@@ -224,9 +220,7 @@ class TcpClientChannel:
 
         try:
             self._writer.write(data)
-            timeout = (
-                self.config.write_timeout if self.config.write_timeout > 0 else None
-            )
+            timeout = self.config.write_timeout if self.config.write_timeout > 0 else None
             await asyncio.wait_for(
                 self._writer.drain(),
                 timeout=timeout,
@@ -258,9 +252,7 @@ class TcpClientChannel:
             raise ChannelClosedError("Channel is not open")
 
         try:
-            timeout = (
-                self.config.read_timeout if self.config.read_timeout > 0 else None
-            )
+            timeout = self.config.read_timeout if self.config.read_timeout > 0 else None
             data = await asyncio.wait_for(
                 self._reader.readexactly(num_bytes),
                 timeout=timeout,

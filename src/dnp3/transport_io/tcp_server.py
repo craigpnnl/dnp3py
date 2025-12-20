@@ -36,9 +36,7 @@ class TcpServerChannel:
     config: TcpConfig = field(default_factory=TcpConfig)
 
     _state: ChannelState = field(default=ChannelState.OPEN, init=False)
-    _statistics: ChannelStatistics = field(
-        default_factory=ChannelStatistics, init=False
-    )
+    _statistics: ChannelStatistics = field(default_factory=ChannelStatistics, init=False)
 
     def __post_init__(self) -> None:
         """Initialize channel state."""
@@ -119,9 +117,7 @@ class TcpServerChannel:
             raise ChannelClosedError("Channel is not open")
 
         try:
-            timeout = (
-                self.config.read_timeout if self.config.read_timeout > 0 else None
-            )
+            timeout = self.config.read_timeout if self.config.read_timeout > 0 else None
             data = await asyncio.wait_for(
                 self.reader.read(max_bytes),
                 timeout=timeout,
@@ -155,9 +151,7 @@ class TcpServerChannel:
 
         try:
             self.writer.write(data)
-            timeout = (
-                self.config.write_timeout if self.config.write_timeout > 0 else None
-            )
+            timeout = self.config.write_timeout if self.config.write_timeout > 0 else None
             await asyncio.wait_for(
                 self.writer.drain(),
                 timeout=timeout,
@@ -189,9 +183,7 @@ class TcpServerChannel:
             raise ChannelClosedError("Channel is not open")
 
         try:
-            timeout = (
-                self.config.read_timeout if self.config.read_timeout > 0 else None
-            )
+            timeout = self.config.read_timeout if self.config.read_timeout > 0 else None
             data = await asyncio.wait_for(
                 self.reader.readexactly(num_bytes),
                 timeout=timeout,
