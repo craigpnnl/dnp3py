@@ -6,7 +6,6 @@ channels = ["conda-forge"]
 platforms = ["linux-64", "osx-arm64", "win-64"]
 
 [dependencies]
-python = ">=3.10"
 pip = "*"
 pytest = ">=8.0"
 pytest-asyncio = ">=0.23"
@@ -14,6 +13,7 @@ pytest-cov = ">=4.0"
 hypothesis = ">=6.0"
 mypy = ">=1.8"
 ruff = ">=0.8"
+nox = ">=2024.0"
 
 [tasks]
 dev-install = "pip install -e ."
@@ -26,3 +26,36 @@ format = "ruff format src/ tests/"
 format-check = "ruff format --check src/ tests/"
 typecheck = "mypy src/"
 check = { depends-on = ["lint", "format-check", "typecheck"] }
+test-all = { depends-on = ["test-py310", "test-py311", "test-py312", "test-py313", "test-py314"] }
+
+# Per-environment test tasks
+test-py310 = { cmd = "pytest tests/ -v", depends-on = ["dev-install"] }
+test-py311 = { cmd = "pytest tests/ -v", depends-on = ["dev-install"] }
+test-py312 = { cmd = "pytest tests/ -v", depends-on = ["dev-install"] }
+test-py313 = { cmd = "pytest tests/ -v", depends-on = ["dev-install"] }
+test-py314 = { cmd = "pytest tests/ -v", depends-on = ["dev-install"] }
+
+# Python version features
+[feature.py310.dependencies]
+python = "3.10.*"
+
+[feature.py311.dependencies]
+python = "3.11.*"
+
+[feature.py312.dependencies]
+python = "3.12.*"
+
+[feature.py313.dependencies]
+python = "3.13.*"
+
+[feature.py314.dependencies]
+python = "3.14.*"
+
+# Environments
+[environments]
+default = { features = ["py314"], solve-group = "default" }
+py310 = { features = ["py310"], solve-group = "py310" }
+py311 = { features = ["py311"], solve-group = "py311" }
+py312 = { features = ["py312"], solve-group = "py312" }
+py313 = { features = ["py313"], solve-group = "py313" }
+py314 = { features = ["py314"], solve-group = "py314" }
