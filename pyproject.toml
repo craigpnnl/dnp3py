@@ -3,11 +3,26 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "dnp3"
+name = "dnp3py"
 version = "0.1.0"
 description = "Pure Python DNP3 implementation (IEEE 1815-2012)"
+readme = "README.md"
+license = {text = "MIT"}
 requires-python = ">=3.10"
 dependencies = []
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: System :: Networking",
+    "Topic :: Scientific/Engineering :: Interface Engine/Protocol Translator",
+    "Typing :: Typed",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/dnp3"]

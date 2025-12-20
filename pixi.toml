@@ -1,5 +1,5 @@
 [workspace]
-name = "dnp3"
+name = "dnp3py"
 version = "0.1.0"
 description = "Pure Python DNP3 implementation (IEEE 1815-2012)"
 channels = ["conda-forge"]
