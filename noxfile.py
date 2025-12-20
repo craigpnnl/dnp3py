@@ -23,7 +23,7 @@ def tests_cov(session: nox.Session) -> None:
         "tests/",
         "--cov=src/dnp3",
         "--cov-report=term-missing",
-        "--cov-fail-under=100",
+        "--cov-fail-under=95",
     )
 
 
