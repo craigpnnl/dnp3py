@@ -19,6 +19,8 @@ classifiers = [
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: System :: Networking",
     "Topic :: Scientific/Engineering :: Interface Engine/Protocol Translator",
     "Typing :: Typed",
@@ -66,3 +68,22 @@ ignore = [
 [tool.ruff.format]
 quote-style = "double"
 indent-style = "space"
+
+[tool.bandit]
+exclude_dirs = ["tests", ".pixi", ".venv"]
+skips = []
+
+[tool.coverage.run]
+source = ["src/dnp3"]
+branch = true
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "if __name__ == .__main__.:",
+    "raise NotImplementedError",
+    "@abstractmethod",
+]
+fail_under = 100
+show_missing = true
