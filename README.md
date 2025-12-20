@@ -103,11 +103,12 @@ asyncio.run(main())
 
 ```bash
 # Clone repository
-git clone https://github.com/yourusername/dnp3py.git
+git clone https://github.com/craig8/dnp3py.git
 cd dnp3py
 
 # Install with pixi
 pixi install
+pixi run dev-install
 
 # Run tests
 pixi run test
