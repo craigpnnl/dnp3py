@@ -4,6 +4,8 @@ Tests specifically targeting uncovered code paths.
 """
 
 import asyncio
+import contextlib
+from datetime import UTC
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -16,7 +18,7 @@ from dnp3.application.parser import (
     parse_response,
 )
 from dnp3.application.qualifiers import ObjectHeader, RangeCode
-from dnp3.core.enums import FunctionCode
+from dnp3.core.enums import CommandStatus, ControlCode, FunctionCode
 from dnp3.core.flags import AnalogQuality, BinaryQuality, CounterQuality
 from dnp3.core.timestamp import DNP3Timestamp
 from dnp3.database import (
@@ -49,7 +51,6 @@ from dnp3.objects.counter import (
     Counter32NoFlag,
     FrozenCounter16,
 )
-from dnp3.core.enums import CommandStatus, ControlCode
 from dnp3.outstation import Outstation
 from dnp3.outstation.handler import CommandResult, DefaultCommandHandler
 from dnp3.transport.segment import TransportHeader
@@ -309,9 +310,7 @@ class TestMasterCommandsCoverage:
         from dnp3.core.enums import ControlCode
         from dnp3.master.commands import ControlOperation
 
-        task.add_operation(
-            ControlOperation(index=1000, control_code=ControlCode.LATCH_ON)
-        )
+        task.add_operation(ControlOperation(index=1000, control_code=ControlCode.LATCH_ON))
         request = task.build_request(seq=0)
         assert len(request.objects) > 0
 
@@ -321,9 +320,7 @@ class TestMasterCommandsCoverage:
         from dnp3.core.enums import ControlCode
         from dnp3.master.commands import ControlOperation
 
-        task.add_operation(
-            ControlOperation(index=1000, control_code=ControlCode.LATCH_ON)
-        )
+        task.add_operation(ControlOperation(index=1000, control_code=ControlCode.LATCH_ON))
         request = task.build_request(seq=0)
         assert len(request.objects) > 0
 
@@ -333,9 +330,7 @@ class TestMasterCommandsCoverage:
         from dnp3.core.enums import ControlCode
         from dnp3.master.commands import ControlOperation
 
-        task.add_operation(
-            ControlOperation(index=1000, control_code=ControlCode.LATCH_ON)
-        )
+        task.add_operation(ControlOperation(index=1000, control_code=ControlCode.LATCH_ON))
         request = task.build_request(seq=0)
         assert len(request.objects) > 0
 
@@ -344,9 +339,7 @@ class TestMasterCommandsCoverage:
         task = SelectTask()
         from dnp3.master.commands import ControlOperation
 
-        task.add_operation(
-            ControlOperation(index=1000, analog_value=100.0, is_analog=True)
-        )
+        task.add_operation(ControlOperation(index=1000, analog_value=100.0, is_analog=True))
         request = task.build_request(seq=0)
         assert len(request.objects) > 0
 
@@ -1329,9 +1322,7 @@ class TestTcpClientChannelEdgeCases:
         channel = TcpClientChannel()
         channel._state = ChannelState.OPEN
         channel._reader = AsyncMock(spec=asyncio.StreamReader)
-        channel._reader.readexactly = AsyncMock(
-            side_effect=asyncio.IncompleteReadError(b"partial", 100)
-        )
+        channel._reader.readexactly = AsyncMock(side_effect=asyncio.IncompleteReadError(b"partial", 100))
         from dnp3.transport_io.channel import ChannelClosedError
 
         with pytest.raises(ChannelClosedError):
@@ -1343,9 +1334,9 @@ class TestTimestampEdgeCases:
 
     def test_from_datetime(self) -> None:
         """Test DNP3Timestamp.from_datetime()."""
-        from datetime import datetime, timezone
+        from datetime import datetime
 
-        dt = datetime(2024, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+        dt = datetime(2024, 1, 1, 0, 0, 0, tzinfo=UTC)
         ts = DNP3Timestamp.from_datetime(dt)
         assert ts.milliseconds > 0
 
@@ -1825,15 +1816,23 @@ class TestOutstationNoAckAndFreeze:
 
         # Build DIRECT_OPERATE_NO_ACK request
         # CROB format: count (1) + [index (1) + control (1) + count (1) + on_time (4) + off_time (4) + status (1)]
-        crob_data = bytes([
-            1,  # count
-            0,  # index
-            3,  # control code (LATCH_ON)
-            1,  # operation count
-            0, 0, 0, 0,  # on_time
-            0, 0, 0, 0,  # off_time
-            0,  # status
-        ])
+        crob_data = bytes(
+            [
+                1,  # count
+                0,  # index
+                3,  # control code (LATCH_ON)
+                1,  # operation count
+                0,
+                0,
+                0,
+                0,  # on_time
+                0,
+                0,
+                0,
+                0,  # off_time
+                0,  # status
+            ]
+        )
         header = ObjectHeader(group=12, variation=1, qualifier=0x17)  # 1-byte count, 1-byte index prefix
         request = RequestFragment(
             header=RequestHeader(
@@ -2073,7 +2072,7 @@ class TestOutstationCROBEdgeCases:
         assert response is not None
 
 
-class TestParserEdgeCases:
+class TestParserEdgeCases2:
     """Test application layer parser edge cases."""
 
     def test_parse_range_all_objects(self) -> None:
@@ -2089,14 +2088,14 @@ class TestParserEdgeCases:
         from dnp3.application.parser import ParseError as ParserError
 
         with pytest.raises(ParserError):
-            parse_request(b"\xC0")  # Only 1 byte, needs 2
+            parse_request(b"\xc0")  # Only 1 byte, needs 2
 
     def test_parse_response_short_data(self) -> None:
         """Parse response with insufficient data raises error."""
         from dnp3.application.parser import ParseError as ParserError
 
         with pytest.raises(ParserError):
-            parse_response(b"\xC0\x81\x00")  # Only 3 bytes, needs 4
+            parse_response(b"\xc0\x81\x00")  # Only 3 bytes, needs 4
 
     def test_parse_response_invalid_header(self) -> None:
         """Parse response with invalid header raises error."""
@@ -2109,7 +2108,8 @@ class TestParserEdgeCases:
 
     def test_parse_object_block_short_data(self) -> None:
         """Parse object block with insufficient data raises error."""
-        from dnp3.application.parser import ParseError as ParserError, _parse_object_block
+        from dnp3.application.parser import ParseError as ParserError
+        from dnp3.application.parser import _parse_object_block
 
         with pytest.raises(ParserError):
             _parse_object_block(b"\x01\x02")  # Only 2 bytes, needs 3
@@ -2122,7 +2122,7 @@ class TestParserEdgeCases:
         # Range: 0, 1 (2 objects)
         # Data: 2 bytes per object (flag for g1v2)
         data = bytes([1, 2, 0x00, 0, 1, 0x01, 0x01])
-        block, consumed = _parse_object_block(data, object_size=1)
+        block, _consumed = _parse_object_block(data, object_size=1)
         assert block.header.group == 1
 
 
@@ -2382,7 +2382,7 @@ class TestDatabaseEdgeCases:
         db.add_counter(0, CounterConfig())
         db.add_frozen_counter(0, CounterConfig(event_class=EventClass.NONE))
         db.update_counter(0, value=1000)
-        result = db.freeze_counter(0)
+        db.freeze_counter(0)
         # Still freezes but may not generate event
         assert db.get_frozen_counter(0) is not None
 
@@ -2416,7 +2416,7 @@ class TestChannelCoverage:
         assert isinstance(err, ChannelError)
 
 
-class TestTimestampEdgeCases:
+class TestTimestampEdgeCases2:
     """Test timestamp edge cases."""
 
     def test_timestamp_now_returns_valid(self) -> None:
@@ -2452,7 +2452,7 @@ class TestQualifiersCoverage:
         assert header.range_code == RangeCode.ALL_OBJECTS
 
 
-class TestFlagsCoverage:
+class TestFlagsCoverage2:
     """Test flags module coverage."""
 
     def test_binary_quality_combined_flags(self) -> None:
@@ -2462,7 +2462,7 @@ class TestFlagsCoverage:
         assert combined & BinaryQuality.RESTART
 
 
-class TestDataLinkCoverage:
+class TestDataLinkCoverage2:
     """Test data link layer coverage."""
 
     def test_frame_parser_incomplete_block(self) -> None:
@@ -2480,9 +2480,7 @@ class TestDataLinkCoverage:
 
         # Payload > 16 bytes requires multiple data blocks
         payload = bytes(range(32))
-        frame = build_unconfirmed_user_data(
-            destination=1, source=2, dir_from_master=True, user_data=payload
-        )
+        frame = build_unconfirmed_user_data(destination=1, source=2, dir_from_master=True, user_data=payload)
         assert frame is not None
         data = frame.to_bytes()
         assert len(data) > 0
@@ -2667,9 +2665,7 @@ class TestOutstationControlResponseErrors:
         """Direct operate with format error sets IIN."""
 
         class FormatErrorHandler(DefaultCommandHandler):
-            def direct_operate_binary_output(
-                self, index, code, count, on_time, off_time
-            ) -> CommandResult:
+            def direct_operate_binary_output(self, index, code, count, on_time, off_time) -> CommandResult:
                 return CommandResult(status=CommandStatus.FORMAT_ERROR)
 
         database = Database()
@@ -2771,7 +2767,7 @@ class TestEmptyDatabaseReadPaths:
         assert response is not None
 
 
-class TestTcpServerCoverage:
+class TestTcpServerCoverage2:
     """Test TCP server coverage gaps."""
 
     def test_tcp_server_config_defaults(self) -> None:
@@ -2793,7 +2789,7 @@ class TestTcpServerCoverage:
         assert config.max_connections == 5
 
 
-class TestSimulatorCoverage:
+class TestSimulatorCoverage2:
     """Test simulator coverage gaps."""
 
     def test_simulator_config_defaults(self) -> None:
@@ -2874,10 +2870,8 @@ class TestParserCoverageMore:
 
         # Too short to be a valid response
         short_data = bytes([0x00, 0x81])  # Only 2 bytes, need at least 4
-        try:
+        with contextlib.suppress(Exception):
             parse_response(short_data)
-        except Exception:
-            pass  # Expected for malformed data
 
 
 class TestDataLinkParserCoverage:
@@ -2892,9 +2886,7 @@ class TestDataLinkParserCoverage:
         # Valid start bytes but bad CRC in header
         bad_header = bytes([0x05, 0x64, 0x05, 0x00, 0x01, 0x00, 0x02, 0x00, 0xFF, 0xFF])
         # Add another valid frame after
-        valid_frame = build_unconfirmed_user_data(
-            destination=1, source=2, dir_from_master=True, user_data=b"\x01"
-        )
+        valid_frame = build_unconfirmed_user_data(destination=1, source=2, dir_from_master=True, user_data=b"\x01")
 
         result = list(parser.feed(bad_header + valid_frame.to_bytes()))
         # Should recover and find the valid frame
@@ -2907,16 +2899,14 @@ class TestDataLinkParserCoverage:
         parser = FrameParser()
 
         # Build valid frame then corrupt data CRC
-        frame = build_unconfirmed_user_data(
-            destination=1, source=2, dir_from_master=True, user_data=b"\x01\x02\x03"
-        )
+        frame = build_unconfirmed_user_data(destination=1, source=2, dir_from_master=True, user_data=b"\x01\x02\x03")
         frame_bytes = bytearray(frame.to_bytes())
 
         # Corrupt the data block CRC (last 2 bytes before any additional data)
         if len(frame_bytes) > 12:
             frame_bytes[-1] ^= 0xFF
 
-        result = list(parser.feed(bytes(frame_bytes)))
+        list(parser.feed(bytes(frame_bytes)))
         # Should fail to parse due to bad CRC
 
 
@@ -2935,17 +2925,17 @@ class TestTransportSegmentCoverage:
         assert next_seq == 0
 
 
-class TestTimestampCoverage:
+class TestTimestampCoverage2:
     """Timestamp coverage."""
 
     def test_timestamp_from_datetime_roundtrip(self) -> None:
         """Timestamp roundtrip through datetime."""
-        from datetime import datetime, timezone
+        from datetime import datetime
 
         from dnp3.core.timestamp import DNP3Timestamp
 
         # Create specific timestamp
-        dt = datetime(2024, 6, 15, 12, 30, 45, tzinfo=timezone.utc)
+        dt = datetime(2024, 6, 15, 12, 30, 45, tzinfo=UTC)
         ts = DNP3Timestamp.from_datetime(dt)
 
         # Convert back
@@ -2955,7 +2945,7 @@ class TestTimestampCoverage:
         assert result_dt.day == 15
 
 
-class TestFlagsCoverage:
+class TestFlagsCoverage3:
     """Flags coverage."""
 
     def test_counter_quality_values(self) -> None:
@@ -2990,9 +2980,7 @@ class TestChannelStatistics:
         """Channel statistics can be updated."""
         from dnp3.transport_io.channel import ChannelStatistics
 
-        stats = ChannelStatistics(
-            bytes_sent=100, bytes_received=200, messages_sent=5, messages_received=10
-        )
+        stats = ChannelStatistics(bytes_sent=100, bytes_received=200, messages_sent=5, messages_received=10)
         assert stats.bytes_sent == 100
         assert stats.bytes_received == 200
 
@@ -3171,14 +3159,10 @@ class TestBinaryOutputPointIsOnline:
         """BinaryOutputPoint is_online property."""
         from dnp3.database.point import BinaryOutputPoint
 
-        point = BinaryOutputPoint(
-            index=0, config=BinaryOutputConfig(), value=True, quality=BinaryQuality.ONLINE
-        )
+        point = BinaryOutputPoint(index=0, config=BinaryOutputConfig(), value=True, quality=BinaryQuality.ONLINE)
         assert point.is_online is True
 
-        point_offline = BinaryOutputPoint(
-            index=0, config=BinaryOutputConfig(), value=True, quality=BinaryQuality(0)
-        )
+        point_offline = BinaryOutputPoint(index=0, config=BinaryOutputConfig(), value=True, quality=BinaryQuality(0))
         assert point_offline.is_online is False
 
 
@@ -3204,7 +3188,7 @@ class TestDataLinkFrameCRCValidation:
         # Create valid frame bytes then corrupt header CRC
         valid = b"\x05\x64\x05\x00\x01\x00\x00\x00\x00\x00"  # Valid header format
         # Corrupt the CRC bytes
-        corrupted = valid[:8] + b"\xFF\xFF"
+        corrupted = valid[:8] + b"\xff\xff"
 
         with pytest.raises(ValueError, match="Header CRC"):
             DataLinkFrame.from_bytes(corrupted)
@@ -3256,7 +3240,7 @@ class TestMasterAnalogOutputParsing:
         """Master parses analog output values from response."""
         from dnp3.master import DefaultSOEHandler
 
-        db = Database()
+        _ = Database()
         # Create outstation with analog output
         # Note: we need to test the parsing path in master
 
@@ -3450,7 +3434,7 @@ class TestOutstationCROBPaths:
         assert results == []
 
 
-class TestOutstationSelectUnsupportedObject:
+class TestOutstationSelectUnsupportedObject2:
     """Test SELECT with unsupported object type."""
 
     def test_select_non_crob_object_ignored(self) -> None:

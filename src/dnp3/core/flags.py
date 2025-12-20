@@ -109,7 +109,7 @@ class IIN(IntFlag):
     RESERVED_2 = 0x4000  # Reserved
     RESERVED_1 = 0x8000  # Reserved
 
-    def to_bytes(self) -> bytes:
+    def to_bytes(self) -> bytes:  # type: ignore[override]
         """Serialize IIN to 2 bytes (IIN1, IIN2).
 
         Returns:
@@ -118,7 +118,7 @@ class IIN(IntFlag):
         return int(self).to_bytes(2, byteorder="little")
 
     @classmethod
-    def from_bytes(cls, data: bytes) -> "IIN":
+    def from_bytes(cls, data: bytes) -> "IIN":  # type: ignore[override]
         """Parse IIN from 2 bytes.
 
         Args:

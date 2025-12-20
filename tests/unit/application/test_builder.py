@@ -62,9 +62,7 @@ class TestBuildReadRequest:
 
     def test_read_with_objects(self) -> None:
         """Build READ with objects."""
-        obj_header = ObjectHeader.build(
-            group=1, variation=2, prefix=PrefixCode.NONE, range_code=RangeCode.ALL_OBJECTS
-        )
+        obj_header = ObjectHeader.build(group=1, variation=2, prefix=PrefixCode.NONE, range_code=RangeCode.ALL_OBJECTS)
         block = ObjectBlock(header=obj_header)
         fragment = build_read_request(objects=(block,))
         assert fragment.header.function == FunctionCode.READ
@@ -158,26 +156,20 @@ class TestBuildRangeRequest:
 
     def test_1_byte_range(self) -> None:
         """Build request with 1-byte range."""
-        fragment = build_range_request(
-            function=FunctionCode.READ, group=1, variation=2, start=0, stop=10
-        )
+        fragment = build_range_request(function=FunctionCode.READ, group=1, variation=2, start=0, stop=10)
         assert fragment.objects[0].header.range_code == RangeCode.UINT8_START_STOP
         assert fragment.objects[0].data == b"\x00\x0a"
 
     def test_2_byte_range(self) -> None:
         """Build request with 2-byte range."""
-        fragment = build_range_request(
-            function=FunctionCode.READ, group=30, variation=1, start=0, stop=1000
-        )
+        fragment = build_range_request(function=FunctionCode.READ, group=30, variation=1, start=0, stop=1000)
         assert fragment.objects[0].header.range_code == RangeCode.UINT16_START_STOP
         # 1000 = 0x03E8 -> little endian
         assert fragment.objects[0].data == b"\x00\x00\xe8\x03"
 
     def test_4_byte_range(self) -> None:
         """Build request with 4-byte range."""
-        fragment = build_range_request(
-            function=FunctionCode.READ, group=30, variation=1, start=0, stop=100000
-        )
+        fragment = build_range_request(function=FunctionCode.READ, group=30, variation=1, start=0, stop=100000)
         assert fragment.objects[0].header.range_code == RangeCode.UINT32_START_STOP
 
 
@@ -197,9 +189,7 @@ class TestBuildCountRequest:
 
     def test_4_byte_count(self) -> None:
         """Build request with 4-byte count."""
-        fragment = build_count_request(
-            function=FunctionCode.READ, group=2, variation=1, count=100000
-        )
+        fragment = build_count_request(function=FunctionCode.READ, group=2, variation=1, count=100000)
         assert fragment.objects[0].header.range_code == RangeCode.UINT32_COUNT
 
 

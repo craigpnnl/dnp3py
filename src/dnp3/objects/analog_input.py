@@ -423,11 +423,7 @@ class AnalogInputEvent32Time(EventObject):
 
     def to_bytes(self) -> bytes:
         """Serialize to 11 bytes."""
-        return (
-            bytes([int(self.quality)])
-            + self.value.to_bytes(4, "little", signed=True)
-            + self.timestamp.to_bytes()
-        )
+        return bytes([int(self.quality)]) + self.value.to_bytes(4, "little", signed=True) + self.timestamp.to_bytes()
 
     @classmethod
     def from_bytes(cls, data: bytes) -> "AnalogInputEvent32Time":
@@ -473,11 +469,7 @@ class AnalogInputEvent16Time(EventObject):
 
     def to_bytes(self) -> bytes:
         """Serialize to 9 bytes."""
-        return (
-            bytes([int(self.quality)])
-            + self.value.to_bytes(2, "little", signed=True)
-            + self.timestamp.to_bytes()
-        )
+        return bytes([int(self.quality)]) + self.value.to_bytes(2, "little", signed=True) + self.timestamp.to_bytes()
 
     @classmethod
     def from_bytes(cls, data: bytes) -> "AnalogInputEvent16Time":
@@ -582,9 +574,7 @@ class AnalogInputEventFloatTime(EventObject):
 
     def to_bytes(self) -> bytes:
         """Serialize to 11 bytes."""
-        return (
-            bytes([int(self.quality)]) + struct.pack("<f", self.value) + self.timestamp.to_bytes()
-        )
+        return bytes([int(self.quality)]) + struct.pack("<f", self.value) + self.timestamp.to_bytes()
 
     @classmethod
     def from_bytes(cls, data: bytes) -> "AnalogInputEventFloatTime":
@@ -621,9 +611,7 @@ class AnalogInputEventDoubleTime(EventObject):
 
     def to_bytes(self) -> bytes:
         """Serialize to 15 bytes."""
-        return (
-            bytes([int(self.quality)]) + struct.pack("<d", self.value) + self.timestamp.to_bytes()
-        )
+        return bytes([int(self.quality)]) + struct.pack("<d", self.value) + self.timestamp.to_bytes()
 
     @classmethod
     def from_bytes(cls, data: bytes) -> "AnalogInputEventDoubleTime":

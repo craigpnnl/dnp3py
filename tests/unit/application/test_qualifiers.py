@@ -259,9 +259,7 @@ class TestObjectHeaderProperties:
 
     def test_prefix_code_none(self) -> None:
         """Get prefix code NONE."""
-        header = ObjectHeader.build(
-            group=1, variation=1, prefix=PrefixCode.NONE, range_code=RangeCode.UINT8_START_STOP
-        )
+        header = ObjectHeader.build(group=1, variation=1, prefix=PrefixCode.NONE, range_code=RangeCode.UINT8_START_STOP)
         assert header.prefix_code == PrefixCode.NONE
 
     def test_prefix_code_uint8_index(self) -> None:
@@ -276,16 +274,12 @@ class TestObjectHeaderProperties:
 
     def test_range_code_start_stop(self) -> None:
         """Get range code UINT8_START_STOP."""
-        header = ObjectHeader.build(
-            group=1, variation=1, prefix=PrefixCode.NONE, range_code=RangeCode.UINT8_START_STOP
-        )
+        header = ObjectHeader.build(group=1, variation=1, prefix=PrefixCode.NONE, range_code=RangeCode.UINT8_START_STOP)
         assert header.range_code == RangeCode.UINT8_START_STOP
 
     def test_range_code_count(self) -> None:
         """Get range code UINT8_COUNT."""
-        header = ObjectHeader.build(
-            group=1, variation=1, prefix=PrefixCode.NONE, range_code=RangeCode.UINT8_COUNT
-        )
+        header = ObjectHeader.build(group=1, variation=1, prefix=PrefixCode.NONE, range_code=RangeCode.UINT8_COUNT)
         assert header.range_code == RangeCode.UINT8_COUNT
 
     def test_has_prefix_false(self) -> None:

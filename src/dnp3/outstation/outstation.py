@@ -806,9 +806,7 @@ class Outstation:
 
         return self._build_control_response(request, results)
 
-    def _process_crob_operate(
-        self, block: ObjectBlock, seq: int
-    ) -> list[tuple[int, CommandStatus]]:
+    def _process_crob_operate(self, block: ObjectBlock, seq: int) -> list[tuple[int, CommandStatus]]:
         """Process CROB OPERATE."""
         results: list[tuple[int, CommandStatus]] = []
 
@@ -1041,10 +1039,7 @@ class Outstation:
         seq = request.header.control.seq
 
         # Check if this confirms our pending unsolicited
-        if (
-            self._state.unsolicited.pending_confirm
-            and self._state.unsolicited.confirm_sequence == seq
-        ):
+        if self._state.unsolicited.pending_confirm and self._state.unsolicited.confirm_sequence == seq:
             self._state.unsolicited.pending_confirm = False
             self._state.unsolicited.confirm_sequence = -1
 
@@ -1080,11 +1075,7 @@ class Outstation:
         """
         # Check if unsolicited is enabled
         unsolicited = self._state.unsolicited
-        if not (
-            unsolicited.class_1_enabled
-            or unsolicited.class_2_enabled
-            or unsolicited.class_3_enabled
-        ):
+        if not (unsolicited.class_1_enabled or unsolicited.class_2_enabled or unsolicited.class_3_enabled):
             return None
 
         # Check if we're waiting for a confirm

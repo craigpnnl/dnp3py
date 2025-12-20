@@ -171,9 +171,7 @@ class TestCommandHandler:
                 off_time: int,
             ):
                 received_commands.append((index, code))
-                return super().direct_operate_binary_output(
-                    index, code, count, on_time, off_time
-                )
+                return super().direct_operate_binary_output(index, code, count, on_time, off_time)
 
         outstation = Outstation(database=database, handler=TrackingHandler())
         master = Master()

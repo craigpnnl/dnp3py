@@ -111,9 +111,7 @@ class TestBinaryInputFlags:
 
     def test_roundtrip(self) -> None:
         """Serialize then parse returns equivalent object."""
-        original = BinaryInputFlags(
-            quality=BinaryQuality.ONLINE | BinaryQuality.LOCAL_FORCED, state=True
-        )
+        original = BinaryInputFlags(quality=BinaryQuality.ONLINE | BinaryQuality.LOCAL_FORCED, state=True)
         data = original.to_bytes()
         parsed = BinaryInputFlags.from_bytes(data)
         assert parsed == original
@@ -301,53 +299,39 @@ class TestBinaryInputEventRelativeTime:
 
     def test_is_event_object(self) -> None:
         """BinaryInputEventRelativeTime is an EventObject."""
-        obj = BinaryInputEventRelativeTime(
-            quality=BinaryQuality.ONLINE, state=False, relative_time_ms=0
-        )
+        obj = BinaryInputEventRelativeTime(quality=BinaryQuality.ONLINE, state=False, relative_time_ms=0)
         assert isinstance(obj, EventObject)
 
     def test_create_basic(self) -> None:
         """Create binary input event with relative time."""
-        obj = BinaryInputEventRelativeTime(
-            quality=BinaryQuality.ONLINE, state=True, relative_time_ms=1000
-        )
+        obj = BinaryInputEventRelativeTime(quality=BinaryQuality.ONLINE, state=True, relative_time_ms=1000)
         assert obj.quality == BinaryQuality.ONLINE
         assert obj.state is True
         assert obj.relative_time_ms == 1000
 
     def test_relative_time_zero(self) -> None:
         """Relative time 0 is valid."""
-        obj = BinaryInputEventRelativeTime(
-            quality=BinaryQuality.ONLINE, state=False, relative_time_ms=0
-        )
+        obj = BinaryInputEventRelativeTime(quality=BinaryQuality.ONLINE, state=False, relative_time_ms=0)
         assert obj.relative_time_ms == 0
 
     def test_relative_time_max(self) -> None:
         """Relative time 65535 is valid."""
-        obj = BinaryInputEventRelativeTime(
-            quality=BinaryQuality.ONLINE, state=False, relative_time_ms=65535
-        )
+        obj = BinaryInputEventRelativeTime(quality=BinaryQuality.ONLINE, state=False, relative_time_ms=65535)
         assert obj.relative_time_ms == 65535
 
     def test_relative_time_negative_raises(self) -> None:
         """Negative relative time raises error."""
         with pytest.raises(ValueError, match="out of range"):
-            BinaryInputEventRelativeTime(
-                quality=BinaryQuality.ONLINE, state=False, relative_time_ms=-1
-            )
+            BinaryInputEventRelativeTime(quality=BinaryQuality.ONLINE, state=False, relative_time_ms=-1)
 
     def test_relative_time_too_large_raises(self) -> None:
         """Relative time > 65535 raises error."""
         with pytest.raises(ValueError, match="out of range"):
-            BinaryInputEventRelativeTime(
-                quality=BinaryQuality.ONLINE, state=False, relative_time_ms=65536
-            )
+            BinaryInputEventRelativeTime(quality=BinaryQuality.ONLINE, state=False, relative_time_ms=65536)
 
     def test_to_bytes(self) -> None:
         """Serialize event with relative time."""
-        obj = BinaryInputEventRelativeTime(
-            quality=BinaryQuality.ONLINE, state=True, relative_time_ms=0x1234
-        )
+        obj = BinaryInputEventRelativeTime(quality=BinaryQuality.ONLINE, state=True, relative_time_ms=0x1234)
         data = obj.to_bytes()
         assert len(data) == 3
         assert data[0] == 0x81  # ONLINE | STATE
@@ -382,12 +366,8 @@ class TestBinaryInputEventRelativeTime:
         st.booleans(),
         st.integers(min_value=0, max_value=65535),
     )
-    def test_roundtrip_hypothesis(
-        self, quality: BinaryQuality, state: bool, relative_ms: int
-    ) -> None:
+    def test_roundtrip_hypothesis(self, quality: BinaryQuality, state: bool, relative_ms: int) -> None:
         """Property: roundtrip preserves all values."""
-        original = BinaryInputEventRelativeTime(
-            quality=quality, state=state, relative_time_ms=relative_ms
-        )
+        original = BinaryInputEventRelativeTime(quality=quality, state=state, relative_time_ms=relative_ms)
         parsed = BinaryInputEventRelativeTime.from_bytes(original.to_bytes())
         assert parsed == original

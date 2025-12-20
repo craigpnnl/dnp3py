@@ -97,6 +97,7 @@ class TcpClientChannel:
             )
 
             # Configure socket options
+            assert self._writer is not None  # Just assigned above
             sock = self._writer.get_extra_info("socket")
             if sock is not None:
                 self._configure_socket(sock)
@@ -106,14 +107,10 @@ class TcpClientChannel:
 
         except TimeoutError as e:
             self._state = ChannelState.CLOSED
-            raise ChannelTimeoutError(
-                f"Connection to {self.config.host}:{self.config.port} timed out"
-            ) from e
+            raise ChannelTimeoutError(f"Connection to {self.config.host}:{self.config.port} timed out") from e
         except OSError as e:
             self._state = ChannelState.CLOSED
-            raise ChannelConnectionError(
-                f"Failed to connect to {self.config.host}:{self.config.port}: {e}"
-            ) from e
+            raise ChannelConnectionError(f"Failed to connect to {self.config.host}:{self.config.port}: {e}") from e
 
     def _configure_socket(self, sock: socket.socket) -> None:
         """Configure socket options.
@@ -261,9 +258,7 @@ class TcpClientChannel:
             self._statistics.messages_received += 1
             return data
         except asyncio.IncompleteReadError as e:
-            raise ChannelClosedError(
-                f"EOF before reading {num_bytes} bytes (got {len(e.partial)})"
-            ) from e
+            raise ChannelClosedError(f"EOF before reading {num_bytes} bytes (got {len(e.partial)})") from e
         except TimeoutError as e:
             raise ChannelTimeoutError("Read timed out") from e
         except (OSError, ConnectionError) as e:

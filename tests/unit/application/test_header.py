@@ -308,9 +308,7 @@ class TestResponseHeaderCreation:
 
     def test_build_unsolicited(self) -> None:
         """Build unsolicited response."""
-        header = ResponseHeader.build(
-            function=FunctionCode.UNSOLICITED_RESPONSE, uns=True, con=True
-        )
+        header = ResponseHeader.build(function=FunctionCode.UNSOLICITED_RESPONSE, uns=True, con=True)
         assert header.control.uns is True
         assert header.control.con is True
 

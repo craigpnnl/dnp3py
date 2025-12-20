@@ -235,9 +235,7 @@ class StartStopRange:
         Returns:
             4 bytes (start_lo, start_hi, stop_lo, stop_hi).
         """
-        return self.start.to_bytes(2, byteorder="little") + self.stop.to_bytes(
-            2, byteorder="little"
-        )
+        return self.start.to_bytes(2, byteorder="little") + self.stop.to_bytes(2, byteorder="little")
 
     def to_bytes_4(self) -> bytes:
         """Serialize as 4-byte start/stop.
@@ -245,9 +243,7 @@ class StartStopRange:
         Returns:
             8 bytes.
         """
-        return self.start.to_bytes(4, byteorder="little") + self.stop.to_bytes(
-            4, byteorder="little"
-        )
+        return self.start.to_bytes(4, byteorder="little") + self.stop.to_bytes(4, byteorder="little")
 
     @classmethod
     def from_bytes_1(cls, data: bytes) -> "StartStopRange":

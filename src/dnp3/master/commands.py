@@ -132,9 +132,7 @@ class SelectTask(CommandTask):
         """Build CROB object block."""
         # Qualifier: 1-byte count, 1-byte index prefix
         qualifier = (
-            QUALIFIER_1BYTE_INDEX
-            if max(op.index for op in operations) <= MAX_1BYTE_INDEX
-            else QUALIFIER_2BYTE_INDEX
+            QUALIFIER_1BYTE_INDEX if max(op.index for op in operations) <= MAX_1BYTE_INDEX else QUALIFIER_2BYTE_INDEX
         )
 
         data = bytearray()
@@ -166,9 +164,7 @@ class SelectTask(CommandTask):
         """Build analog output object block."""
         # Use 32-bit integer by default
         qualifier = (
-            QUALIFIER_1BYTE_INDEX
-            if max(op.index for op in operations) <= MAX_1BYTE_INDEX
-            else QUALIFIER_2BYTE_INDEX
+            QUALIFIER_1BYTE_INDEX if max(op.index for op in operations) <= MAX_1BYTE_INDEX else QUALIFIER_2BYTE_INDEX
         )
 
         data = bytearray()
@@ -226,9 +222,7 @@ class OperateTask(CommandTask):
     def _build_crob_block(self, operations: list[ControlOperation]) -> ObjectBlock:
         """Build CROB object block."""
         qualifier = (
-            QUALIFIER_1BYTE_INDEX
-            if max(op.index for op in operations) <= MAX_1BYTE_INDEX
-            else QUALIFIER_2BYTE_INDEX
+            QUALIFIER_1BYTE_INDEX if max(op.index for op in operations) <= MAX_1BYTE_INDEX else QUALIFIER_2BYTE_INDEX
         )
         data = bytearray()
         data.append(len(operations))
@@ -255,9 +249,7 @@ class OperateTask(CommandTask):
     def _build_analog_block(self, operations: list[ControlOperation]) -> ObjectBlock:
         """Build analog output object block."""
         qualifier = (
-            QUALIFIER_1BYTE_INDEX
-            if max(op.index for op in operations) <= MAX_1BYTE_INDEX
-            else QUALIFIER_2BYTE_INDEX
+            QUALIFIER_1BYTE_INDEX if max(op.index for op in operations) <= MAX_1BYTE_INDEX else QUALIFIER_2BYTE_INDEX
         )
         data = bytearray()
         data.append(len(operations))
@@ -310,9 +302,7 @@ class DirectOperateTask(CommandTask):
     def _build_crob_block(self, operations: list[ControlOperation]) -> ObjectBlock:
         """Build CROB object block."""
         qualifier = (
-            QUALIFIER_1BYTE_INDEX
-            if max(op.index for op in operations) <= MAX_1BYTE_INDEX
-            else QUALIFIER_2BYTE_INDEX
+            QUALIFIER_1BYTE_INDEX if max(op.index for op in operations) <= MAX_1BYTE_INDEX else QUALIFIER_2BYTE_INDEX
         )
         data = bytearray()
         data.append(len(operations))
@@ -339,9 +329,7 @@ class DirectOperateTask(CommandTask):
     def _build_analog_block(self, operations: list[ControlOperation]) -> ObjectBlock:
         """Build analog output object block."""
         qualifier = (
-            QUALIFIER_1BYTE_INDEX
-            if max(op.index for op in operations) <= MAX_1BYTE_INDEX
-            else QUALIFIER_2BYTE_INDEX
+            QUALIFIER_1BYTE_INDEX if max(op.index for op in operations) <= MAX_1BYTE_INDEX else QUALIFIER_2BYTE_INDEX
         )
         data = bytearray()
         data.append(len(operations))
@@ -447,9 +435,7 @@ class CommandBuilder:
         """
         return self.add_crob(index, ControlCode.LATCH_OFF)
 
-    def pulse_on(
-        self, index: int, on_time: int = 1000, off_time: int = 0, count: int = 1
-    ) -> "CommandBuilder":
+    def pulse_on(self, index: int, on_time: int = 1000, off_time: int = 0, count: int = 1) -> "CommandBuilder":
         """Add a pulse-on operation.
 
         Args:
@@ -463,9 +449,7 @@ class CommandBuilder:
         """
         return self.add_crob(index, ControlCode.PULSE_ON, count, on_time, off_time)
 
-    def pulse_off(
-        self, index: int, on_time: int = 0, off_time: int = 1000, count: int = 1
-    ) -> "CommandBuilder":
+    def pulse_off(self, index: int, on_time: int = 0, off_time: int = 1000, count: int = 1) -> "CommandBuilder":
         """Add a pulse-off operation.
 
         Args:

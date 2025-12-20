@@ -145,9 +145,7 @@ class TestBinaryOutputFlags:
 
     def test_roundtrip(self) -> None:
         """Serialize then parse returns equivalent object."""
-        original = BinaryOutputFlags(
-            quality=BinaryQuality.ONLINE | BinaryQuality.LOCAL_FORCED, state=True
-        )
+        original = BinaryOutputFlags(quality=BinaryQuality.ONLINE | BinaryQuality.LOCAL_FORCED, state=True)
         parsed = BinaryOutputFlags.from_bytes(original.to_bytes())
         assert parsed == original
 

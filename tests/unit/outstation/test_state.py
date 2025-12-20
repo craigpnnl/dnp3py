@@ -312,9 +312,7 @@ class TestOutstationStateManager:
 
     def test_update_event_flags_clears(self) -> None:
         """update_event_flags clears bits when False."""
-        manager = OutstationStateManager(
-            iin=IIN.CLASS_1_EVENTS | IIN.CLASS_2_EVENTS | IIN.CLASS_3_EVENTS
-        )
+        manager = OutstationStateManager(iin=IIN.CLASS_1_EVENTS | IIN.CLASS_2_EVENTS | IIN.CLASS_3_EVENTS)
         manager.update_event_flags(
             class_1_events=False,
             class_2_events=False,

@@ -56,7 +56,7 @@ def _calculate_frame_size(user_data_length: int) -> int:
     return HEADER_SIZE + data_size
 
 
-def _find_start_bytes(data: bytes, start: int = 0) -> int:
+def _find_start_bytes(data: bytes | bytearray, start: int = 0) -> int:
     """Find position of start bytes in data.
 
     Args:

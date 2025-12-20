@@ -246,9 +246,7 @@ class TestRangePollTask:
         stop=st.integers(min_value=0, max_value=255),
     )
     @settings(max_examples=50)
-    def test_property_based_small_range(
-        self, group: int, variation: int, start: int, stop: int
-    ) -> None:
+    def test_property_based_small_range(self, group: int, variation: int, start: int, stop: int) -> None:
         """Test range poll with various small ranges."""
         if start > stop:
             start, stop = stop, start

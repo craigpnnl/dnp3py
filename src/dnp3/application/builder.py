@@ -480,8 +480,8 @@ def build_enable_unsolicited_request(
         )
         blocks.append(ObjectBlock(header=header))
 
-    header = RequestHeader.build(function=FunctionCode.ENABLE_UNSOLICITED, seq=seq)
-    return RequestFragment(header=header, objects=tuple(blocks))
+    req_header = RequestHeader.build(function=FunctionCode.ENABLE_UNSOLICITED, seq=seq)
+    return RequestFragment(header=req_header, objects=tuple(blocks))
 
 
 def build_disable_unsolicited_request(
@@ -527,5 +527,5 @@ def build_disable_unsolicited_request(
         )
         blocks.append(ObjectBlock(header=header))
 
-    header = RequestHeader.build(function=FunctionCode.DISABLE_UNSOLICITED, seq=seq)
-    return RequestFragment(header=header, objects=tuple(blocks))
+    req_header = RequestHeader.build(function=FunctionCode.DISABLE_UNSOLICITED, seq=seq)
+    return RequestFragment(header=req_header, objects=tuple(blocks))

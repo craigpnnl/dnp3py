@@ -5,7 +5,7 @@ the Unix epoch (1970-01-01 00:00:00 UTC).
 """
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 # Milliseconds per second
 _MS_PER_SECOND = 1000
@@ -32,7 +32,7 @@ class DNP3Timestamp:
         """
         seconds = self.milliseconds // _MS_PER_SECOND
         micros = (self.milliseconds % _MS_PER_SECOND) * _MS_PER_SECOND
-        return datetime.fromtimestamp(seconds, tz=timezone.utc).replace(microsecond=micros)
+        return datetime.fromtimestamp(seconds, tz=UTC).replace(microsecond=micros)
 
     @classmethod
     def from_datetime(cls, dt: datetime) -> "DNP3Timestamp":
@@ -56,7 +56,7 @@ class DNP3Timestamp:
         Returns:
             DNP3Timestamp for current UTC time.
         """
-        return cls.from_datetime(datetime.now(timezone.utc))
+        return cls.from_datetime(datetime.now(UTC))
 
     def to_bytes(self) -> bytes:
         """Serialize to 6 bytes (little-endian).

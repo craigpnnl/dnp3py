@@ -344,11 +344,7 @@ class FrozenCounter32Time(StaticObject):
 
     def to_bytes(self) -> bytes:
         """Serialize to 11 bytes."""
-        return (
-            bytes([int(self.quality)])
-            + self.value.to_bytes(4, "little")
-            + self.timestamp.to_bytes()
-        )
+        return bytes([int(self.quality)]) + self.value.to_bytes(4, "little") + self.timestamp.to_bytes()
 
     @classmethod
     def from_bytes(cls, data: bytes) -> "FrozenCounter32Time":
@@ -393,11 +389,7 @@ class FrozenCounter16Time(StaticObject):
 
     def to_bytes(self) -> bytes:
         """Serialize to 9 bytes."""
-        return (
-            bytes([int(self.quality)])
-            + self.value.to_bytes(2, "little")
-            + self.timestamp.to_bytes()
-        )
+        return bytes([int(self.quality)]) + self.value.to_bytes(2, "little") + self.timestamp.to_bytes()
 
     @classmethod
     def from_bytes(cls, data: bytes) -> "FrozenCounter16Time":
@@ -529,11 +521,7 @@ class CounterEvent32Time(EventObject):
 
     def to_bytes(self) -> bytes:
         """Serialize to 11 bytes."""
-        return (
-            bytes([int(self.quality)])
-            + self.value.to_bytes(4, "little")
-            + self.timestamp.to_bytes()
-        )
+        return bytes([int(self.quality)]) + self.value.to_bytes(4, "little") + self.timestamp.to_bytes()
 
     @classmethod
     def from_bytes(cls, data: bytes) -> "CounterEvent32Time":
@@ -578,11 +566,7 @@ class CounterEvent16Time(EventObject):
 
     def to_bytes(self) -> bytes:
         """Serialize to 9 bytes."""
-        return (
-            bytes([int(self.quality)])
-            + self.value.to_bytes(2, "little")
-            + self.timestamp.to_bytes()
-        )
+        return bytes([int(self.quality)]) + self.value.to_bytes(2, "little") + self.timestamp.to_bytes()
 
     @classmethod
     def from_bytes(cls, data: bytes) -> "CounterEvent16Time":

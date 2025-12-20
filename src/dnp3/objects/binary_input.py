@@ -203,9 +203,7 @@ class BinaryInputEventRelativeTime(EventObject):
         """Parse from 3 bytes."""
         required = QUALITY_SIZE + RELATIVE_TIME_SIZE
         if len(data) < required:
-            msg = (
-                f"Binary input event with relative time requires {required} bytes, got {len(data)}"
-            )
+            msg = f"Binary input event with relative time requires {required} bytes, got {len(data)}"
             raise ValueError(msg)
         flags = data[0]
         quality = BinaryQuality(flags & 0x7F)

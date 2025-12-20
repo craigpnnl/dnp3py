@@ -210,11 +210,7 @@ class EventBuffer:
     def __post_init__(self) -> None:
         """Initialize class buffers with config."""
         # Set max sizes based on config (sum of all event types)
-        total_max = (
-            self.config.max_binary_events
-            + self.config.max_analog_events
-            + self.config.max_counter_events
-        )
+        total_max = self.config.max_binary_events + self.config.max_analog_events + self.config.max_counter_events
         self.class1.max_size = total_max
         self.class2.max_size = total_max
         self.class3.max_size = total_max

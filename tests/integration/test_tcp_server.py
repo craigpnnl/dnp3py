@@ -20,7 +20,7 @@ from dnp3.transport_io.channel import (
     TcpServerConfig,
 )
 from dnp3.transport_io.tcp_client import TcpClientChannel
-from dnp3.transport_io.tcp_server import TcpServer, TcpServerChannel
+from dnp3.transport_io.tcp_server import TcpServer
 
 
 @pytest.fixture
@@ -198,7 +198,7 @@ class TestTcpServerConnections:
             data = await asyncio.wait_for(extra_client.read(1), timeout=0.5)
             # Empty data means EOF (connection closed)
             assert data == b""
-        except (ChannelClosedError, ChannelError, asyncio.TimeoutError):
+        except (TimeoutError, ChannelClosedError, ChannelError):
             pass
 
         await extra_client.close()
@@ -319,9 +319,7 @@ class TestTcpServerChannelErrors:
     """Test TCP server channel error handling."""
 
     @pytest.mark.asyncio
-    async def test_read_on_closed_channel(
-        self, server_config: TcpServerConfig
-    ) -> None:
+    async def test_read_on_closed_channel(self, server_config: TcpServerConfig) -> None:
         """Reading from closed channel raises error."""
         server = TcpServer(config=server_config)
         await server.start()
@@ -342,9 +340,7 @@ class TestTcpServerChannelErrors:
         await server.stop()
 
     @pytest.mark.asyncio
-    async def test_write_on_closed_channel(
-        self, server_config: TcpServerConfig
-    ) -> None:
+    async def test_write_on_closed_channel(self, server_config: TcpServerConfig) -> None:
         """Writing to closed channel raises error."""
         server = TcpServer(config=server_config)
         await server.start()
@@ -365,9 +361,7 @@ class TestTcpServerChannelErrors:
         await server.stop()
 
     @pytest.mark.asyncio
-    async def test_read_exactly_on_closed_channel(
-        self, server_config: TcpServerConfig
-    ) -> None:
+    async def test_read_exactly_on_closed_channel(self, server_config: TcpServerConfig) -> None:
         """read_exactly on closed channel raises error."""
         server = TcpServer(config=server_config)
         await server.start()
@@ -413,9 +407,7 @@ class TestTcpServerChannelErrors:
         await server.stop()
 
     @pytest.mark.asyncio
-    async def test_accept_when_not_listening(
-        self, server_config: TcpServerConfig
-    ) -> None:
+    async def test_accept_when_not_listening(self, server_config: TcpServerConfig) -> None:
         """Accept on non-listening server raises error."""
         server = TcpServer(config=server_config)
 
@@ -598,9 +590,7 @@ class TestTcpServerStopWithConnections:
     """Test stopping server with active connections."""
 
     @pytest.mark.asyncio
-    async def test_stop_closes_all_connections(
-        self, server_config: TcpServerConfig
-    ) -> None:
+    async def test_stop_closes_all_connections(self, server_config: TcpServerConfig) -> None:
         """Stopping server closes all active connections."""
         server = TcpServer(config=server_config)
         await server.start()
@@ -636,9 +626,7 @@ class TestTcpServerQueueClearing:
     """Test accept queue clearing on stop."""
 
     @pytest.mark.asyncio
-    async def test_stop_clears_pending_accepts(
-        self, server_config: TcpServerConfig
-    ) -> None:
+    async def test_stop_clears_pending_accepts(self, server_config: TcpServerConfig) -> None:
         """Stopping server clears pending accepts in queue."""
         server = TcpServer(config=server_config)
         await server.start()
@@ -668,9 +656,7 @@ class TestTcpServerConnectionErrors:
     """Test connection error handling."""
 
     @pytest.mark.asyncio
-    async def test_read_after_client_disconnect(
-        self, server_config: TcpServerConfig
-    ) -> None:
+    async def test_read_after_client_disconnect(self, server_config: TcpServerConfig) -> None:
         """Reading after client disconnects returns EOF."""
         server = TcpServer(config=server_config)
         await server.start()
@@ -697,9 +683,7 @@ class TestTcpServerConnectionErrors:
         await server.stop()
 
     @pytest.mark.asyncio
-    async def test_write_after_client_disconnect(
-        self, server_config: TcpServerConfig
-    ) -> None:
+    async def test_write_after_client_disconnect(self, server_config: TcpServerConfig) -> None:
         """Writing after client disconnects raises error."""
         server = TcpServer(config=server_config)
         await server.start()
@@ -735,9 +719,7 @@ class TestTcpClientIntegration:
     """Integration tests for TCP client with server."""
 
     @pytest.mark.asyncio
-    async def test_client_connect_disconnect(
-        self, server_config: TcpServerConfig
-    ) -> None:
+    async def test_client_connect_disconnect(self, server_config: TcpServerConfig) -> None:
         """Client connects and disconnects cleanly."""
         server = TcpServer(config=server_config)
         await server.start()

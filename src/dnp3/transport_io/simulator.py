@@ -36,7 +36,7 @@ class SimulatorChannel:
 
     _state: ChannelState = field(default=ChannelState.CLOSED, init=False)
     _statistics: ChannelStatistics = field(default_factory=ChannelStatistics, init=False)
-    _read_queue: asyncio.Queue[bytes] = field(default=None, init=False)  # type: ignore[assignment]
+    _read_queue: asyncio.Queue[bytes] = field(default=None, init=False)  # type: ignore[arg-type]
     _peer: "SimulatorChannel | None" = field(default=None, init=False)
     _read_buffer: bytes = field(default=b"", init=False)
 
@@ -290,7 +290,7 @@ class SimulatorServer:
     name: str = "server"
 
     _state: ChannelState = field(default=ChannelState.CLOSED, init=False)
-    _accept_queue: asyncio.Queue[SimulatorChannel] = field(default=None, init=False)  # type: ignore[assignment]
+    _accept_queue: asyncio.Queue[SimulatorChannel] = field(default=None, init=False)  # type: ignore[arg-type]
     _connections: list[SimulatorChannel] = field(default_factory=list, init=False)
 
     def __post_init__(self) -> None:

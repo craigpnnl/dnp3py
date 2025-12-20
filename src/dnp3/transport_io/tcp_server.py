@@ -192,9 +192,7 @@ class TcpServerChannel:
             self._statistics.messages_received += 1
             return data
         except asyncio.IncompleteReadError as e:
-            raise ChannelClosedError(
-                f"EOF before reading {num_bytes} bytes (got {len(e.partial)})"
-            ) from e
+            raise ChannelClosedError(f"EOF before reading {num_bytes} bytes (got {len(e.partial)})") from e
         except TimeoutError as e:
             raise ChannelTimeoutError("Read timed out") from e
         except (OSError, ConnectionError) as e:
@@ -232,7 +230,7 @@ class TcpServer:
 
     _state: ChannelState = field(default=ChannelState.CLOSED, init=False)
     _server: asyncio.Server | None = field(default=None, init=False)
-    _accept_queue: asyncio.Queue[TcpServerChannel] = field(default=None, init=False)  # type: ignore[assignment]
+    _accept_queue: asyncio.Queue[TcpServerChannel] = field(default=None, init=False)  # type: ignore[arg-type]
     _connections: list[TcpServerChannel] = field(default_factory=list, init=False)
 
     def __post_init__(self) -> None:
@@ -287,9 +285,7 @@ class TcpServer:
             self._state = ChannelState.OPEN
         except OSError as e:
             self._state = ChannelState.CLOSED
-            raise ChannelError(
-                f"Failed to start server on {self.config.host}:{self.config.port}: {e}"
-            ) from e
+            raise ChannelError(f"Failed to start server on {self.config.host}:{self.config.port}: {e}") from e
 
     async def _handle_connection(
         self,
@@ -303,10 +299,7 @@ class TcpServer:
             writer: Stream writer for the connection.
         """
         # Check max connections
-        if (
-            self.config.max_connections > 0
-            and len(self._connections) >= self.config.max_connections
-        ):
+        if self.config.max_connections > 0 and len(self._connections) >= self.config.max_connections:
             writer.close()
             await writer.wait_closed()
             return

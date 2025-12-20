@@ -160,9 +160,7 @@ class TestUnsolicitedClasses:
         master = Master()
 
         # Enable only Class 1
-        enable_request = master.build_enable_unsolicited(
-            class_1=True, class_2=False, class_3=False
-        )
+        enable_request = master.build_enable_unsolicited(class_1=True, class_2=False, class_3=False)
         outstation.process_request(enable_request.to_bytes())
 
         # Unsolicited should only contain Class 1 events
@@ -185,9 +183,7 @@ class TestUnsolicitedClasses:
         master = Master()
 
         # Enable all classes
-        enable_request = master.build_enable_unsolicited(
-            class_1=True, class_2=True, class_3=True
-        )
+        enable_request = master.build_enable_unsolicited(class_1=True, class_2=True, class_3=True)
         outstation.process_request(enable_request.to_bytes())
 
         unsolicited = outstation.generate_unsolicited()
@@ -231,9 +227,7 @@ class TestDisableUnsolicited:
         outstation.process_request(enable_request.to_bytes())
 
         # Disable only Class 2
-        disable_request = master.build_disable_unsolicited(
-            class_1=False, class_2=True, class_3=False
-        )
+        disable_request = master.build_disable_unsolicited(class_1=False, class_2=True, class_3=False)
         outstation.process_request(disable_request.to_bytes())
 
         # Generate events

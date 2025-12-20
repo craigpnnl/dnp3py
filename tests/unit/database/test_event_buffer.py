@@ -148,9 +148,7 @@ class TestEventBufferConfig:
 
     def test_custom_values(self) -> None:
         """Can set custom limits."""
-        config = EventBufferConfig(
-            max_binary_events=50, max_analog_events=200, max_counter_events=25
-        )
+        config = EventBufferConfig(max_binary_events=50, max_analog_events=200, max_counter_events=25)
         assert config.max_binary_events == 50
         assert config.max_analog_events == 200
         assert config.max_counter_events == 25
@@ -700,9 +698,7 @@ class TestEventBufferPropertyBased:
     @given(st.integers(min_value=1, max_value=10))
     def test_overflow_maintains_max_size(self, max_events: int) -> None:
         """Buffer never exceeds max size even with overflow."""
-        config = EventBufferConfig(
-            max_binary_events=max_events, max_analog_events=0, max_counter_events=0
-        )
+        config = EventBufferConfig(max_binary_events=max_events, max_analog_events=0, max_counter_events=0)
         buffer = EventBuffer(config=config)
 
         # Add many more events than max

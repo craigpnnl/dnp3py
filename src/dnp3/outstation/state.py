@@ -304,9 +304,7 @@ class OutstationStateManager:
         Args:
             timeout: Selection timeout in seconds.
         """
-        expired = [
-            index for index, select in self.select_states.items() if select.is_expired(timeout)
-        ]
+        expired = [index for index, select in self.select_states.items() if select.is_expired(timeout)]
         for index in expired:
             del self.select_states[index]
 

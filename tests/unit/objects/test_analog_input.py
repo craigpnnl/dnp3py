@@ -118,9 +118,7 @@ class TestAnalogInput32:
 
     def test_roundtrip(self) -> None:
         """Serialize then parse returns equivalent object."""
-        original = AnalogInput32(
-            quality=AnalogQuality.ONLINE | AnalogQuality.OVER_RANGE, value=-100000
-        )
+        original = AnalogInput32(quality=AnalogQuality.ONLINE | AnalogQuality.OVER_RANGE, value=-100000)
         parsed = AnalogInput32.from_bytes(original.to_bytes())
         assert parsed == original
 
@@ -623,9 +621,7 @@ class TestAnalogInputEventFloatTime:
     def test_roundtrip_hypothesis(self, value: float, ms: int) -> None:
         """Property: roundtrip preserves value."""
         ts = DNP3Timestamp(milliseconds=ms)
-        original = AnalogInputEventFloatTime(
-            quality=AnalogQuality.ONLINE, value=value, timestamp=ts
-        )
+        original = AnalogInputEventFloatTime(quality=AnalogQuality.ONLINE, value=value, timestamp=ts)
         parsed = AnalogInputEventFloatTime.from_bytes(original.to_bytes())
         assert parsed.value == original.value
         assert parsed.timestamp == original.timestamp
@@ -655,9 +651,7 @@ class TestAnalogInputEventDoubleTime:
     def test_roundtrip_hypothesis(self, value: float, ms: int) -> None:
         """Property: roundtrip preserves value."""
         ts = DNP3Timestamp(milliseconds=ms)
-        original = AnalogInputEventDoubleTime(
-            quality=AnalogQuality.ONLINE, value=value, timestamp=ts
-        )
+        original = AnalogInputEventDoubleTime(quality=AnalogQuality.ONLINE, value=value, timestamp=ts)
         parsed = AnalogInputEventDoubleTime.from_bytes(original.to_bytes())
         assert parsed.value == original.value
         assert parsed.timestamp == original.timestamp

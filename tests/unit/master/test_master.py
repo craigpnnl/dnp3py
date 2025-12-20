@@ -1,6 +1,5 @@
 """Tests for the Master class."""
 
-
 from dnp3.application.fragment import ObjectBlock
 from dnp3.application.qualifiers import ObjectHeader
 from dnp3.core.enums import ControlCode, FunctionCode

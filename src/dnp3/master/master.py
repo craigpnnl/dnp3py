@@ -4,6 +4,7 @@ The Master class handles communication with an outstation,
 including polling, commands, and unsolicited response handling.
 """
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 
 from dnp3.application.builder import (
@@ -93,20 +94,20 @@ class Master:
         polling = self.config.polling
 
         if polling.integrity_poll_interval > 0:
-            task = IntegrityPollTask(interval=polling.integrity_poll_interval)
-            self._scheduler.add_task(task)
+            integrity_task = IntegrityPollTask(interval=polling.integrity_poll_interval)
+            self._scheduler.add_task(integrity_task)
 
         if polling.class_1_poll_interval > 0:
-            task = ClassPollTask(class_1=True, interval=polling.class_1_poll_interval)
-            self._scheduler.add_task(task)
+            class1_task = ClassPollTask(class_1=True, interval=polling.class_1_poll_interval)
+            self._scheduler.add_task(class1_task)
 
         if polling.class_2_poll_interval > 0:
-            task = ClassPollTask(class_2=True, interval=polling.class_2_poll_interval)
-            self._scheduler.add_task(task)
+            class2_task = ClassPollTask(class_2=True, interval=polling.class_2_poll_interval)
+            self._scheduler.add_task(class2_task)
 
         if polling.class_3_poll_interval > 0:
-            task = ClassPollTask(class_3=True, interval=polling.class_3_poll_interval)
-            self._scheduler.add_task(task)
+            class3_task = ClassPollTask(class_3=True, interval=polling.class_3_poll_interval)
+            self._scheduler.add_task(class3_task)
 
     @property
     def state(self) -> MasterState:
@@ -333,7 +334,7 @@ class Master:
 
         return info
 
-    def _parse_response_objects(self, objects: tuple[ObjectBlock, ...], info: ResponseInfo) -> None:
+    def _parse_response_objects(self, objects: Sequence[ObjectBlock], info: ResponseInfo) -> None:
         """Parse response objects and call appropriate handler methods.
 
         Args:
@@ -351,23 +352,17 @@ class Master:
             group = block.header.group
 
             if group in {GROUP_BINARY_INPUT, GROUP_BINARY_INPUT_EVENT}:
-                values = self._parse_binary_values(block)
-                binary_inputs.extend(values)
+                binary_inputs.extend(self._parse_binary_values(block))
             elif group in {GROUP_BINARY_OUTPUT, GROUP_BINARY_OUTPUT_EVENT}:
-                values = self._parse_binary_values(block)
-                binary_outputs.extend(values)
+                binary_outputs.extend(self._parse_binary_values(block))
             elif group in {GROUP_ANALOG_INPUT, GROUP_ANALOG_INPUT_EVENT}:
-                values = self._parse_analog_values(block)
-                analog_inputs.extend(values)
+                analog_inputs.extend(self._parse_analog_values(block))
             elif group in {GROUP_ANALOG_OUTPUT, GROUP_ANALOG_OUTPUT_EVENT}:
-                values = self._parse_analog_values(block)
-                analog_outputs.extend(values)
+                analog_outputs.extend(self._parse_analog_values(block))
             elif group in {GROUP_COUNTER, GROUP_COUNTER_EVENT}:
-                values = self._parse_counter_values(block)
-                counters.extend(values)
+                counters.extend(self._parse_counter_values(block))
             elif group == GROUP_FROZEN_COUNTER:
-                values = self._parse_counter_values(block)
-                frozen_counters.extend(values)
+                frozen_counters.extend(self._parse_counter_values(block))
 
         # Call handler methods
         if binary_inputs:

@@ -96,9 +96,7 @@ class TestControlOperation:
         off_time=st.integers(min_value=0, max_value=2**32 - 1),
     )
     @settings(max_examples=50)
-    def test_property_based_binary(
-        self, index: int, count: int, on_time: int, off_time: int
-    ) -> None:
+    def test_property_based_binary(self, index: int, count: int, on_time: int, off_time: int) -> None:
         """Test binary operation with various values."""
         op = ControlOperation(
             index=index,

@@ -40,9 +40,7 @@ def register(cls: type[T]) -> type[T]:
     key = (cls.GROUP, cls.VARIATION)
     if key in _REGISTRY:
         existing = _REGISTRY[key]
-        msg = (
-            f"Group {cls.GROUP} Variation {cls.VARIATION} already registered to {existing.__name__}"
-        )
+        msg = f"Group {cls.GROUP} Variation {cls.VARIATION} already registered to {existing.__name__}"
         raise ValueError(msg)
 
     _REGISTRY[key] = cls

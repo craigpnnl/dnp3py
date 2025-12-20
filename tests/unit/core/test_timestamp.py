@@ -1,6 +1,6 @@
 """Tests for DNP3 timestamp handling."""
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from dnp3.core.timestamp import DNP3Timestamp
 
@@ -30,17 +30,17 @@ class TestDNP3Timestamp:
         assert dt.hour == 0
         assert dt.minute == 0
         assert dt.second == 0
-        assert dt.tzinfo == timezone.utc
+        assert dt.tzinfo == UTC
 
     def test_from_datetime(self) -> None:
         """Create timestamp from Python datetime."""
-        dt = datetime(2020, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+        dt = datetime(2020, 1, 1, 0, 0, 0, tzinfo=UTC)
         ts = DNP3Timestamp.from_datetime(dt)
         assert ts.milliseconds == 1577836800000
 
     def test_from_datetime_with_microseconds(self) -> None:
         """Microseconds are truncated to milliseconds."""
-        dt = datetime(2020, 1, 1, 0, 0, 0, 500000, tzinfo=timezone.utc)
+        dt = datetime(2020, 1, 1, 0, 0, 0, 500000, tzinfo=UTC)
         ts = DNP3Timestamp.from_datetime(dt)
         # 500000 microseconds = 500 milliseconds
         assert ts.milliseconds == 1577836800500
