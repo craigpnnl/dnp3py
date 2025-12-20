@@ -16,7 +16,7 @@ A pure Python implementation of the DNP3 (IEEE 1815-2012) protocol.
 - **Level 2 Subset** - RTU-class functionality for SCADA applications
 - **Async I/O** - Built on asyncio for efficient network communication
 - **Type Safe** - Full type annotations with strict mypy compliance
-- **Well Tested** - 99% code coverage with 1,896 tests
+- **Well Tested** - Comprehensive test suite with 98%+ code coverage
 
 ## Installation
 
