@@ -1,5 +1,13 @@
 # dnp3py
 
+[![CI](https://github.com/craig8/dnp3py/actions/workflows/ci.yml/badge.svg)](https://github.com/craig8/dnp3py/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/craig8/dnp3py/graph/badge.svg)](https://codecov.io/gh/craig8/dnp3py)
+[![PyPI version](https://img.shields.io/pypi/v/dnp3py.svg)](https://pypi.org/project/dnp3py/)
+[![Python versions](https://img.shields.io/pypi/pyversions/dnp3py.svg)](https://pypi.org/project/dnp3py/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
+[![Checked with mypy](https://www.mypy-lang.org/static/mypy_badge.svg)](https://mypy-lang.org/)
+
 A pure Python implementation of the DNP3 (IEEE 1815-2012) protocol.
 
 ## Features
@@ -118,6 +126,13 @@ pixi run test-cov
 
 # Lint and type check
 pixi run check
+
+# Test with specific Python version
+pixi run -e py310 test
+pixi run -e py312 test
+
+# Test all Python versions (via nox)
+pixi run nox
 ```
 
 ### Project Structure

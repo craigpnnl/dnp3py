@@ -104,3 +104,26 @@ jobs:
         with:
           name: dist
           path: dist/
+
+  # Final check for branch protection - requires all jobs to pass
+  check:
+    name: CI Check
+    if: always()
+    needs: [test, quality, build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify all jobs passed
+        run: |
+          if [ "${{ needs.test.result }}" != "success" ]; then
+            echo "Test job failed"
+            exit 1
+          fi
+          if [ "${{ needs.quality.result }}" != "success" ]; then
+            echo "Quality job failed"
+            exit 1
+          fi
+          if [ "${{ needs.build.result }}" != "success" ]; then
+            echo "Build job failed"
+            exit 1
+          fi
+          echo "All checks passed!"
