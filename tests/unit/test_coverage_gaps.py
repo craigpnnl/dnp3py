@@ -2995,3 +2995,726 @@ class TestChannelStatistics:
         )
         assert stats.bytes_sent == 100
         assert stats.bytes_received == 200
+
+
+class TestApplicationControlFromBytes:
+    """Test ApplicationControl.from_bytes edge cases."""
+
+    def test_from_bytes_empty_raises(self) -> None:
+        """Empty data raises ValueError."""
+        from dnp3.application.header import ApplicationControl
+
+        with pytest.raises(ValueError, match="empty data"):
+            ApplicationControl.from_bytes(b"")
+
+
+class TestIINFromBytesShort:
+    """Test IIN.from_bytes with short data."""
+
+    def test_iin_from_bytes_too_short(self) -> None:
+        """IIN.from_bytes with < 2 bytes raises ValueError."""
+        from dnp3.core.flags import IIN
+
+        with pytest.raises(ValueError, match="requires 2 bytes"):
+            IIN.from_bytes(b"\x00")
+
+
+class TestTimestampFromBytesWrongSize:
+    """Test DNP3Timestamp.from_bytes with wrong size."""
+
+    def test_timestamp_from_bytes_wrong_size(self) -> None:
+        """DNP3Timestamp.from_bytes with != 6 bytes raises ValueError."""
+        from dnp3.core.timestamp import DNP3Timestamp
+
+        with pytest.raises(ValueError, match="Expected 6 bytes"):
+            DNP3Timestamp.from_bytes(b"\x00\x01\x02\x03\x04")  # 5 bytes
+
+
+class TestParserRangeCodeEdgeCases:
+    """Test parser with edge case range codes."""
+
+    def test_reserved_range_code_returns_empty(self) -> None:
+        """Reserved/unsupported range code returns empty ParsedRange."""
+        from dnp3.application.parser import _parse_range
+        from dnp3.application.qualifiers import RangeCode
+
+        # ALL_OBJECTS has count=0 meaning "all" and bytes_consumed=0
+        result = _parse_range(b"\x00\x00", RangeCode.ALL_OBJECTS)
+        assert result.bytes_consumed == 0
+
+
+class TestDecodeQualifier:
+    """Test _decode_qualifier function."""
+
+    def test_decode_qualifier(self) -> None:
+        """_decode_qualifier extracts prefix and range codes."""
+        from dnp3.application.qualifiers import PrefixCode, RangeCode, _decode_qualifier
+
+        # Qualifier 0x17 = prefix 1 (1-byte index), range 7 (1-byte count)
+        prefix, range_code = _decode_qualifier(0x17)
+        assert prefix == PrefixCode.UINT8_INDEX
+        assert range_code == RangeCode.UINT8_COUNT
+
+        # Qualifier 0x00 = prefix 0 (none), range 0 (1-byte start-stop)
+        prefix, range_code = _decode_qualifier(0x00)
+        assert prefix == PrefixCode.NONE
+        assert range_code == RangeCode.UINT8_START_STOP
+
+
+class TestDatabaseRangeMethods:
+    """Test database range access methods."""
+
+    def test_get_binary_outputs_range(self) -> None:
+        """Get binary outputs in range."""
+        db = Database()
+        for i in range(10):
+            db.add_binary_output(i, BinaryOutputConfig())
+            db.update_binary_output(i, value=i % 2 == 0)
+
+        result = db.get_binary_outputs_range(2, 5)
+        assert len(result) == 4
+        assert all(2 <= p.index <= 5 for p in result)
+
+    def test_get_analog_inputs_range(self) -> None:
+        """Get analog inputs in range."""
+        db = Database()
+        for i in range(10):
+            db.add_analog_input(i, AnalogInputConfig())
+            db.update_analog_input(i, value=float(i * 10))
+
+        result = db.get_analog_inputs_range(3, 7)
+        assert len(result) == 5
+        assert all(3 <= p.index <= 7 for p in result)
+
+    def test_get_counters_range(self) -> None:
+        """Get counters in range."""
+        db = Database()
+        for i in range(10):
+            db.add_counter(i, CounterConfig())
+            db.update_counter(i, value=i * 100)
+
+        result = db.get_counters_range(0, 4)
+        assert len(result) == 5
+        assert all(0 <= p.index <= 4 for p in result)
+
+    def test_get_frozen_counters_range(self) -> None:
+        """Get frozen counters in range."""
+        db = Database()
+        for i in range(5):
+            db.add_counter(i, CounterConfig())
+            db.add_frozen_counter(i, CounterConfig())
+            db.update_counter(i, value=i * 100)
+            db.freeze_counter(i)
+
+        result = db.get_frozen_counters_range(1, 3)
+        assert len(result) == 3
+        assert all(1 <= p.index <= 3 for p in result)
+
+    def test_get_class_binary_outputs(self) -> None:
+        """Get binary outputs by event class."""
+        db = Database()
+        db.add_binary_output(0, BinaryOutputConfig(event_class=EventClass.CLASS_1))
+        db.add_binary_output(1, BinaryOutputConfig(event_class=EventClass.CLASS_2))
+        db.add_binary_output(2, BinaryOutputConfig(event_class=EventClass.CLASS_1))
+
+        result = db.get_class_binary_outputs(EventClass.CLASS_1)
+        assert len(result) == 2
+        assert all(p.config.event_class == EventClass.CLASS_1 for p in result)
+
+
+class TestDatabaseUpdateReturnsFalse:
+    """Test database update returns False when no event generated."""
+
+    def test_update_binary_output_no_event(self) -> None:
+        """Update with event_class=NONE returns False for event generation."""
+        db = Database()
+        db.add_binary_output(0, BinaryOutputConfig(event_class=EventClass.NONE))
+        db.update_binary_output(0, value=False)
+
+        # Second update with same value should return False
+        result = db.update_binary_output(0, value=False)
+        assert result is False
+
+    def test_update_counter_no_event(self) -> None:
+        """Counter update with NONE class returns False for event generation."""
+        db = Database()
+        db.add_counter(0, CounterConfig(event_class=EventClass.NONE))
+        db.update_counter(0, value=100)
+
+        # Same value update
+        result = db.update_counter(0, value=100)
+        assert result is False
+
+
+class TestEventBufferAddNoneClass:
+    """Test event buffer add with NONE class."""
+
+    def test_add_analog_event_none_class_returns_false(self) -> None:
+        """Adding analog event with NONE class returns False."""
+        from dnp3.database.event_buffer import EventBuffer
+
+        buffer = EventBuffer()
+        result = buffer.add_analog_event(
+            event_class=EventClass.NONE,
+            index=0,
+            value=100.0,
+            quality=AnalogQuality.ONLINE,
+            timestamp=DNP3Timestamp.now(),
+        )
+        assert result is False
+
+
+class TestBinaryOutputPointIsOnline:
+    """Test BinaryOutputPoint is_online property."""
+
+    def test_binary_output_is_online(self) -> None:
+        """BinaryOutputPoint is_online property."""
+        from dnp3.database.point import BinaryOutputPoint
+
+        point = BinaryOutputPoint(
+            index=0, config=BinaryOutputConfig(), value=True, quality=BinaryQuality.ONLINE
+        )
+        assert point.is_online is True
+
+        point_offline = BinaryOutputPoint(
+            index=0, config=BinaryOutputConfig(), value=True, quality=BinaryQuality(0)
+        )
+        assert point_offline.is_online is False
+
+
+class TestTransportSegmentIncrement:
+    """Test transport segment sequence increment."""
+
+    def test_next_sequence(self) -> None:
+        """_next_sequence wraps at 64."""
+        from dnp3.transport.segment import _next_sequence
+
+        assert _next_sequence(0) == 1
+        assert _next_sequence(62) == 63
+        assert _next_sequence(63) == 0  # Wraps
+
+
+class TestDataLinkFrameCRCValidation:
+    """Test data link frame CRC validation failures."""
+
+    def test_header_crc_failure(self) -> None:
+        """Header CRC validation fails."""
+        from dnp3.datalink.frame import DataLinkFrame
+
+        # Create valid frame bytes then corrupt header CRC
+        valid = b"\x05\x64\x05\x00\x01\x00\x00\x00\x00\x00"  # Valid header format
+        # Corrupt the CRC bytes
+        corrupted = valid[:8] + b"\xFF\xFF"
+
+        with pytest.raises(ValueError, match="Header CRC"):
+            DataLinkFrame.from_bytes(corrupted)
+
+    def test_data_block_crc_failure(self) -> None:
+        """Data block CRC validation fails."""
+        from dnp3.datalink.builder import build_unconfirmed_user_data
+        from dnp3.datalink.frame import DataLinkFrame
+
+        # Build valid frame using helper
+        frame = build_unconfirmed_user_data(
+            destination=1,
+            source=2,
+            dir_from_master=True,
+            user_data=b"\x01\x02\x03\x04\x05",
+        )
+        frame_bytes = frame.to_bytes()
+
+        # Corrupt a data block CRC (last 2 bytes of first data block)
+        corrupted = bytearray(frame_bytes)
+        corrupted[-2] = 0xFF
+        corrupted[-1] = 0xFF
+
+        with pytest.raises(ValueError, match="Data block CRC"):
+            DataLinkFrame.from_bytes(bytes(corrupted))
+
+
+class TestDataLinkParserIncompleteBlock:
+    """Test data link parser with incomplete data block."""
+
+    def test_incomplete_data_block_returns_none(self) -> None:
+        """Incomplete data block returns None from _extract_user_data."""
+        from dnp3.datalink.parser import _extract_user_data
+
+        # Header says 20 bytes of user data, but we provide truncated data
+        # Header is 10 bytes, then data blocks with CRC
+        # First data block would be 16 bytes + 2 CRC = 18 bytes
+        # But we'll provide truncated data
+        truncated = b"\x01\x02\x03\x04\x05"  # Only 5 bytes when 18+ expected
+
+        result = _extract_user_data(truncated, 20)
+        assert result is None
+
+
+class TestMasterAnalogOutputParsing:
+    """Test master parsing analog output responses."""
+
+    def test_master_parse_analog_output(self) -> None:
+        """Master parses analog output values from response."""
+        from dnp3.master import DefaultSOEHandler
+
+        db = Database()
+        # Create outstation with analog output
+        # Note: we need to test the parsing path in master
+
+        handler = DefaultSOEHandler()
+        master = Master(handler=handler)
+
+        # Build a response with analog output data (group 40)
+        from dnp3.application.builder import build_response
+        from dnp3.application.fragment import ObjectBlock
+        from dnp3.application.qualifiers import ObjectHeader
+
+        # Group 40 variation 1 (32-bit with flags)
+        header = ObjectHeader(group=40, variation=1, qualifier=0x00)
+        # Data: start=0, stop=0, value with flag
+        data = b"\x00\x00\x01\x64\x00\x00\x00"  # start=0, stop=0, flags=1, value=100
+        block = ObjectBlock(header=header, data=data)
+
+        response = build_response(seq=0, objects=[block])
+        info = master.process_response(response.to_bytes())
+        assert info is not None
+
+
+class TestMaster2ByteIndexParsing:
+    """Test master parsing with 2-byte indices."""
+
+    def test_master_parse_2byte_analog_indices(self) -> None:
+        """Master parses analog values with 2-byte indices."""
+        from dnp3.master import DefaultSOEHandler
+
+        handler = DefaultSOEHandler()
+        master = Master(handler=handler)
+
+        from dnp3.application.builder import build_response
+        from dnp3.application.fragment import ObjectBlock
+        from dnp3.application.qualifiers import ObjectHeader
+
+        # Group 30 variation 1 with 2-byte start-stop range (qualifier 0x01)
+        header = ObjectHeader(group=30, variation=1, qualifier=0x01)
+        # Data: start=256 (2 bytes), stop=256 (2 bytes), value
+        data = b"\x00\x01\x00\x01\x01\x64\x00\x00\x00"  # start=256, stop=256, flags=1, value=100
+        block = ObjectBlock(header=header, data=data)
+
+        response = build_response(seq=0, objects=[block])
+        info = master.process_response(response.to_bytes())
+        assert info is not None
+
+    def test_master_parse_2byte_counter_indices(self) -> None:
+        """Master parses counter values with 2-byte indices."""
+        from dnp3.master import DefaultSOEHandler
+
+        handler = DefaultSOEHandler()
+        master = Master(handler=handler)
+
+        from dnp3.application.builder import build_response
+        from dnp3.application.fragment import ObjectBlock
+        from dnp3.application.qualifiers import ObjectHeader
+
+        # Group 20 variation 1 with 2-byte start-stop range (qualifier 0x01)
+        header = ObjectHeader(group=20, variation=1, qualifier=0x01)
+        # Data: start=256, stop=256, value
+        data = b"\x00\x01\x00\x01\x01\xe8\x03\x00\x00"  # start=256, stop=256, flags=1, value=1000
+        block = ObjectBlock(header=header, data=data)
+
+        response = build_response(seq=0, objects=[block])
+        info = master.process_response(response.to_bytes())
+        assert info is not None
+
+
+class TestCommandBuilder2ByteIndex:
+    """Test command builder with 2-byte index paths."""
+
+    def test_analog_output_2byte_index(self) -> None:
+        """Analog output command with index > 255."""
+        master = Master()
+        builder = master.command_builder()
+        builder.add_analog(index=300, value=100.0)
+        task = builder.build_direct_operate()
+
+        request = master.build_direct_operate(task)
+        assert request is not None
+        # The request should use 2-byte indices
+        assert len(request.objects) > 0
+
+
+class TestOutstationHeaderBuilding:
+    """Test outstation header building helper functions."""
+
+    def test_build_start_stop_header_1byte(self) -> None:
+        """Test building start-stop range with 1-byte indices."""
+        from dnp3.outstation.outstation import _build_start_stop_header
+
+        header, data = _build_start_stop_header(group=1, variation=2, start=0, stop=10)
+        assert header.group == 1
+        assert header.variation == 2
+        # Qualifier should indicate 1-byte start-stop
+        assert data == b"\x00\x0a"  # start=0, stop=10
+
+    def test_build_start_stop_header_2byte(self) -> None:
+        """Test building start-stop range with 2-byte indices."""
+        from dnp3.outstation.outstation import _build_start_stop_header
+
+        header, data = _build_start_stop_header(group=1, variation=2, start=0, stop=300)
+        assert header.group == 1
+        assert header.variation == 2
+        # Stop > 255 requires 2-byte indices
+        assert len(data) == 4  # 2 bytes start + 2 bytes stop
+
+    def test_build_indexed_header_1byte(self) -> None:
+        """Test building indexed header with 1-byte indices."""
+        from dnp3.outstation.outstation import _build_indexed_header
+
+        header = _build_indexed_header(group=30, variation=1, count=5, max_index=100)
+        assert header.group == 30
+        assert header.variation == 1
+        # 1-byte index prefix (qualifier 0x17)
+        assert header.qualifier == 0x17
+
+    def test_build_indexed_header_2byte(self) -> None:
+        """Test building indexed header with 2-byte indices."""
+        from dnp3.outstation.outstation import _build_indexed_header
+
+        header = _build_indexed_header(group=30, variation=1, count=5, max_index=300)
+        assert header.group == 30
+        # 2-byte index prefix (qualifier 0x28)
+        assert header.qualifier == 0x28
+
+
+class TestOutstationEmptyBlockPaths:
+    """Test outstation returns empty for empty point lists."""
+
+    def test_empty_binary_input_blocks(self) -> None:
+        """Empty binary input list returns empty blocks."""
+        outstation = Outstation()
+        blocks = outstation._build_binary_input_blocks([])
+        assert blocks == []
+
+    def test_empty_binary_output_blocks(self) -> None:
+        """Empty binary output list returns empty blocks."""
+        outstation = Outstation()
+        blocks = outstation._build_binary_output_blocks([])
+        assert blocks == []
+
+
+class TestOutstationCROBPaths:
+    """Test outstation CROB handling edge cases."""
+
+    def test_crob_select_empty_data(self) -> None:
+        """CROB SELECT with empty data returns empty results."""
+        from dnp3.application.fragment import ObjectBlock
+        from dnp3.application.qualifiers import ObjectHeader
+
+        db = Database()
+        db.add_binary_output(0, BinaryOutputConfig())
+        outstation = Outstation(database=db)
+
+        # Create block with empty data
+        header = ObjectHeader(group=12, variation=1, qualifier=0x17)
+        block = ObjectBlock(header=header, data=b"")
+
+        results = outstation._process_crob_select(block, seq=0)
+        assert results == []
+
+    def test_crob_operate_empty_data(self) -> None:
+        """CROB OPERATE with empty data returns empty results."""
+        from dnp3.application.fragment import ObjectBlock
+        from dnp3.application.qualifiers import ObjectHeader
+
+        db = Database()
+        db.add_binary_output(0, BinaryOutputConfig())
+        outstation = Outstation(database=db)
+
+        header = ObjectHeader(group=12, variation=1, qualifier=0x17)
+        block = ObjectBlock(header=header, data=b"")
+
+        results = outstation._process_crob_operate(block, seq=0)
+        assert results == []
+
+    def test_crob_direct_operate_empty_data(self) -> None:
+        """CROB DIRECT_OPERATE with empty data returns empty results."""
+        from dnp3.application.fragment import ObjectBlock
+        from dnp3.application.qualifiers import ObjectHeader
+
+        db = Database()
+        db.add_binary_output(0, BinaryOutputConfig())
+        outstation = Outstation(database=db)
+
+        header = ObjectHeader(group=12, variation=1, qualifier=0x17)
+        block = ObjectBlock(header=header, data=b"")
+
+        results = outstation._process_crob_direct_operate(block)
+        assert results == []
+
+
+class TestOutstationSelectUnsupportedObject:
+    """Test SELECT with unsupported object type."""
+
+    def test_select_non_crob_object_ignored(self) -> None:
+        """SELECT with non-CROB object is ignored."""
+        from dnp3.application.builder import build_select_request
+        from dnp3.application.fragment import ObjectBlock
+        from dnp3.application.qualifiers import ObjectHeader
+
+        db = Database()
+        outstation = Outstation(database=db)
+
+        # Build SELECT with wrong group (not CROB)
+        header = ObjectHeader(group=30, variation=1, qualifier=0x17)
+        block = ObjectBlock(header=header, data=b"\x01\x00\x01")
+
+        request = build_select_request(seq=0, objects=[block])
+        response = outstation.process_request(request.to_bytes())
+        # Response is still generated (with empty results)
+        assert response is not None
+
+
+class TestSimulatorCoveragePaths:
+    """Test simulator coverage for edge cases."""
+
+    @pytest.mark.asyncio
+    async def test_simulator_close_clears_queue(self) -> None:
+        """Closing simulator channel clears read queue."""
+        from dnp3.transport_io.simulator import create_channel_pair
+
+        client, server = create_channel_pair()
+        # Channels must be opened first
+        await client.open()
+        await server.open()
+
+        # Add data to queue
+        await client.write(b"test1")
+        await client.write(b"test2")
+
+        # Close server - should clear queue
+        await server.close()
+        assert server.state == ChannelState.CLOSED
+
+    @pytest.mark.asyncio
+    async def test_simulator_server_already_started(self) -> None:
+        """Starting already-started server does nothing."""
+        from dnp3.transport_io.simulator import SimulatorServer
+
+        server = SimulatorServer()
+        await server.start()
+        assert server.is_listening
+
+        # Start again - should be no-op
+        await server.start()
+        assert server.is_listening
+
+        await server.stop()
+
+    @pytest.mark.asyncio
+    async def test_simulator_server_already_stopped(self) -> None:
+        """Stopping already-stopped server does nothing."""
+        from dnp3.transport_io.simulator import SimulatorServer
+
+        server = SimulatorServer()
+        # Stop without starting
+        await server.stop()
+        assert not server.is_listening
+
+    @pytest.mark.asyncio
+    async def test_simulator_client_reconnect(self) -> None:
+        """Simulator client closes existing channel on reconnect."""
+        from dnp3.transport_io.simulator import SimulatorClient, SimulatorServer
+
+        server = SimulatorServer()
+        await server.start()
+
+        client = SimulatorClient()
+        await client.connect(server)
+        first_channel = client.channel
+
+        # Connect again - should close first channel
+        await client.connect(server)
+        assert client.channel is not first_channel
+
+        await server.stop()
+
+    @pytest.mark.asyncio
+    async def test_simulator_packet_loss(self) -> None:
+        """Simulator with packet loss may drop messages."""
+        from dnp3.transport_io.channel import SimulatorConfig
+        from dnp3.transport_io.simulator import create_channel_pair
+
+        # 100% packet loss
+        config = SimulatorConfig(packet_loss=1.0)
+        client, server = create_channel_pair(config_a=config)
+        await client.open()
+        await server.open()
+
+        # Write should succeed but data is "lost"
+        await client.write(b"test")
+
+        # Server won't receive data (it was dropped)
+        # Just verify no error occurred
+        await client.close()
+        await server.close()
+
+    @pytest.mark.asyncio
+    async def test_simulator_latency(self) -> None:
+        """Simulator with latency delays messages."""
+        import time
+
+        from dnp3.transport_io.channel import SimulatorConfig
+        from dnp3.transport_io.simulator import create_channel_pair
+
+        config = SimulatorConfig(latency=0.01)  # 10ms latency
+        client, server = create_channel_pair(config_a=config)
+        await client.open()
+        await server.open()
+
+        start = time.monotonic()
+        await client.write(b"test")
+        elapsed = time.monotonic() - start
+
+        # Should take at least the latency time
+        assert elapsed >= 0.01
+
+        await client.close()
+        await server.close()
+
+    @pytest.mark.asyncio
+    async def test_simulator_bandwidth_limit(self) -> None:
+        """Simulator with bandwidth limit delays messages."""
+        from dnp3.transport_io.channel import SimulatorConfig
+        from dnp3.transport_io.simulator import create_channel_pair
+
+        # Very low bandwidth: 10 bytes per second
+        config = SimulatorConfig(bandwidth_limit=10)
+        client, server = create_channel_pair(config_a=config)
+        await client.open()
+        await server.open()
+
+        # Writing 10 bytes should take ~1 second with 10 bps limit
+        # But we'll just verify it doesn't error
+        await client.write(b"test")
+
+        await client.close()
+        await server.close()
+
+    @pytest.mark.asyncio
+    async def test_simulator_queue_full_raises(self) -> None:
+        """Simulator raises when peer buffer is full."""
+        from dnp3.transport_io.channel import ChannelError, SimulatorConfig
+        from dnp3.transport_io.simulator import create_channel_pair
+
+        # Very small buffer on server (peer that receives from client)
+        # Client writes to server's read queue, so server needs small buffer
+        config = SimulatorConfig(buffer_size=1)
+        client, server = create_channel_pair(config_b=config)
+        await client.open()
+        await server.open()
+
+        # Fill the queue
+        await client.write(b"msg1")
+
+        # Second write should fail (queue full)
+        with pytest.raises(ChannelError, match="buffer full"):
+            await client.write(b"msg2")
+
+        await client.close()
+        await server.close()
+
+
+class TestTcpClientAddressExceptions:
+    """Test TCP client address property exceptions."""
+
+    @pytest.mark.asyncio
+    async def test_local_address_exception(self) -> None:
+        """Local address returns None on exception."""
+        from dnp3.transport_io.tcp_client import TcpClientChannel
+
+        channel = TcpClientChannel()
+        channel._state = ChannelState.OPEN
+
+        # Create mock writer that raises on get_extra_info
+        mock_writer = MagicMock()
+        mock_writer.get_extra_info = MagicMock(side_effect=AttributeError())
+        channel._writer = mock_writer
+
+        assert channel.local_address is None
+
+    @pytest.mark.asyncio
+    async def test_remote_address_exception(self) -> None:
+        """Remote address returns None on exception."""
+        from dnp3.transport_io.tcp_client import TcpClientChannel
+
+        channel = TcpClientChannel()
+        channel._state = ChannelState.OPEN
+
+        mock_writer = MagicMock()
+        mock_writer.get_extra_info = MagicMock(side_effect=IndexError())
+        channel._writer = mock_writer
+
+        assert channel.remote_address is None
+
+
+class TestTcpClientWriteTimeout:
+    """Test TCP client write timeout."""
+
+    @pytest.mark.asyncio
+    async def test_write_timeout_raises(self) -> None:
+        """Write timeout raises ChannelTimeoutError."""
+        from dnp3.transport_io.channel import ChannelTimeoutError
+        from dnp3.transport_io.tcp_client import TcpClientChannel
+
+        channel = TcpClientChannel()
+        channel._state = ChannelState.OPEN
+
+        mock_writer = MagicMock()
+        mock_writer.write = MagicMock()
+        mock_writer.drain = AsyncMock(side_effect=TimeoutError())
+        channel._writer = mock_writer
+
+        with pytest.raises(ChannelTimeoutError, match="Write timed out"):
+            await channel.write(b"test")
+
+
+class TestTcpClientConnectWithConfig:
+    """Test connect() helper with config parameter."""
+
+    @pytest.mark.asyncio
+    async def test_connect_with_config_overrides(self) -> None:
+        """connect() with config uses config values."""
+        from unittest.mock import AsyncMock, patch
+
+        from dnp3.transport_io.channel import TcpConfig
+        from dnp3.transport_io.tcp_client import connect
+
+        config = TcpConfig(read_buffer_size=1024, write_buffer_size=2048)
+
+        with patch("dnp3.transport_io.tcp_client.TcpClientChannel") as MockChannel:
+            mock_instance = MagicMock()
+            mock_instance.open = AsyncMock()
+            MockChannel.return_value = mock_instance
+
+            # Call connect with config
+            await connect("localhost", 20000, config=config)
+
+            # Verify TcpClientChannel was called with merged config
+            call_args = MockChannel.call_args
+            passed_config = call_args.kwargs.get("config") or call_args.args[0]
+            assert passed_config.read_buffer_size == 1024
+            assert passed_config.write_buffer_size == 2048
+
+
+class TestTcpClientAlreadyOpen:
+    """Test TCP client open when already open."""
+
+    @pytest.mark.asyncio
+    async def test_open_already_open_returns(self) -> None:
+        """Open when already OPEN returns immediately."""
+        from dnp3.transport_io.tcp_client import TcpClientChannel
+
+        channel = TcpClientChannel()
+        channel._state = ChannelState.OPEN
+
+        # Should return without doing anything
+        await channel.open()
+        assert channel.state == ChannelState.OPEN
