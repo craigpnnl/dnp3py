@@ -118,6 +118,9 @@ cd dnp3py
 pixi install
 pixi run dev-install
 
+# Set up pre-commit hooks (enforces quality checks before commits)
+pixi run pre-commit-install
+
 # Run tests
 pixi run test
 
