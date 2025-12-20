@@ -3718,3 +3718,95 @@ class TestTcpClientAlreadyOpen:
         # Should return without doing anything
         await channel.open()
         assert channel.state == ChannelState.OPEN
+
+
+class TestChannelStatisticsReset:
+    """Test ChannelStatistics.reset method."""
+
+    def test_reset_clears_all_fields(self) -> None:
+        """Reset clears all statistics fields to zero."""
+        from dnp3.transport_io.channel import ChannelStatistics
+
+        stats = ChannelStatistics(
+            bytes_sent=100,
+            bytes_received=200,
+            messages_sent=10,
+            messages_received=20,
+            errors=5,
+            connect_count=3,
+            disconnect_count=2,
+        )
+
+        stats.reset()
+
+        assert stats.bytes_sent == 0
+        assert stats.bytes_received == 0
+        assert stats.messages_sent == 0
+        assert stats.messages_received == 0
+        assert stats.errors == 0
+        assert stats.connect_count == 0
+        assert stats.disconnect_count == 0
+
+
+class TestOutstationEmptyBlockPathsMore:
+    """Test more empty block paths in outstation."""
+
+    def test_empty_analog_input_blocks(self) -> None:
+        """Empty analog input list returns empty blocks."""
+        outstation = Outstation()
+        blocks = outstation._build_analog_input_blocks([])
+        assert blocks == []
+
+    def test_empty_counter_blocks(self) -> None:
+        """Empty counter list returns empty blocks."""
+        outstation = Outstation()
+        blocks = outstation._build_counter_blocks([])
+        assert blocks == []
+
+    def test_empty_frozen_counter_blocks(self) -> None:
+        """Empty frozen counter list returns empty blocks."""
+        outstation = Outstation()
+        blocks = outstation._build_frozen_counter_blocks([])
+        assert blocks == []
+
+
+class TestSimulatorChannelOpen:
+    """Test simulator channel open behavior."""
+
+    @pytest.mark.asyncio
+    async def test_simulator_open_already_open_returns(self) -> None:
+        """Opening an already-open channel returns immediately."""
+        from dnp3.transport_io.simulator import SimulatorChannel
+
+        channel = SimulatorChannel()
+        await channel.open()
+        assert channel.is_open
+
+        # Open again - should be no-op
+        await channel.open()
+        assert channel.is_open
+
+        await channel.close()
+
+
+class TestSimulatorServerQueueClear:
+    """Test simulator server accept queue clearing."""
+
+    @pytest.mark.asyncio
+    async def test_server_stop_clears_accept_queue(self) -> None:
+        """Stopping server clears the accept queue."""
+        from dnp3.transport_io.simulator import SimulatorClient, SimulatorServer
+
+        server = SimulatorServer()
+        await server.start()
+
+        # Add some connections to the queue
+        client1 = SimulatorClient()
+        await client1.connect(server)
+        client2 = SimulatorClient()
+        await client2.connect(server)
+
+        # Stop server - should clear accept queue and connections
+        await server.stop()
+        assert not server.is_listening
+        assert server.connection_count == 0
