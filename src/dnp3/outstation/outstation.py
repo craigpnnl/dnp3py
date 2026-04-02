@@ -4,6 +4,7 @@ The Outstation class handles incoming requests from a master station,
 processes them according to the DNP3 protocol, and generates responses.
 """
 
+import struct
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -64,13 +65,27 @@ GROUP_FROZEN_COUNTER = 21
 GROUP_COUNTER_EVENT = 22
 GROUP_ANALOG_INPUT = 30
 GROUP_ANALOG_INPUT_EVENT = 32
+GROUP_ANALOG_OUTPUT = 41
+GROUP_IIN = 80  # g80 - Internal Indications
 GROUP_CLASS_DATA = 60
+
+# Analog output variations (Group 41)
+AO_VAR_INT32 = 1  # 32-bit signed integer
+AO_VAR_INT16 = 2  # 16-bit signed integer
+AO_VAR_FLOAT32 = 3  # Single-precision float
+AO_VAR_FLOAT64 = 4  # Double-precision float
 
 # DNP3 class data variations
 VAR_CLASS_0 = 1
 VAR_CLASS_1 = 2
 VAR_CLASS_2 = 3
 VAR_CLASS_3 = 4
+
+# IIN bit indices (Group 80 Variation 1)
+IIN_BIT_DEVICE_RESTART = 7  # Bit 7 of IIN byte 1
+
+# Minimum data sizes
+MIN_IIN_WRITE_DATA = 2  # start + stop bytes
 
 # Index size thresholds
 MAX_1_BYTE_INDEX = 255  # 0xFF
@@ -714,12 +729,50 @@ class Outstation:
         return self._build_frozen_counter_blocks(points), IIN(0)
 
     def _handle_write(self, request: RequestFragment) -> ResponseFragment:
-        """Handle WRITE request."""
-        # For now, just acknowledge the write
+        """Handle WRITE request.
+
+        Supports Group 80 Variation 1 (Internal Indications) to allow
+        the master to clear IIN bits such as DEVICE_RESTART.
+        """
+        for block in request.objects:
+            if block.header.group == GROUP_IIN and block.header.variation == 1:
+                self._handle_write_iin(block)
+
         return build_null_response(
             iin=self.iin,
             seq=request.header.control.seq,
         )
+
+    def _handle_write_iin(self, block: ObjectBlock) -> None:
+        """Handle WRITE for Group 80 Variation 1 (Internal Indications).
+
+        Per IEEE 1815-2012, writing g80v1 with index 7 value 0 clears
+        the DEVICE_RESTART bit. Uses start-stop range qualifier (0x00).
+
+        Args:
+            block: Object block with g80v1 data.
+        """
+        data = block.data
+        if len(data) < MIN_IIN_WRITE_DATA:
+            return
+
+        # Qualifier 0x00 = 1-byte start-stop range
+        start = data[0]
+        stop = data[1]
+
+        # The bit data follows the range bytes
+        # For g80v1, each bit in the data corresponds to an IIN bit
+        bit_offset = MIN_IIN_WRITE_DATA
+        for bit_index in range(start, stop + 1):
+            byte_pos = bit_offset + (bit_index - start) // 8
+            bit_pos = (bit_index - start) % 8
+            if byte_pos >= len(data):
+                break
+
+            bit_value = (data[byte_pos] >> bit_pos) & 1
+
+            if bit_index == IIN_BIT_DEVICE_RESTART and bit_value == 0:
+                self._state.clear_restart()
 
     def _handle_select(self, request: RequestFragment) -> ResponseFragment:
         """Handle SELECT request."""
@@ -866,6 +919,9 @@ class Outstation:
             if block.header.group == GROUP_CROB and block.header.variation == 1:
                 block_results = self._process_crob_direct_operate(block)
                 results.extend(block_results)
+            elif block.header.group == GROUP_ANALOG_OUTPUT:
+                block_results = self._process_ao_direct_operate(block)
+                results.extend(block_results)
 
         return self._build_control_response(request, results)
 
@@ -905,27 +961,190 @@ class Outstation:
 
         return results
 
+    def _process_ao_direct_operate(self, block: ObjectBlock) -> list[tuple[int, CommandStatus]]:
+        """Process Analog Output DIRECT_OPERATE (Group 41).
+
+        Supports variations 1-4:
+            Var 1: 32-bit signed integer (4 bytes value + 1 byte status)
+            Var 2: 16-bit signed integer (2 bytes value + 1 byte status)
+            Var 3: single-precision float (4 bytes value + 1 byte status)
+            Var 4: double-precision float (8 bytes value + 1 byte status)
+        """
+        results: list[tuple[int, CommandStatus]] = []
+        variation = block.header.variation
+
+        # Determine value size from variation
+        value_sizes = {AO_VAR_INT32: 4, AO_VAR_INT16: 2, AO_VAR_FLOAT32: 4, AO_VAR_FLOAT64: 8}
+        value_size = value_sizes.get(variation)
+        if value_size is None:
+            return results
+
+        data = block.data
+        if len(data) < 1:
+            return results
+
+        count = data[0]
+        offset = 1
+
+        # object size = 1 byte index + value_size + 1 byte status
+        obj_size = 1 + value_size + 1
+
+        for _ in range(count):
+            if offset + obj_size > len(data):
+                break
+
+            index = data[offset]
+            offset += 1
+
+            # Parse value based on variation
+            raw_value = data[offset : offset + value_size]
+            if variation in {AO_VAR_INT32, AO_VAR_INT16}:
+                value = float(int.from_bytes(raw_value, "little", signed=True))
+            elif variation == AO_VAR_FLOAT32:
+                value = float(struct.unpack("<f", raw_value)[0])
+            elif variation == AO_VAR_FLOAT64:
+                value = float(struct.unpack("<d", raw_value)[0])
+            else:
+                value = 0.0
+
+            offset += value_size
+            offset += 1  # skip request status byte
+
+            result = self.handler.direct_operate_analog_output(
+                index=index,
+                value=value,
+            )
+
+            results.append((index, result.status))
+
+        return results
+
     def _build_control_response(
         self,
         request: RequestFragment,
         results: list[tuple[int, CommandStatus]],
     ) -> ResponseFragment:
-        """Build response for control operations."""
-        # Echo back the objects with status
-        # For simplicity, return null response with IIN
-        error_iin = IIN(0)
-        for _, status in results:
-            if status != CommandStatus.SUCCESS:
-                # Set appropriate IIN based on error
-                if status == CommandStatus.NOT_SUPPORTED:
-                    error_iin |= IIN.NO_FUNC_CODE_SUPPORT
-                elif status == CommandStatus.FORMAT_ERROR:
-                    error_iin |= IIN.PARAMETER_ERROR
+        """Build response for control operations.
 
-        return build_null_response(
-            iin=self.iin | error_iin,
+        Per IEEE 1815-2012, the response must echo back the same object
+        headers with each command object's status field set to the result.
+        """
+        # Build a lookup from index to status
+        status_map: dict[int, CommandStatus] = {}
+        for index, status in results:
+            status_map[index] = status
+
+        objects: list[ObjectBlock] = []
+
+        for block in request.objects:
+            if block.header.group == GROUP_CROB and block.header.variation == 1:
+                echoed = self._echo_crob_block(block, status_map)
+                objects.append(echoed)
+            elif block.header.group == GROUP_ANALOG_OUTPUT:
+                echoed = self._echo_ao_block(block, status_map)
+                objects.append(echoed)
+            else:
+                # For unsupported object types, echo the block as-is
+                objects.append(block)
+
+        return build_response(
+            objects=tuple(objects),
+            iin=self.iin,
             seq=request.header.control.seq,
         )
+
+    def _echo_crob_block(
+        self,
+        block: ObjectBlock,
+        status_map: dict[int, CommandStatus],
+    ) -> ObjectBlock:
+        """Echo a CROB block with status bytes set from results.
+
+        Args:
+            block: Original request CROB block.
+            status_map: Map of point index to command status.
+
+        Returns:
+            ObjectBlock with status bytes updated.
+        """
+        data = block.data
+        if len(data) < 1:
+            return block
+
+        count = data[0]
+        offset = 1
+        result_data = bytearray([count])
+
+        for _ in range(count):
+            if offset + 12 > len(data):  # 1 byte index + 11 byte CROB
+                break
+
+            index = data[offset]
+            # Copy index byte
+            result_data.append(index)
+            offset += 1
+
+            # Copy CROB fields (10 bytes: control + count + on_time + off_time)
+            result_data.extend(data[offset : offset + 10])
+            offset += 10
+
+            # Skip the original status byte
+            offset += 1
+
+            # Write the result status byte
+            status = status_map.get(index, CommandStatus.NOT_SUPPORTED)
+            result_data.append(int(status))
+
+        return ObjectBlock(header=block.header, data=bytes(result_data))
+
+    def _echo_ao_block(
+        self,
+        block: ObjectBlock,
+        status_map: dict[int, CommandStatus],
+    ) -> ObjectBlock:
+        """Echo an Analog Output block with status bytes set from results.
+
+        Args:
+            block: Original request AO block.
+            status_map: Map of point index to command status.
+
+        Returns:
+            ObjectBlock with status bytes updated.
+        """
+        variation = block.header.variation
+        value_sizes = {AO_VAR_INT32: 4, AO_VAR_INT16: 2, AO_VAR_FLOAT32: 4, AO_VAR_FLOAT64: 8}
+        value_size = value_sizes.get(variation, 4)
+
+        data = block.data
+        if len(data) < 1:
+            return block
+
+        count = data[0]
+        offset = 1
+        result_data = bytearray([count])
+
+        for _ in range(count):
+            obj_size = 1 + value_size + 1  # index + value + status
+            if offset + obj_size > len(data):
+                break
+
+            index = data[offset]
+            # Copy index byte
+            result_data.append(index)
+            offset += 1
+
+            # Copy value bytes
+            result_data.extend(data[offset : offset + value_size])
+            offset += value_size
+
+            # Skip original status byte
+            offset += 1
+
+            # Write the result status byte
+            status = status_map.get(index, CommandStatus.NOT_SUPPORTED)
+            result_data.append(int(status))
+
+        return ObjectBlock(header=block.header, data=bytes(result_data))
 
     def _handle_cold_restart(self, request: RequestFragment) -> ResponseFragment:
         """Handle COLD_RESTART request."""

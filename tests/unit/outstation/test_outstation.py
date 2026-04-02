@@ -475,3 +475,338 @@ class TestMultiplePointTypes:
         assert response is not None
         # Should have objects for each point type
         assert len(response.objects) >= 4
+
+
+class TestDirectOperateResponse:
+    """Tests for DIRECT_OPERATE response format compliance.
+
+    Per IEEE 1815-2012, DIRECT_OPERATE responses must echo back the
+    command objects with a status field in each, not return a null response.
+    """
+
+    def test_direct_operate_crob_returns_echoed_objects(self) -> None:
+        """DIRECT_OPERATE with CROB echoes back command objects with status."""
+
+        class AcceptHandler(DefaultCommandHandler):
+            def direct_operate_binary_output(
+                self,
+                index: int,
+                code: ControlCode,
+                count: int,
+                on_time: int,
+                off_time: int,
+            ) -> CommandResult:
+                return CommandResult.success()
+
+        outstation = Outstation(handler=AcceptHandler())
+        outstation.database.add_binary_output(0, value=False)
+
+        # Build CROB data: count(1) + [index(1) + CROB(11)] ...
+        # CROB: control_code(1) + count(1) + on_time(4) + off_time(4) + status(1)
+        crob_data = bytes(
+            [
+                1,  # count = 1 object
+                0,  # index = 0
+                0x03,  # control code = LATCH_ON
+                1,  # operation count
+                0,
+                0,
+                0,
+                0,  # on_time = 0
+                0,
+                0,
+                0,
+                0,  # off_time = 0
+                0,  # status (in request, always 0)
+            ]
+        )
+        header = ObjectHeader(group=12, variation=1, qualifier=0x17)
+        block = ObjectBlock(header=header, data=crob_data)
+
+        from dnp3.application.builder import build_direct_operate_request
+
+        request = build_direct_operate_request(objects=(block,))
+        response = outstation.process_request(request.to_bytes())
+
+        assert response is not None
+        assert response.header.function == FunctionCode.RESPONSE
+        # Response MUST contain echoed command objects, not be empty
+        assert len(response.objects) > 0, "DIRECT_OPERATE response must echo command objects"
+        # The echoed object block should be Group 12 Variation 1
+        resp_block = response.objects[0]
+        assert resp_block.header.group == 12
+        assert resp_block.header.variation == 1
+
+    def test_direct_operate_crob_echoes_success_status(self) -> None:
+        """DIRECT_OPERATE echoed CROB contains SUCCESS status byte."""
+
+        class AcceptHandler(DefaultCommandHandler):
+            def direct_operate_binary_output(
+                self,
+                index: int,
+                code: ControlCode,
+                count: int,
+                on_time: int,
+                off_time: int,
+            ) -> CommandResult:
+                return CommandResult.success()
+
+        outstation = Outstation(handler=AcceptHandler())
+        outstation.database.add_binary_output(0, value=False)
+
+        crob_data = bytes(
+            [
+                1,
+                0,
+                0x03,
+                1,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+            ]
+        )
+        header = ObjectHeader(group=12, variation=1, qualifier=0x17)
+        block = ObjectBlock(header=header, data=crob_data)
+
+        from dnp3.application.builder import build_direct_operate_request
+
+        request = build_direct_operate_request(objects=(block,))
+        response = outstation.process_request(request.to_bytes())
+
+        assert response is not None
+        assert len(response.objects) > 0
+        resp_data = response.objects[0].data
+        # Parse response: count(1) + index(1) + CROB(11)
+        # CROB status byte is at offset: 1 (count) + 1 (index) + 10 (crob fields) = byte 12
+        assert len(resp_data) >= 13, f"Response data too short: {len(resp_data)} bytes"
+        status_byte = resp_data[12]  # Last byte of CROB is status
+        assert status_byte == 0, f"Expected SUCCESS (0), got status={status_byte}"
+
+    def test_direct_operate_crob_not_supported_status(self) -> None:
+        """DIRECT_OPERATE echoed CROB contains NOT_SUPPORTED status when rejected."""
+        # DefaultCommandHandler rejects all operations
+        outstation = Outstation()
+        outstation.database.add_binary_output(0, value=False)
+
+        crob_data = bytes(
+            [
+                1,
+                0,
+                0x03,
+                1,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+            ]
+        )
+        header = ObjectHeader(group=12, variation=1, qualifier=0x17)
+        block = ObjectBlock(header=header, data=crob_data)
+
+        from dnp3.application.builder import build_direct_operate_request
+
+        request = build_direct_operate_request(objects=(block,))
+        response = outstation.process_request(request.to_bytes())
+
+        assert response is not None
+        assert len(response.objects) > 0
+        resp_data = response.objects[0].data
+        assert len(resp_data) >= 13
+        status_byte = resp_data[12]
+        from dnp3.core.enums import CommandStatus
+
+        assert (
+            status_byte == CommandStatus.NOT_SUPPORTED
+        ), f"Expected NOT_SUPPORTED ({CommandStatus.NOT_SUPPORTED}), got status={status_byte}"
+
+
+class TestDirectOperateAnalogOutput:
+    """Tests for DIRECT_OPERATE with Analog Output (Group 41)."""
+
+    def test_direct_operate_analog_output_returns_echoed_objects(self) -> None:
+        """DIRECT_OPERATE with Group 41 Var 1 echoes back with status."""
+
+        class AcceptAOHandler(DefaultCommandHandler):
+            def direct_operate_analog_output(self, index: int, value: float) -> CommandResult:
+                return CommandResult.success()
+
+        outstation = Outstation(handler=AcceptAOHandler())
+        outstation.database.add_analog_input(0, value=0.0)
+
+        # Build AO data: count(1) + [index(1) + value(4) + status(1)]
+        ao_data = bytearray()
+        ao_data.append(1)  # count = 1
+        ao_data.append(0)  # index = 0
+        ao_data.extend((100).to_bytes(4, "little", signed=True))  # value = 100
+        ao_data.append(0)  # status (request)
+
+        header = ObjectHeader(group=41, variation=1, qualifier=0x17)
+        block = ObjectBlock(header=header, data=bytes(ao_data))
+
+        from dnp3.application.builder import build_direct_operate_request
+
+        request = build_direct_operate_request(objects=(block,))
+        response = outstation.process_request(request.to_bytes())
+
+        assert response is not None
+        assert len(response.objects) > 0, "AO DIRECT_OPERATE must echo objects"
+        resp_block = response.objects[0]
+        assert resp_block.header.group == 41
+        assert resp_block.header.variation == 1
+
+    def test_direct_operate_analog_output_success_status(self) -> None:
+        """DIRECT_OPERATE AO echoes SUCCESS status byte and calls handler."""
+        handler_called = False
+
+        class AcceptAOHandler(DefaultCommandHandler):
+            def direct_operate_analog_output(self, index: int, value: float) -> CommandResult:
+                nonlocal handler_called
+                handler_called = True
+                return CommandResult.success()
+
+        outstation = Outstation(handler=AcceptAOHandler())
+        outstation.database.add_analog_input(0, value=0.0)
+
+        ao_data = bytearray()
+        ao_data.append(1)
+        ao_data.append(0)
+        ao_data.extend((100).to_bytes(4, "little", signed=True))
+        ao_data.append(0)
+
+        header = ObjectHeader(group=41, variation=1, qualifier=0x17)
+        block = ObjectBlock(header=header, data=bytes(ao_data))
+
+        from dnp3.application.builder import build_direct_operate_request
+
+        request = build_direct_operate_request(objects=(block,))
+        response = outstation.process_request(request.to_bytes())
+
+        assert handler_called, "direct_operate_analog_output handler must be called"
+        assert response is not None
+        assert len(response.objects) > 0
+        resp_data = response.objects[0].data
+        # count(1) + index(1) + value(4) + status(1) = 7 bytes
+        assert len(resp_data) >= 7
+        status_byte = resp_data[6]  # status byte at end
+        assert status_byte == 0, f"Expected SUCCESS (0), got {status_byte}"
+
+    def test_direct_operate_analog_output_not_supported(self) -> None:
+        """DIRECT_OPERATE AO echoes NOT_SUPPORTED when handler rejects."""
+        # DefaultCommandHandler rejects all
+        outstation = Outstation()
+
+        ao_data = bytearray()
+        ao_data.append(1)
+        ao_data.append(0)
+        ao_data.extend((100).to_bytes(4, "little", signed=True))
+        ao_data.append(0)
+
+        header = ObjectHeader(group=41, variation=1, qualifier=0x17)
+        block = ObjectBlock(header=header, data=bytes(ao_data))
+
+        from dnp3.application.builder import build_direct_operate_request
+
+        request = build_direct_operate_request(objects=(block,))
+        response = outstation.process_request(request.to_bytes())
+
+        assert response is not None
+        assert len(response.objects) > 0
+        resp_data = response.objects[0].data
+        assert len(resp_data) >= 7
+        status_byte = resp_data[6]
+        from dnp3.core.enums import CommandStatus
+
+        assert (
+            status_byte == CommandStatus.NOT_SUPPORTED
+        ), f"Expected NOT_SUPPORTED ({CommandStatus.NOT_SUPPORTED}), got {status_byte}"
+
+
+class TestWriteIINRestart:
+    """Tests for WRITE Group 80 Variation 1 to clear DEVICE_RESTART.
+
+    Per IEEE 1815-2012, a WRITE with g80v1 index 7 value 0 clears
+    the DEVICE_RESTART bit in IIN.
+    """
+
+    def test_iin_has_restart_initially(self) -> None:
+        """Outstation has DEVICE_RESTART set after creation."""
+        outstation = Outstation()
+        assert IIN.DEVICE_RESTART in outstation.iin
+
+    def test_write_g80v1_clears_restart_bit(self) -> None:
+        """WRITE g80v1 index 7 value 0 clears DEVICE_RESTART in IIN."""
+        outstation = Outstation()
+        assert IIN.DEVICE_RESTART in outstation.iin
+
+        # Build WRITE request with Group 80 Variation 1
+        # g80v1 is Internal Indications - single bit objects
+        # We need to write index 7 (DEVICE_RESTART) with value 0
+        # Qualifier 0x00 = start-stop range, 1-byte indices
+        # Start = 7, Stop = 7, data = 1 byte with bit value 0
+        g80v1_header = ObjectHeader(group=80, variation=1, qualifier=0x00)
+        # Range: start=7, stop=7 (1 byte each), data: 1 byte with value 0
+        range_data = bytes([7, 7])  # start=7, stop=7
+        bit_data = bytes([0x00])  # clear the bit
+        block = ObjectBlock(header=g80v1_header, data=range_data + bit_data)
+
+        from dnp3.application.builder import build_write_request
+
+        request = build_write_request(objects=(block,))
+        response = outstation.process_request(request.to_bytes())
+
+        assert response is not None
+        assert response.header.function == FunctionCode.RESPONSE
+        # After processing, DEVICE_RESTART should be cleared
+        assert (
+            IIN.DEVICE_RESTART not in outstation.iin
+        ), "DEVICE_RESTART should be cleared after WRITE g80v1 index 7 value 0"
+
+    def test_write_g80v1_response_has_no_objects(self) -> None:
+        """WRITE g80v1 response has no objects (null response body)."""
+        outstation = Outstation()
+
+        g80v1_header = ObjectHeader(group=80, variation=1, qualifier=0x00)
+        range_data = bytes([7, 7])
+        bit_data = bytes([0x00])
+        block = ObjectBlock(header=g80v1_header, data=range_data + bit_data)
+
+        from dnp3.application.builder import build_write_request
+
+        request = build_write_request(objects=(block,))
+        response = outstation.process_request(request.to_bytes())
+
+        assert response is not None
+        assert len(response.objects) == 0, "WRITE response should have no objects"
+
+    def test_write_g80v1_does_not_clear_other_iin_bits(self) -> None:
+        """WRITE g80v1 only clears DEVICE_RESTART, not other IIN bits."""
+        config = OutstationConfig(time_sync_required=True)
+        outstation = Outstation(config=config)
+
+        assert IIN.DEVICE_RESTART in outstation.iin
+        assert IIN.NEED_TIME in outstation.iin
+
+        g80v1_header = ObjectHeader(group=80, variation=1, qualifier=0x00)
+        range_data = bytes([7, 7])
+        bit_data = bytes([0x00])
+        block = ObjectBlock(header=g80v1_header, data=range_data + bit_data)
+
+        from dnp3.application.builder import build_write_request
+
+        request = build_write_request(objects=(block,))
+        outstation.process_request(request.to_bytes())
+
+        assert IIN.DEVICE_RESTART not in outstation.iin
+        # NEED_TIME should still be set
+        assert IIN.NEED_TIME in outstation.iin
