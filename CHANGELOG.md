@@ -9,14 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- DIRECT\_OPERATE echoes command objects back to master; WRITE g80v1 clears the restart bit correctly.
+- DIRECT_OPERATE echoes command objects back to master; WRITE g80v1 clears the restart bit correctly.
 
-## [0.1.0] - 2025-01-01
+## [0.1.0] - 2025-12-17
 
 ### Added
 
 - Initial release: pure Python DNP3 implementation (IEEE 1815-2012).
-- Application, datalink, transport, and transport\_io layers.
+- Application, datalink, transport, and transport_io layers.
 - Master and outstation roles with object model.
 - Full pytest suite with hypothesis property tests; 99% line coverage.
 - PyPI publication with hatch build backend.

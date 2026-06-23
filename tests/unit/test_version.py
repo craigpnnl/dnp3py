@@ -22,11 +22,21 @@ from unittest.mock import patch
 
 
 def test_version_when_installed() -> None:
-    """__version__ is a non-empty string when the package is installed."""
+    """__version__ is a non-empty, non-sentinel string when installed.
+
+    The 'dev' sentinel leaking into an installed wheel means the build-flag
+    wiring is broken: the PackageNotFoundError fallback fired despite the
+    package being installed, which indicates a metadata-lookup failure.
+    """
     import dnp3  # type: ignore[import]
 
     assert isinstance(dnp3.__version__, str)
     assert len(dnp3.__version__) > 0
+    assert dnp3.__version__ != "dev", (
+        "Installed wheel reported sentinel 'dev'. "
+        "importlib.metadata.version('dnp3py') failed despite the package being installed. "
+        "Check that the wheel was built with hatch-vcs and installed correctly."
+    )
 
 
 def test_version_fallback_sentinel_when_not_installed() -> None:
