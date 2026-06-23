@@ -564,9 +564,9 @@ class TestStaticResponseQualifiers:
         bi_blocks = [b for b in response.objects if b.header.group == 1]
         assert len(bi_blocks) == 1
         # Qualifier 0x01 = prefix NONE + range UINT16_START_STOP
-        assert bi_blocks[0].header.qualifier == 0x01, (
-            f"Expected qualifier 0x01 (2-byte start/stop) for index 256, " f"got 0x{bi_blocks[0].header.qualifier:02X}"
-        )
+        assert (
+            bi_blocks[0].header.qualifier == 0x01
+        ), f"Expected qualifier 0x01 (2-byte start/stop) for index 256, got 0x{bi_blocks[0].header.qualifier:02X}"
         # range_data is 4 bytes: start and stop both = 256 (little-endian)
         start = struct.unpack_from("<H", bi_blocks[0].data, 0)[0]
         stop = struct.unpack_from("<H", bi_blocks[0].data, 2)[0]
@@ -719,9 +719,9 @@ class TestCROBQualifierParsing:
         outstation.process_request(request.to_bytes())
 
         # _make_crob_block sets control_code = 0x03 = LATCH_ON
-        assert received_codes == [ControlCode.LATCH_ON], (
-            f"Expected LATCH_ON, got {received_codes}. " "A misaligned offset would produce a wrong control code."
-        )
+        assert received_codes == [
+            ControlCode.LATCH_ON
+        ], f"Expected LATCH_ON, got {received_codes}. A misaligned offset would produce a wrong control code."
 
 
 # ---------------------------------------------------------------------------
@@ -865,9 +865,9 @@ class TestCROBUnknownQualifier:
         results = [(0, CommandStatus.FORMAT_ERROR)]
         response = outstation._build_control_response(request, results)
 
-        assert IIN.PARAMETER_ERROR in response.header.iin, (
-            f"FORMAT_ERROR result must produce IIN.PARAMETER_ERROR, " f"got IIN=0x{int(response.header.iin):04X}"
-        )
+        assert (
+            IIN.PARAMETER_ERROR in response.header.iin
+        ), f"FORMAT_ERROR result must produce IIN.PARAMETER_ERROR, got IIN=0x{int(response.header.iin):04X}"
 
 
 class TestCROBSelectOperate2ByteQualifier:
@@ -943,9 +943,7 @@ class TestCROBSelectOperate2ByteQualifier:
         op_request = build_operate_request(objects=(block,))
         outstation.process_request(op_request.to_bytes())
 
-        assert operated == [300], (
-            f"Expected index 300 operated, got {operated}. " "Truncation to 1 byte would produce 44."
-        )
+        assert operated == [300], f"Expected index 300 operated, got {operated}. Truncation to 1 byte would produce 44."
 
 
 class TestCROBTruncatedBuffer:
