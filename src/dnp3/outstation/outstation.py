@@ -1081,6 +1081,11 @@ class Outstation:
             Var 2: 16-bit signed integer (2 bytes value + 1 byte status)
             Var 3: single-precision float (4 bytes value + 1 byte status)
             Var 4: double-precision float (8 bytes value + 1 byte status)
+
+        Qualifiers follow the same 0x17/0x28 scheme as CROB (IEEE 1815-2012 Table 4-3):
+            0x17: 1-byte count + 1-byte index prefix per object
+            0x28: 2-byte count + 2-byte index prefix per object
+        Unknown qualifiers fail closed with FORMAT_ERROR, matching the CROB path.
         """
         results: list[tuple[int, CommandStatus]] = []
         variation = block.header.variation
@@ -1090,22 +1095,31 @@ class Outstation:
         if value_size is None:
             return results
 
+        # Derive count/index widths from qualifier, identical to the CROB path.
+        try:
+            count_bytes, index_bytes = _crob_count_index_sizes(block.header.qualifier)
+        except ValueError:
+            # Unknown qualifier: fail closed so _build_control_response sets PARAMETER_ERROR.
+            return [(0, CommandStatus.FORMAT_ERROR)]
+
         data = block.data
-        if len(data) < 1:
-            return results
+        if len(data) < count_bytes:
+            return [(0, CommandStatus.FORMAT_ERROR)]
 
-        count = data[0]
-        offset = 1
+        count = int.from_bytes(data[0:count_bytes], "little")
+        offset = count_bytes
 
-        # object size = 1 byte index + value_size + 1 byte status
-        obj_size = 1 + value_size + 1
+        # object size = index_bytes + value_size + 1 byte status
+        obj_size = index_bytes + value_size + 1
 
+        echoed = 0
         for _ in range(count):
             if offset + obj_size > len(data):
+                # Buffer too short; remaining declared objects cannot be processed.
                 break
 
-            index = data[offset]
-            offset += 1
+            index = int.from_bytes(data[offset : offset + index_bytes], "little")
+            offset += index_bytes
 
             # Parse value based on variation
             raw_value = data[offset : offset + value_size]
@@ -1127,6 +1141,11 @@ class Outstation:
             )
 
             results.append((index, result.status))
+            echoed += 1
+
+        # Truncation: count > echoed means the buffer was shorter than the declared count.
+        if echoed < count:
+            results.append((0, CommandStatus.FORMAT_ERROR))
 
         return results
 
@@ -1159,8 +1178,10 @@ class Outstation:
                 if truncated:
                     has_format_error = True
             elif block.header.group == GROUP_ANALOG_OUTPUT:
-                echoed = self._echo_ao_block(block, status_map)
+                echoed, ao_truncated = self._echo_ao_block(block, status_map)
                 objects.append(echoed)
+                if ao_truncated:
+                    has_format_error = True
             else:
                 # For unsupported object types, echo the block as-is
                 objects.append(block)
@@ -1252,15 +1273,24 @@ class Outstation:
         self,
         block: ObjectBlock,
         status_map: dict[int, CommandStatus],
-    ) -> ObjectBlock:
+    ) -> tuple[ObjectBlock, bool]:
         """Echo an Analog Output block with status bytes set from results.
+
+        Mirrors _echo_crob_block: derives count/index widths from the qualifier
+        so 0x17 (1-byte) and 0x28 (2-byte) frames are both echoed correctly.
+
+        Returns a tuple of (echoed_block, truncation_detected). When
+        truncation_detected is True the buffer was shorter than the declared count;
+        the caller must surface IIN.PARAMETER_ERROR. An unrecognised qualifier
+        returns the original block with truncation_detected=False because the
+        parse path already produced FORMAT_ERROR for that case.
 
         Args:
             block: Original request AO block.
             status_map: Map of point index to command status.
 
         Returns:
-            ObjectBlock with status bytes updated.
+            Tuple of (ObjectBlock with status bytes updated, truncation flag).
         """
         variation = block.header.variation
         # Unknown variations are returned unchanged; _process_ao_direct_operate
@@ -1268,38 +1298,48 @@ class Outstation:
         # to echo. No silent size default: a wrong size would corrupt the wire frame.
         value_size = _AO_VALUE_SIZES.get(variation)
         if value_size is None:
-            return block
+            return block, False
+
+        try:
+            count_bytes, index_bytes = _crob_count_index_sizes(block.header.qualifier)
+        except ValueError:
+            # Unrecognised qualifier: parse path already produced FORMAT_ERROR.
+            return block, False
 
         data = block.data
-        if len(data) < 1:
-            return block
+        if len(data) < count_bytes:
+            return block, True
 
-        count = data[0]
-        offset = 1
-        result_data = bytearray([count])
+        count = int.from_bytes(data[0:count_bytes], "little")
+        offset = count_bytes
+        # Preserve the original count field bytes verbatim.
+        result_data = bytearray(data[0:count_bytes])
 
+        obj_size = index_bytes + value_size + 1  # index + value + status
+
+        echoed = 0
         for _ in range(count):
-            obj_size = 1 + value_size + 1  # index + value + status
             if offset + obj_size > len(data):
+                # Buffer too short: remaining objects cannot be echoed.
                 break
 
-            index = data[offset]
-            # Copy index byte
-            result_data.append(index)
-            offset += 1
+            index = int.from_bytes(data[offset : offset + index_bytes], "little")
+            # Copy index field verbatim.
+            result_data.extend(data[offset : offset + index_bytes])
+            offset += index_bytes
 
-            # Copy value bytes
+            # Copy value bytes verbatim.
             result_data.extend(data[offset : offset + value_size])
             offset += value_size
 
-            # Skip original status byte
+            # Skip original status byte, write result status.
             offset += 1
-
-            # Write the result status byte
             status = status_map.get(index, CommandStatus.NOT_SUPPORTED)
             result_data.append(int(status))
+            echoed += 1
 
-        return ObjectBlock(header=block.header, data=bytes(result_data))
+        truncation_detected = echoed < count
+        return ObjectBlock(header=block.header, data=bytes(result_data)), truncation_detected
 
     def _handle_cold_restart(self, request: RequestFragment) -> ResponseFragment:
         """Handle COLD_RESTART request."""
