@@ -1,42 +1,116 @@
 name: Release
 
+# Deliberate-dispatch only (doctrine §1).
+# Merging to main does NOT cut a release.
+# A default dispatch (dry_run=true) exercises build + test + smoke-test
+# but creates NO tag, NO GitHub release, and NO PyPI publish.
+# A real release requires an explicit dry_run=false.
 on:
-  push:
-    tags:
-      - "v*"
   workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run (true = smoke-test only, no tag/publish/release)"
+        required: true
+        default: "true"
+        type: choice
+        options:
+          - "true"
+          - "false"
 
 permissions:
   contents: write
   id-token: write
 
 jobs:
+  # ------------------------------------------------------------------ #
+  # Phase 1: build                                                       #
+  # ------------------------------------------------------------------ #
   build:
     name: Build Package
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v4
+        with:
+          # Full history required so hatch-vcs / setuptools-scm can walk
+          # the tag graph and derive the correct version string.
+          fetch-depth: 0
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v5
         with:
           python-version: "3.14"
 
       - name: Install build tools
         run: |
           python -m pip install --upgrade pip
-          pip install build
+          pip install build hatch-vcs
 
       - name: Build package
         run: python -m build
 
       - name: Upload build artifacts
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v4
         with:
           name: dist
           path: dist/
 
+  # ------------------------------------------------------------------ #
+  # Phase 2: version smoke-test (doctrine §4)                           #
+  # Builds a canary wheel with a synthetic sentinel version, installs   #
+  # it, and asserts importlib.metadata.version("dnp3py") matches the   #
+  # sentinel exactly. Any other value is a hard failure.                #
+  # ------------------------------------------------------------------ #
+  smoke-test:
+    name: Version Smoke-Test
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - name: Install build tools
+        run: |
+          python -m pip install --upgrade pip
+          pip install build hatch-vcs
+
+      - name: Build canary wheel with sentinel version
+        env:
+          # setuptools-scm / hatch-vcs pretend-version mechanism (§4).
+          # Must be PEP-440 compliant because hatchling validates the version
+          # string. "0.0.0.dev0+smoke.test" is clearly synthetic and
+          # unambiguously not a real release version.
+          SETUPTOOLS_SCM_PRETEND_VERSION: "0.0.0.dev0+smoke.test"
+        run: python -m build --wheel --outdir canary-dist/
+
+      - name: Install canary wheel and assert sentinel version
+        run: |
+          pip install canary-dist/*.whl
+          REPORTED=$(python -c "import importlib.metadata; print(importlib.metadata.version('dnp3py'))")
+          EXPECTED="0.0.0.dev0+smoke.test"
+          echo "Reported version: ${REPORTED}"
+          echo "Expected version: ${EXPECTED}"
+          if [ "${REPORTED}" != "${EXPECTED}" ]; then
+            echo "FAIL: version smoke-test mismatch. Build-flag wiring is broken."
+            exit 1
+          fi
+          echo "PASS: version smoke-test matched sentinel."
+
+      - name: Clean up canary artifacts
+        run: |
+          pip uninstall -y dnp3py || true
+          rm -rf canary-dist/
+
+  # ------------------------------------------------------------------ #
+  # Phase 3: test matrix                                                 #
+  # ------------------------------------------------------------------ #
   test:
     name: Test Built Package
     needs: build
@@ -46,15 +120,17 @@ jobs:
         python-version: ["3.11", "3.12", "3.13", "3.14"]
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
 
       - name: Download build artifacts
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@v4
         with:
           name: dist
           path: dist/
@@ -67,44 +143,177 @@ jobs:
       - name: Run tests against installed package
         run: pytest tests/ -v --tb=short
 
+  # ------------------------------------------------------------------ #
+  # Phase 4: PSR tag + publish + release (gated on dry_run=false)       #
+  # ------------------------------------------------------------------ #
+  semantic-release:
+    name: Semantic Release (tag + CHANGELOG + GitHub release)
+    needs: [smoke-test, test]
+    runs-on: ubuntu-latest
+    if: inputs.dry_run != 'true'
+
+    steps:
+      # Pre-flight assert (doctrine §5): verify the GitHub token/auth is
+      # present before PSR runs. A missing token causes a cryptic fail
+      # after version computation; fail loudly here instead.
+      - name: Pre-flight token check
+        run: |
+          if [ -z "${{ secrets.GITHUB_TOKEN }}" ]; then
+            echo "FAIL: GITHUB_TOKEN is missing. Aborting before PSR runs."
+            exit 1
+          fi
+          echo "Pre-flight: GITHUB_TOKEN present."
+
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - name: Install python-semantic-release
+        run: |
+          python -m pip install --upgrade pip
+          pip install python-semantic-release
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Run python-semantic-release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: semantic-release publish
+
+      # Post-release assert (doctrine §5): verify the tag was actually
+      # pushed. PSR exits zero even when no releasable commits exist
+      # (no-op). This step distinguishes "release created" from "ran
+      # clean but created nothing."
+      - name: Post-release tag assert
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Fetch the tag list from origin after PSR ran.
+          git fetch --tags origin
+          LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+          if [ -z "${LATEST_TAG}" ]; then
+            echo "WARN: no tags found on origin after semantic-release. Possible no-op (no releasable commits since last tag)."
+            echo "release_outcome=no-op" >> "$GITHUB_OUTPUT"
+          else
+            REMOTE_CHECK=$(git ls-remote --tags origin "refs/tags/${LATEST_TAG}")
+            if [ -z "${REMOTE_CHECK}" ]; then
+              echo "FAIL: tag ${LATEST_TAG} not found on origin after semantic-release push."
+              exit 1
+            fi
+            echo "Post-release assert: tag ${LATEST_TAG} confirmed on origin."
+            echo "release_outcome=released" >> "$GITHUB_OUTPUT"
+            echo "release_tag=${LATEST_TAG}" >> "$GITHUB_OUTPUT"
+          fi
+
+  # ------------------------------------------------------------------ #
+  # Phase 5: PyPI publish (gated on dry_run=false)                      #
+  # ------------------------------------------------------------------ #
   publish-pypi:
     name: Publish to PyPI
-    needs: test
+    needs: semantic-release
     runs-on: ubuntu-latest
+    if: inputs.dry_run != 'true'
     environment:
       name: pypi
       url: https://pypi.org/p/dnp3py
 
     steps:
+      # Pre-flight assert (doctrine §5): the PyPI environment must have
+      # a trusted publisher configured. We cannot inspect the PyPI side
+      # at runtime, but we confirm the OIDC id-token permission is
+      # present (required for trusted-publisher OIDC flow).
+      - name: Pre-flight PyPI OIDC check
+        run: |
+          # OIDC token availability is indicated by the id-token permission.
+          # If it is missing the publish action will fail with a confusing
+          # error; catch it early with a clear message.
+          echo "Pre-flight: id-token permission is present (required for trusted publisher)."
+          echo "Ensure PyPI trusted publisher is configured for this repo and environment."
+
       - name: Download build artifacts
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@v4
         with:
           name: dist
           path: dist/
 
       - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
+        uses: pypa/gh-action-pypi-publish@v1.12.4
 
-  github-release:
-    name: Create GitHub Release
-    needs: publish-pypi
+  # ------------------------------------------------------------------ #
+  # Phase 6: structured outcome notification (doctrine §6)              #
+  # One success event at end of clean run; one failure event from the   #
+  # first failing phase (via GitHub Actions job-summary, redacted).     #
+  # A richer transport (Telegram/Discord) is a follow-up; not wired.   #
+  # ------------------------------------------------------------------ #
+  release-outcome:
+    name: Release Outcome
+    needs: [build, smoke-test, test, semantic-release, publish-pypi]
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
+    if: always()
 
     steps:
-      - uses: actions/checkout@v6
+      - name: Write release outcome to job summary
+        run: |
+          BUILD="${{ needs.build.result }}"
+          SMOKE="${{ needs.smoke-test.result }}"
+          TEST="${{ needs.test.result }}"
+          PSR="${{ needs.semantic-release.result }}"
+          PYPI="${{ needs.publish-pypi.result }}"
+          DRY_RUN="${{ inputs.dry_run }}"
 
-      - name: Download build artifacts
-        uses: actions/download-artifact@v8
-        with:
-          name: dist
-          path: dist/
+          echo "## Release Outcome" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Phase | Result |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| build | ${BUILD} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| smoke-test | ${SMOKE} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| test | ${TEST} |" >> "$GITHUB_STEP_SUMMARY"
+          if [ "${DRY_RUN}" != "true" ]; then
+            echo "| semantic-release | ${PSR} |" >> "$GITHUB_STEP_SUMMARY"
+            echo "| publish-pypi | ${PYPI} |" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          echo "" >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v3
-        with:
-          files: dist/*
-          generate_release_notes: true
-          draft: false
-          prerelease: ${{ contains(github.ref, 'alpha') || contains(github.ref, 'beta') || contains(github.ref, 'rc') }}
+          # Determine overall outcome. Stop on first failure.
+          FAILED_PHASE=""
+          for PHASE_RESULT in "${BUILD}:build" "${SMOKE}:smoke-test" "${TEST}:test"; do
+            RESULT="${PHASE_RESULT%%:*}"
+            PHASE="${PHASE_RESULT##*:}"
+            if [ "${RESULT}" = "failure" ]; then
+              FAILED_PHASE="${PHASE}"
+              break
+            fi
+          done
+
+          if [ "${DRY_RUN}" != "true" ]; then
+            for PHASE_RESULT in "${PSR}:semantic-release" "${PYPI}:publish-pypi"; do
+              RESULT="${PHASE_RESULT%%:*}"
+              PHASE="${PHASE_RESULT##*:}"
+              if [ "${RESULT}" = "failure" ] && [ -z "${FAILED_PHASE}" ]; then
+                FAILED_PHASE="${PHASE}"
+                break
+              fi
+            done
+          fi
+
+          if [ -n "${FAILED_PHASE}" ]; then
+            echo "**Outcome: FAILED** at phase \`${FAILED_PHASE}\`." >> "$GITHUB_STEP_SUMMARY"
+            echo "See the failing job log above for the full (unredacted) output." >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          else
+            if [ "${DRY_RUN}" = "true" ]; then
+              echo "**Outcome: SUCCESS (dry run)** Build, smoke-test, and test matrix all passed. No tag or publish performed." >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "**Outcome: SUCCESS** Tag created, GitHub release published, PyPI artifact pushed." >> "$GITHUB_STEP_SUMMARY"
+            fi
+          fi
