@@ -4,6 +4,7 @@ The Outstation class handles incoming requests from a master station,
 processes them according to the DNP3 protocol, and generates responses.
 """
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -76,6 +77,15 @@ VAR_CLASS_3 = 4
 MAX_1_BYTE_INDEX = 255  # 0xFF
 MAX_2_BYTE_INDEX = 65535  # 0xFFFF
 
+# CROB qualifier codes (IEEE 1815-2012 Table 4-3)
+# 0x17: 1-byte count field + 1-byte index prefix per object
+# 0x28: 2-byte count field + 2-byte index prefix per object
+QUALIFIER_CROB_1BYTE = 0x17
+QUALIFIER_CROB_2BYTE = 0x28
+
+# CROB body size in bytes: control_code(1) + op_count(1) + on_time(4) + off_time(4) + status(1)
+_CROB_BODY_BYTES = 11
+
 
 def _serialize_binary_input(value: bool, quality: BinaryQuality) -> bytes:
     """Serialize a binary input point to g1v2 format."""
@@ -104,6 +114,92 @@ def _serialize_counter_32(value: int, quality: int) -> bytes:
     """Serialize a counter point to g20v1 format."""
     # 1 byte flags + 4 bytes value (little-endian unsigned)
     return bytes([quality]) + value.to_bytes(4, byteorder="little", signed=False)
+
+
+def _contiguous_runs(points: list[Any]) -> list[list[Any]]:
+    """Split a list of points (sorted by index) into contiguous index runs.
+
+    The database holds points in a sparse dict keyed by index; callers MUST NOT
+    assume the list is dense (e.g. indices [0, 5, 10] have gaps at 1-4 and 6-9).
+    A start/stop range header [0..10] would imply values for the missing indices,
+    so each gap-free run must be encoded as its own ObjectBlock.
+
+    Args:
+        points: List of points sorted by ascending index (guaranteed by the
+            database's get_all_* methods which use sorted(dict.items())).
+
+    Returns:
+        A list of one or more non-empty sub-lists, each a contiguous run.
+    """
+    if not points:
+        return []
+    runs: list[list[Any]] = [[points[0]]]
+    for point in points[1:]:
+        if point.index == runs[-1][-1].index + 1:
+            runs[-1].append(point)
+        else:
+            runs.append([point])
+    return runs
+
+
+def _build_static_blocks(
+    group: int,
+    variation: int,
+    points: list[Any],
+    serialize: Callable[[Any], bytes],
+) -> list[ObjectBlock]:
+    """Build ObjectBlocks for static data using start/stop range qualifiers.
+
+    Splits the point list into contiguous index runs first.  Each run becomes
+    one ObjectBlock with the correct start/stop range header and no per-object
+    index prefix, conforming to IEEE 1815-2012 Table 4-2.
+
+    Args:
+        group: Object group number.
+        variation: Object variation number.
+        points: Sorted list of points (may be sparse).
+        serialize: Callable that converts a single point to its wire bytes.
+
+    Returns:
+        One ObjectBlock per contiguous run, in index order.
+    """
+    blocks: list[ObjectBlock] = []
+    for run in _contiguous_runs(points):
+        header, range_data = _build_start_stop_header(
+            group=group,
+            variation=variation,
+            start=run[0].index,
+            stop=run[-1].index,
+        )
+        data = bytearray()
+        for point in run:
+            data.extend(serialize(point))
+        blocks.append(ObjectBlock(header=header, data=range_data + bytes(data)))
+    return blocks
+
+
+def _crob_count_index_sizes(qualifier: int) -> tuple[int, int]:
+    """Return (count_bytes, index_bytes) for a CROB qualifier.
+
+    IEEE 1815-2012 Table 4-3:
+      0x17 => 1-byte count, 1-byte index prefix per object
+      0x28 => 2-byte count, 2-byte index prefix per object
+
+    Args:
+        qualifier: The qualifier byte from the object header.
+
+    Returns:
+        A tuple of (count_bytes, index_bytes).
+
+    Raises:
+        ValueError: If the qualifier is not 0x17 or 0x28.
+    """
+    if qualifier == QUALIFIER_CROB_1BYTE:
+        return 1, 1
+    if qualifier == QUALIFIER_CROB_2BYTE:
+        return 2, 2
+    msg = f"Unsupported CROB qualifier 0x{qualifier:02X}; expected 0x17 or 0x28"
+    raise ValueError(msg)
 
 
 def _build_start_stop_header(
@@ -147,6 +243,133 @@ def _build_indexed_header(
         qualifier = 0x39  # 4-byte count, 4-byte index prefix
 
     return ObjectHeader(group=group, variation=variation, qualifier=qualifier)
+
+
+@dataclass(frozen=True)
+class ParsedCrob:
+    """One parsed CROB object from a received request block.
+
+    When ``control_code`` is None, ``status`` is FORMAT_ERROR (undefined
+    control-code nibble, truncated buffer, or unknown qualifier).  Callers
+    must check ``status`` before accessing ``control_code``.
+
+    Attributes:
+        index: Point index addressed by this CROB.
+        control_code: Parsed control code, or None for a FORMAT_ERROR entry.
+        op_count: Operation count field.
+        on_time: On-time in milliseconds.
+        off_time: Off-time in milliseconds.
+        status: FORMAT_ERROR or SUCCESS sentinel (callers apply real status).
+    """
+
+    index: int
+    control_code: ControlCode | None
+    op_count: int
+    on_time: int
+    off_time: int
+    status: CommandStatus
+
+
+def _parse_crob_block(block: ObjectBlock) -> list[ParsedCrob]:
+    """Parse a CROB ObjectBlock into a list of ParsedCrob entries.
+
+    Centralises qualifier sizing, count-field reading, per-object index and
+    CROB-body parsing, and all three FORMAT_ERROR paths:
+      - Unknown qualifier (not 0x17 or 0x28)
+      - Buffer too short for the declared count
+      - Undefined control-code nibble (0x05-0x0F not in ControlCode enum)
+
+    Frame-level vs per-object failure semantics:
+
+    Frame-level failures (unknown qualifier, count-field truncated before any
+    object is reached) return a single-element list containing a synthetic
+    ParsedCrob with index=0 and status=FORMAT_ERROR. The index=0 is a
+    placeholder: no real point index is available at that parse stage. The
+    single-element return is intentional: an empty list would leave callers
+    with no result to forward to _build_control_response, so IIN.PARAMETER_ERROR
+    would never be set and the malformed frame would produce a clean null
+    response (silent protocol violation).
+
+    Per-object failures (undefined control-code nibble, truncated body
+    discovered mid-loop) carry the real parsed index and status=FORMAT_ERROR
+    so the caller can include the correct point index in the response.
+
+    In all cases control_code=None signals the entry is an error sentinel;
+    callers must check status before accessing control_code.
+
+    Args:
+        block: CROB ObjectBlock from a SELECT, OPERATE, or DIRECT_OPERATE request.
+
+    Returns:
+        List of ParsedCrob entries. Empty only when the payload itself is empty
+        (zero-length data field). Otherwise contains at least one entry, which
+        may be a FORMAT_ERROR sentinel on frame-level parse failure.
+    """
+    data = block.data
+    if len(data) < 1:
+        return []
+
+    try:
+        count_bytes, index_bytes = _crob_count_index_sizes(block.header.qualifier)
+    except ValueError:
+        return [
+            ParsedCrob(index=0, control_code=None, op_count=0, on_time=0, off_time=0, status=CommandStatus.FORMAT_ERROR)
+        ]
+
+    if len(data) < count_bytes:
+        return [
+            ParsedCrob(index=0, control_code=None, op_count=0, on_time=0, off_time=0, status=CommandStatus.FORMAT_ERROR)
+        ]
+
+    count = int.from_bytes(data[0:count_bytes], "little")
+    offset = count_bytes
+    parsed: list[ParsedCrob] = []
+
+    for _ in range(count):
+        if offset + index_bytes + _CROB_BODY_BYTES > len(data):
+            parsed.append(
+                ParsedCrob(
+                    index=0, control_code=None, op_count=0, on_time=0, off_time=0, status=CommandStatus.FORMAT_ERROR
+                )
+            )
+            break
+
+        index = int.from_bytes(data[offset : offset + index_bytes], "little")
+        offset += index_bytes
+
+        try:
+            control_code: ControlCode | None = ControlCode(data[offset] & 0x0F)
+        except ValueError:
+            parsed.append(
+                ParsedCrob(
+                    index=index,
+                    control_code=None,
+                    op_count=0,
+                    on_time=0,
+                    off_time=0,
+                    status=CommandStatus.FORMAT_ERROR,
+                )
+            )
+            offset += _CROB_BODY_BYTES
+            continue
+
+        op_count = data[offset + 1]
+        on_time = int.from_bytes(data[offset + 2 : offset + 6], "little")
+        off_time = int.from_bytes(data[offset + 6 : offset + 10], "little")
+        offset += _CROB_BODY_BYTES
+
+        parsed.append(
+            ParsedCrob(
+                index=index,
+                control_code=control_code,
+                op_count=op_count,
+                on_time=on_time,
+                off_time=off_time,
+                status=CommandStatus.SUCCESS,
+            )
+        )
+
+    return parsed
 
 
 @dataclass
@@ -379,167 +602,74 @@ class Outstation:
         return objects
 
     def _build_binary_input_blocks(self, points: list[Any]) -> list[ObjectBlock]:
-        """Build object blocks for binary input points."""
-        if not points:
-            return []
+        """Build ObjectBlocks for binary input static data.
 
-        # Build data with indices and values
-        data = bytearray()
-        indices = [p.index for p in points]
-        max_index = max(indices)
-
-        # Determine index size
-        if max_index <= MAX_1_BYTE_INDEX:
-            index_size = 1
-            count_data = CountRange(count=len(points)).to_bytes_1()
-            qualifier = 0x17
-        else:
-            index_size = 2
-            count_data = CountRange(count=len(points)).to_bytes_2()
-            qualifier = 0x28
-
-        # Build indexed data
-        for point in points:
-            if index_size == 1:
-                data.append(point.index & 0xFF)
-            else:
-                data.extend(point.index.to_bytes(2, "little"))
-            data.extend(_serialize_binary_input(point.value, point.quality))
-
-        header = ObjectHeader(
+        Delegates to _build_static_blocks which splits sparse index sets into
+        contiguous runs, each encoded with its own start/stop range header per
+        IEEE 1815-2012 Table 4-2.
+        """
+        return _build_static_blocks(
             group=GV_BINARY_INPUT_FLAGS[0],
             variation=GV_BINARY_INPUT_FLAGS[1],
-            qualifier=qualifier,
+            points=points,
+            serialize=lambda p: _serialize_binary_input(p.value, p.quality),
         )
-        return [ObjectBlock(header=header, data=count_data + bytes(data))]
 
     def _build_binary_output_blocks(self, points: list[Any]) -> list[ObjectBlock]:
-        """Build object blocks for binary output points."""
-        if not points:
-            return []
+        """Build ObjectBlocks for binary output static data.
 
-        data = bytearray()
-        indices = [p.index for p in points]
-        max_index = max(indices)
-
-        if max_index <= MAX_1_BYTE_INDEX:
-            index_size = 1
-            count_data = CountRange(count=len(points)).to_bytes_1()
-            qualifier = 0x17
-        else:
-            index_size = 2
-            count_data = CountRange(count=len(points)).to_bytes_2()
-            qualifier = 0x28
-
-        for point in points:
-            if index_size == 1:
-                data.append(point.index & 0xFF)
-            else:
-                data.extend(point.index.to_bytes(2, "little"))
-            data.extend(_serialize_binary_output(point.value, point.quality))
-
-        header = ObjectHeader(
+        Delegates to _build_static_blocks which splits sparse index sets into
+        contiguous runs, each encoded with its own start/stop range header per
+        IEEE 1815-2012 Table 4-2.
+        """
+        return _build_static_blocks(
             group=GV_BINARY_OUTPUT_FLAGS[0],
             variation=GV_BINARY_OUTPUT_FLAGS[1],
-            qualifier=qualifier,
+            points=points,
+            serialize=lambda p: _serialize_binary_output(p.value, p.quality),
         )
-        return [ObjectBlock(header=header, data=count_data + bytes(data))]
 
     def _build_analog_input_blocks(self, points: list[Any]) -> list[ObjectBlock]:
-        """Build object blocks for analog input points."""
-        if not points:
-            return []
+        """Build ObjectBlocks for analog input static data.
 
-        data = bytearray()
-        indices = [p.index for p in points]
-        max_index = max(indices)
-
-        if max_index <= MAX_1_BYTE_INDEX:
-            index_size = 1
-            count_data = CountRange(count=len(points)).to_bytes_1()
-            qualifier = 0x17
-        else:
-            index_size = 2
-            count_data = CountRange(count=len(points)).to_bytes_2()
-            qualifier = 0x28
-
-        for point in points:
-            if index_size == 1:
-                data.append(point.index & 0xFF)
-            else:
-                data.extend(point.index.to_bytes(2, "little"))
-            data.extend(_serialize_analog_input_32(point.value, int(point.quality)))
-
-        header = ObjectHeader(
+        Delegates to _build_static_blocks which splits sparse index sets into
+        contiguous runs, each encoded with its own start/stop range header per
+        IEEE 1815-2012 Table 4-2.
+        """
+        return _build_static_blocks(
             group=GV_ANALOG_INPUT_32[0],
             variation=GV_ANALOG_INPUT_32[1],
-            qualifier=qualifier,
+            points=points,
+            serialize=lambda p: _serialize_analog_input_32(p.value, int(p.quality)),
         )
-        return [ObjectBlock(header=header, data=count_data + bytes(data))]
 
     def _build_counter_blocks(self, points: list[Any]) -> list[ObjectBlock]:
-        """Build object blocks for counter points."""
-        if not points:
-            return []
+        """Build ObjectBlocks for counter static data.
 
-        data = bytearray()
-        indices = [p.index for p in points]
-        max_index = max(indices)
-
-        if max_index <= MAX_1_BYTE_INDEX:
-            index_size = 1
-            count_data = CountRange(count=len(points)).to_bytes_1()
-            qualifier = 0x17
-        else:
-            index_size = 2
-            count_data = CountRange(count=len(points)).to_bytes_2()
-            qualifier = 0x28
-
-        for point in points:
-            if index_size == 1:
-                data.append(point.index & 0xFF)
-            else:
-                data.extend(point.index.to_bytes(2, "little"))
-            data.extend(_serialize_counter_32(point.value, int(point.quality)))
-
-        header = ObjectHeader(
+        Delegates to _build_static_blocks which splits sparse index sets into
+        contiguous runs, each encoded with its own start/stop range header per
+        IEEE 1815-2012 Table 4-2.
+        """
+        return _build_static_blocks(
             group=GV_COUNTER_32[0],
             variation=GV_COUNTER_32[1],
-            qualifier=qualifier,
+            points=points,
+            serialize=lambda p: _serialize_counter_32(p.value, int(p.quality)),
         )
-        return [ObjectBlock(header=header, data=count_data + bytes(data))]
 
     def _build_frozen_counter_blocks(self, points: list[Any]) -> list[ObjectBlock]:
-        """Build object blocks for frozen counter points."""
-        if not points:
-            return []
+        """Build ObjectBlocks for frozen counter static data.
 
-        data = bytearray()
-        indices = [p.index for p in points]
-        max_index = max(indices)
-
-        if max_index <= MAX_1_BYTE_INDEX:
-            index_size = 1
-            count_data = CountRange(count=len(points)).to_bytes_1()
-            qualifier = 0x17
-        else:
-            index_size = 2
-            count_data = CountRange(count=len(points)).to_bytes_2()
-            qualifier = 0x28
-
-        for point in points:
-            if index_size == 1:
-                data.append(point.index & 0xFF)
-            else:
-                data.extend(point.index.to_bytes(2, "little"))
-            data.extend(_serialize_counter_32(point.value, int(point.quality)))
-
-        header = ObjectHeader(
+        Delegates to _build_static_blocks which splits sparse index sets into
+        contiguous runs, each encoded with its own start/stop range header per
+        IEEE 1815-2012 Table 4-2.
+        """
+        return _build_static_blocks(
             group=GV_FROZEN_COUNTER_32[0],
             variation=GV_FROZEN_COUNTER_32[1],
-            qualifier=qualifier,
+            points=points,
+            serialize=lambda p: _serialize_counter_32(p.value, int(p.quality)),
         )
-        return [ObjectBlock(header=header, data=count_data + bytes(data))]
 
     def _read_class_events(self, event_class: EventClass) -> list[ObjectBlock]:
         """Read and clear events for a class."""
@@ -739,55 +869,41 @@ class Outstation:
         return self._build_control_response(request, results)
 
     def _process_crob_select(self, block: ObjectBlock, seq: int) -> list[tuple[int, CommandStatus]]:
-        """Process CROB SELECT."""
+        """Process CROB SELECT.
+
+        Delegates parsing to _parse_crob_block which handles qualifier sizing,
+        buffer validation, and control-code decoding.  FORMAT_ERROR entries are
+        forwarded directly; valid entries are dispatched to the handler and, on
+        success, stored as pending SELECT state.
+        """
         results: list[tuple[int, CommandStatus]] = []
 
-        # Parse CROB data - format: index (1-2 bytes) + CROB (11 bytes)
-        data = block.data
-        if len(data) < 1:
-            return results
+        for crob in _parse_crob_block(block):
+            if crob.status == CommandStatus.FORMAT_ERROR or crob.control_code is None:
+                results.append((crob.index, CommandStatus.FORMAT_ERROR))
+                continue
 
-        # Get count from first byte
-        count = data[0]
-        offset = 1
-
-        for _ in range(count):
-            if offset + 12 > len(data):  # 1 byte index + 11 byte CROB
-                break
-
-            index = data[offset]
-            offset += 1
-
-            # Parse CROB: control code (1) + count (1) + on_time (4) + off_time (4) + status (1)
-            control_code = ControlCode(data[offset] & 0x0F)
-            op_count = data[offset + 1]
-            on_time = int.from_bytes(data[offset + 2 : offset + 6], "little")
-            off_time = int.from_bytes(data[offset + 6 : offset + 10], "little")
-            offset += 11
-
-            # Call handler
             result = self.handler.select_binary_output(
-                index=index,
-                code=control_code,
-                count=op_count,
-                on_time=on_time,
-                off_time=off_time,
+                index=crob.index,
+                code=crob.control_code,
+                count=crob.op_count,
+                on_time=crob.on_time,
+                off_time=crob.off_time,
             )
 
             if result.is_success:
-                # Store SELECT state
                 select_state = SelectState(
-                    index=index,
+                    index=crob.index,
                     is_binary=True,
-                    control_code=control_code,
-                    count=op_count,
-                    on_time=on_time,
-                    off_time=off_time,
+                    control_code=crob.control_code,
+                    count=crob.op_count,
+                    on_time=crob.on_time,
+                    off_time=crob.off_time,
                     sequence=seq,
                 )
                 self._state.add_select(select_state)
 
-            results.append((index, result.status))
+            results.append((crob.index, result.status))
 
         return results
 
@@ -807,54 +923,42 @@ class Outstation:
         return self._build_control_response(request, results)
 
     def _process_crob_operate(self, block: ObjectBlock, seq: int) -> list[tuple[int, CommandStatus]]:
-        """Process CROB OPERATE."""
+        """Process CROB OPERATE.
+
+        Delegates parsing to _parse_crob_block.  FORMAT_ERROR entries are forwarded
+        directly.  Valid entries are checked against stored SELECT state; mismatches
+        return NO_SELECT and clear the pending state.
+        """
         results: list[tuple[int, CommandStatus]] = []
 
-        data = block.data
-        if len(data) < 1:
-            return results
+        for crob in _parse_crob_block(block):
+            if crob.status == CommandStatus.FORMAT_ERROR or crob.control_code is None:
+                results.append((crob.index, CommandStatus.FORMAT_ERROR))
+                continue
 
-        count = data[0]
-        offset = 1
-
-        for _ in range(count):
-            if offset + 12 > len(data):
-                break
-
-            index = data[offset]
-            offset += 1
-
-            control_code = ControlCode(data[offset] & 0x0F)
-            op_count = data[offset + 1]
-            on_time = int.from_bytes(data[offset + 2 : offset + 6], "little")
-            off_time = int.from_bytes(data[offset + 6 : offset + 10], "little")
-            offset += 11
-
-            # Check for matching SELECT
-            select_state = self._state.get_select(index)
+            select_state = self._state.get_select(crob.index)
             if select_state is None:
-                results.append((index, CommandStatus.NO_SELECT))
+                results.append((crob.index, CommandStatus.NO_SELECT))
                 continue
 
-            if not select_state.matches_binary(index, control_code, op_count, on_time, off_time):
-                results.append((index, CommandStatus.NO_SELECT))
-                self._state.remove_select(index)
+            if not select_state.matches_binary(
+                crob.index, crob.control_code, crob.op_count, crob.on_time, crob.off_time
+            ):
+                results.append((crob.index, CommandStatus.NO_SELECT))
+                self._state.remove_select(crob.index)
                 continue
 
-            # Call handler
             result = self.handler.operate_binary_output(
-                index=index,
-                code=control_code,
-                count=op_count,
-                on_time=on_time,
-                off_time=off_time,
+                index=crob.index,
+                code=crob.control_code,
+                count=crob.op_count,
+                on_time=crob.on_time,
+                off_time=crob.off_time,
                 select_sequence=select_state.sequence,
             )
 
-            # Clear SELECT state after OPERATE
-            self._state.remove_select(index)
-
-            results.append((index, result.status))
+            self._state.remove_select(crob.index)
+            results.append((crob.index, result.status))
 
         return results
 
@@ -870,38 +974,28 @@ class Outstation:
         return self._build_control_response(request, results)
 
     def _process_crob_direct_operate(self, block: ObjectBlock) -> list[tuple[int, CommandStatus]]:
-        """Process CROB DIRECT_OPERATE."""
+        """Process CROB DIRECT_OPERATE.
+
+        Delegates parsing to _parse_crob_block.  FORMAT_ERROR entries are forwarded
+        directly; valid entries are dispatched immediately to the handler with no
+        prior SELECT required.
+        """
         results: list[tuple[int, CommandStatus]] = []
 
-        data = block.data
-        if len(data) < 1:
-            return results
-
-        count = data[0]
-        offset = 1
-
-        for _ in range(count):
-            if offset + 12 > len(data):
-                break
-
-            index = data[offset]
-            offset += 1
-
-            control_code = ControlCode(data[offset] & 0x0F)
-            op_count = data[offset + 1]
-            on_time = int.from_bytes(data[offset + 2 : offset + 6], "little")
-            off_time = int.from_bytes(data[offset + 6 : offset + 10], "little")
-            offset += 11
+        for crob in _parse_crob_block(block):
+            if crob.status == CommandStatus.FORMAT_ERROR or crob.control_code is None:
+                results.append((crob.index, CommandStatus.FORMAT_ERROR))
+                continue
 
             result = self.handler.direct_operate_binary_output(
-                index=index,
-                code=control_code,
-                count=op_count,
-                on_time=on_time,
-                off_time=off_time,
+                index=crob.index,
+                code=crob.control_code,
+                count=crob.op_count,
+                on_time=crob.on_time,
+                off_time=crob.off_time,
             )
 
-            results.append((index, result.status))
+            results.append((crob.index, result.status))
 
         return results
 
