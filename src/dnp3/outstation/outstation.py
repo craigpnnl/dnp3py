@@ -719,22 +719,35 @@ class Outstation:
 
         return objects
 
+    @staticmethod
+    def _event_framing(events: list[Any]) -> tuple[int, bytes, int]:
+        """Compute shared index-prefix framing fields for an event block.
+
+        All three event builders (binary, analog, counter) choose the same
+        index size, count-field encoding, and qualifier code from the maximum
+        point index in the event list.  This helper centralises that choice.
+
+        Args:
+            events: Non-empty list of events; callers must guard against empty.
+
+        Returns:
+            Tuple of (index_size, count_data, qualifier) where:
+              - index_size: bytes per index prefix (1 or 2)
+              - count_data: serialised count field (1 or 2 bytes, little-endian)
+              - qualifier: 0x17 (1-byte) or 0x28 (2-byte) per IEEE 1815-2012
+        """
+        max_index = max(e.index for e in events)
+        if max_index <= MAX_1_BYTE_INDEX:
+            return 1, CountRange(count=len(events)).to_bytes_1(), 0x17
+        return 2, CountRange(count=len(events)).to_bytes_2(), 0x28
+
     def _build_binary_event_blocks(self, events: list[Any]) -> list[ObjectBlock]:
         """Build object blocks for binary events."""
         if not events:
             return []
 
         data = bytearray()
-        max_index = max(e.index for e in events)
-
-        if max_index <= MAX_1_BYTE_INDEX:
-            index_size = 1
-            count_data = CountRange(count=len(events)).to_bytes_1()
-            qualifier = 0x17
-        else:
-            index_size = 2
-            count_data = CountRange(count=len(events)).to_bytes_2()
-            qualifier = 0x28
+        index_size, count_data, qualifier = self._event_framing(events)
 
         for event in events:
             if index_size == 1:
@@ -760,16 +773,7 @@ class Outstation:
             return []
 
         data = bytearray()
-        max_index = max(e.index for e in events)
-
-        if max_index <= MAX_1_BYTE_INDEX:
-            index_size = 1
-            count_data = CountRange(count=len(events)).to_bytes_1()
-            qualifier = 0x17
-        else:
-            index_size = 2
-            count_data = CountRange(count=len(events)).to_bytes_2()
-            qualifier = 0x28
+        index_size, count_data, qualifier = self._event_framing(events)
 
         for event in events:
             if index_size == 1:
@@ -794,16 +798,7 @@ class Outstation:
             return []
 
         data = bytearray()
-        max_index = max(e.index for e in events)
-
-        if max_index <= MAX_1_BYTE_INDEX:
-            index_size = 1
-            count_data = CountRange(count=len(events)).to_bytes_1()
-            qualifier = 0x17
-        else:
-            index_size = 2
-            count_data = CountRange(count=len(events)).to_bytes_2()
-            qualifier = 0x28
+        index_size, count_data, qualifier = self._event_framing(events)
 
         for event in events:
             if index_size == 1:
@@ -1341,16 +1336,31 @@ class Outstation:
         truncation_detected = echoed < count
         return ObjectBlock(header=block.header, data=bytes(result_data)), truncation_detected
 
-    def _handle_cold_restart(self, request: RequestFragment) -> ResponseFragment:
-        """Handle COLD_RESTART request."""
-        delay = self.handler.cold_restart()
+    def _build_delay_response(
+        self,
+        restart_fn: Callable[[], int | None],
+        request: RequestFragment,
+    ) -> ResponseFragment:
+        """Build a g52v2 time-delay response for COLD_RESTART and WARM_RESTART.
+
+        Both handlers are identical except for the callable that produces the
+        delay value; this helper eliminates the duplication.
+
+        Args:
+            restart_fn: handler.cold_restart or handler.warm_restart.
+            request: The original restart request (needed for seq and IIN).
+
+        Returns:
+            Response with a g52v2 time-delay block, or a NO_FUNC_CODE_SUPPORT
+            null response when restart_fn returns None.
+        """
+        delay = restart_fn()
         if delay is None:
             return build_null_response(
                 iin=self.iin | IIN.NO_FUNC_CODE_SUPPORT,
                 seq=request.header.control.seq,
             )
 
-        # Build response with time delay object (g52v2)
         delay_data = delay.to_bytes(2, "little")
         header = ObjectHeader.build(
             group=52,
@@ -1366,32 +1376,14 @@ class Outstation:
             iin=self.iin,
             seq=request.header.control.seq,
         )
+
+    def _handle_cold_restart(self, request: RequestFragment) -> ResponseFragment:
+        """Handle COLD_RESTART request."""
+        return self._build_delay_response(self.handler.cold_restart, request)
 
     def _handle_warm_restart(self, request: RequestFragment) -> ResponseFragment:
         """Handle WARM_RESTART request."""
-        delay = self.handler.warm_restart()
-        if delay is None:
-            return build_null_response(
-                iin=self.iin | IIN.NO_FUNC_CODE_SUPPORT,
-                seq=request.header.control.seq,
-            )
-
-        # Build response with time delay object (g52v2)
-        delay_data = delay.to_bytes(2, "little")
-        header = ObjectHeader.build(
-            group=52,
-            variation=2,
-            prefix=PrefixCode.NONE,
-            range_code=RangeCode.UINT8_COUNT,
-        )
-        count_data = CountRange(count=1).to_bytes_1()
-        block = ObjectBlock(header=header, data=count_data + delay_data)
-
-        return build_response(
-            objects=(block,),
-            iin=self.iin,
-            seq=request.header.control.seq,
-        )
+        return self._build_delay_response(self.handler.warm_restart, request)
 
     def _handle_delay_measure(self, request: RequestFragment) -> ResponseFragment:
         """Handle DELAY_MEASURE request for time sync."""
@@ -1415,37 +1407,45 @@ class Outstation:
             seq=request.header.control.seq,
         )
 
-    def _handle_enable_unsolicited(self, request: RequestFragment) -> ResponseFragment:
-        """Handle ENABLE_UNSOLICITED request."""
+    def _process_unsolicited_class_request(
+        self,
+        request: RequestFragment,
+        action: Callable[[EventClass], None],
+    ) -> ResponseFragment:
+        """Shared core for ENABLE_UNSOLICITED and DISABLE_UNSOLICITED.
+
+        Both handlers walk the same g60-class object list and differ only in
+        the per-class action (enable vs disable); this helper captures the
+        shared iteration and null-response build.
+
+        Args:
+            request: The ENABLE or DISABLE unsolicited request.
+            action: Called with the EventClass for each recognised class object.
+
+        Returns:
+            Null response with current IIN.
+        """
         for block in request.objects:
             if block.header.group == GROUP_CLASS_DATA:
                 if block.header.variation == VAR_CLASS_1:
-                    self._state.unsolicited.enable_class(EventClass.CLASS_1)
+                    action(EventClass.CLASS_1)
                 elif block.header.variation == VAR_CLASS_2:
-                    self._state.unsolicited.enable_class(EventClass.CLASS_2)
+                    action(EventClass.CLASS_2)
                 elif block.header.variation == VAR_CLASS_3:
-                    self._state.unsolicited.enable_class(EventClass.CLASS_3)
+                    action(EventClass.CLASS_3)
 
         return build_null_response(
             iin=self.iin,
             seq=request.header.control.seq,
         )
+
+    def _handle_enable_unsolicited(self, request: RequestFragment) -> ResponseFragment:
+        """Handle ENABLE_UNSOLICITED request."""
+        return self._process_unsolicited_class_request(request, self._state.unsolicited.enable_class)
 
     def _handle_disable_unsolicited(self, request: RequestFragment) -> ResponseFragment:
         """Handle DISABLE_UNSOLICITED request."""
-        for block in request.objects:
-            if block.header.group == GROUP_CLASS_DATA:
-                if block.header.variation == VAR_CLASS_1:
-                    self._state.unsolicited.disable_class(EventClass.CLASS_1)
-                elif block.header.variation == VAR_CLASS_2:
-                    self._state.unsolicited.disable_class(EventClass.CLASS_2)
-                elif block.header.variation == VAR_CLASS_3:
-                    self._state.unsolicited.disable_class(EventClass.CLASS_3)
-
-        return build_null_response(
-            iin=self.iin,
-            seq=request.header.control.seq,
-        )
+        return self._process_unsolicited_class_request(request, self._state.unsolicited.disable_class)
 
     def _handle_confirm(self, request: RequestFragment) -> ResponseFragment | None:
         """Handle CONFIRM request."""
