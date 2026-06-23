@@ -1163,38 +1163,56 @@ class Outstation:
     ) -> ObjectBlock:
         """Echo a CROB block with status bytes set from results.
 
+        Derives count-field and index-field widths from the qualifier byte
+        using _crob_count_index_sizes, mirroring _parse_crob_block's framing
+        so 0x17 (1-byte) and 0x28 (2-byte) qualifiers are both handled
+        correctly. If the qualifier is unrecognised the block is returned
+        unchanged; the parse path already surfaced FORMAT_ERROR for it.
+
         Args:
             block: Original request CROB block.
             status_map: Map of point index to command status.
 
         Returns:
-            ObjectBlock with status bytes updated.
+            ObjectBlock with status bytes updated to match results.
         """
         data = block.data
-        if len(data) < 1:
+        try:
+            count_bytes, index_bytes = _crob_count_index_sizes(block.header.qualifier)
+        except ValueError:
+            # Unrecognised qualifier: parse path already produced FORMAT_ERROR;
+            # return the block unmodified so the echo is at least not silently wrong.
             return block
 
-        count = data[0]
-        offset = 1
-        result_data = bytearray([count])
+        if len(data) < count_bytes:
+            return block
+
+        count = int.from_bytes(data[0:count_bytes], "little")
+        offset = count_bytes
+        # Preserve the original count field bytes verbatim.
+        result_data = bytearray(data[0:count_bytes])
+
+        # Body bytes excluding the trailing status byte.
+        body_without_status = _CROB_BODY_BYTES - 1
 
         for _ in range(count):
-            if offset + 12 > len(data):  # 1 byte index + 11 byte CROB
+            if offset + index_bytes + _CROB_BODY_BYTES > len(data):
                 break
 
-            index = data[offset]
-            # Copy index byte
-            result_data.append(index)
+            # Read index at qualifier-derived width.
+            index = int.from_bytes(data[offset : offset + index_bytes], "little")
+            # Copy index field verbatim.
+            result_data.extend(data[offset : offset + index_bytes])
+            offset += index_bytes
+
+            # Copy CROB body fields (control + op_count + on_time + off_time).
+            result_data.extend(data[offset : offset + body_without_status])
+            offset += body_without_status
+
+            # Skip the original status byte.
             offset += 1
 
-            # Copy CROB fields (10 bytes: control + count + on_time + off_time)
-            result_data.extend(data[offset : offset + 10])
-            offset += 10
-
-            # Skip the original status byte
-            offset += 1
-
-            # Write the result status byte
+            # Write the result status byte.
             status = status_map.get(index, CommandStatus.NOT_SUPPORTED)
             result_data.append(int(status))
 

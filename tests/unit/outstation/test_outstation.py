@@ -1465,6 +1465,91 @@ class TestDirectOperateResponse:
             f"Expected NOT_SUPPORTED ({CommandStatus.NOT_SUPPORTED}), got status={status_byte}"
         )
 
+    def test_direct_operate_crob_0x17_echoes_correct_index(self) -> None:
+        """DIRECT_OPERATE with 0x17 CROB echoes the 1-byte index verbatim.
+
+        Wire-level assertion: the echoed data byte at offset 1 must equal the
+        requested index (5), not some truncated or shifted value.
+        """
+
+        class AcceptHandler(DefaultCommandHandler):
+            def direct_operate_binary_output(
+                self,
+                index: int,
+                code: ControlCode,
+                count: int,
+                on_time: int,
+                off_time: int,
+            ) -> CommandResult:
+                return CommandResult.success()
+
+        outstation = Outstation(handler=AcceptHandler())
+        outstation.database.add_binary_output(5, value=False)
+
+        block = _make_crob_block(qualifier=0x17, index=5)
+
+        from dnp3.application.builder import build_direct_operate_request
+
+        request = build_direct_operate_request(objects=(block,))
+        response = outstation.process_request(request.to_bytes())
+
+        assert response is not None
+        assert len(response.objects) > 0
+        resp_data = response.objects[0].data
+        # Layout: count(1) + index(1) + body(10) + status(1) = 13 bytes
+        assert len(resp_data) >= 13, f"Response data too short: {len(resp_data)} bytes"
+        echoed_index = resp_data[1]
+        assert echoed_index == 5, f"Echoed index must be 5 (0x17 path), got {echoed_index}"
+        # Status byte at offset 12 (count + index + 10 body bytes)
+        assert resp_data[12] == int(CommandStatus.SUCCESS), f"Expected SUCCESS, got {resp_data[12]}"
+
+    def test_direct_operate_crob_0x28_echoes_correct_index(self) -> None:
+        """DIRECT_OPERATE with 0x28 CROB echoes the 2-byte index verbatim.
+
+        Index 300 does not fit in one byte (300 % 256 = 44). The prior
+        hardcoded 1-byte read in _echo_crob_block would echo index 44.
+        This test confirms the fixed implementation echoes the full 2-byte
+        little-endian index 300 at wire level.
+        """
+
+        class AcceptHandler(DefaultCommandHandler):
+            def direct_operate_binary_output(
+                self,
+                index: int,
+                code: ControlCode,
+                count: int,
+                on_time: int,
+                off_time: int,
+            ) -> CommandResult:
+                return CommandResult.success()
+
+        outstation = Outstation(handler=AcceptHandler())
+        outstation.database.add_binary_output(300, value=False)
+
+        block = _make_crob_block(qualifier=0x28, index=300)
+
+        from dnp3.application.builder import build_direct_operate_request
+
+        request = build_direct_operate_request(objects=(block,))
+        response = outstation.process_request(request.to_bytes())
+
+        assert response is not None
+        assert len(response.objects) > 0
+        resp_data = response.objects[0].data
+        # 0x28 layout: count(2) + index(2) + body(10) + status(1) = 15 bytes
+        assert len(resp_data) >= 15, f"Response data too short for 0x28: {len(resp_data)} bytes"
+        # Count field: 2 bytes little-endian at offset 0
+        echoed_count = int.from_bytes(resp_data[0:2], "little")
+        assert echoed_count == 1, f"Count must be 1, got {echoed_count}"
+        # Index field: 2 bytes little-endian at offset 2
+        echoed_index = int.from_bytes(resp_data[2:4], "little")
+        assert echoed_index == 300, (
+            f"Echoed index must be 300 (2-byte 0x28 path), got {echoed_index}. "
+            "Value 44 would indicate the index was truncated to 1 byte."
+        )
+        # Status byte: at offset count(2) + index(2) + body(10) = 14
+        assert resp_data[14] == int(CommandStatus.SUCCESS), f"Expected SUCCESS, got {resp_data[14]}"
+
 
 class TestDirectOperateAnalogOutput:
     """Tests for DIRECT_OPERATE with Analog Output (Group 41)."""
