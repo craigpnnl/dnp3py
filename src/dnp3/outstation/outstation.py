@@ -1122,11 +1122,16 @@ class Outstation:
 
         Per IEEE 1815-2012, the response must echo back the same object
         headers with each command object's status field set to the result.
+        Any FORMAT_ERROR result also sets IIN.PARAMETER_ERROR in the response
+        header, signaling a malformed request to the master.
         """
         # Build a lookup from index to status
         status_map: dict[int, CommandStatus] = {}
+        has_format_error = False
         for index, status in results:
             status_map[index] = status
+            if status == CommandStatus.FORMAT_ERROR:
+                has_format_error = True
 
         objects: list[ObjectBlock] = []
 
@@ -1141,9 +1146,13 @@ class Outstation:
                 # For unsupported object types, echo the block as-is
                 objects.append(block)
 
+        iin = self.iin
+        if has_format_error:
+            iin = iin | IIN.PARAMETER_ERROR
+
         return build_response(
             objects=tuple(objects),
-            iin=self.iin,
+            iin=iin,
             seq=request.header.control.seq,
         )
 
