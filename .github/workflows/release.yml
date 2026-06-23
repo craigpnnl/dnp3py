@@ -147,6 +147,58 @@ jobs:
         run: pytest tests/ -v --tb=short
 
   # ------------------------------------------------------------------ #
+  # Phase 3b: dry-run PSR version-print guard (gated on dry_run=true)  #
+  # When dry_run=true the semantic-release job is skipped entirely,     #
+  # which previously meant a wrong-subcommand bug (like running         #
+  # `publish` instead of `version`) would never be caught in a dry run. #
+  # This job exercises `semantic-release version --print`, which        #
+  # computes and prints the next version without committing, tagging,   #
+  # or pushing anything. It fails loudly if PSR would produce no        #
+  # release (empty output), catching config/subcommand bugs before      #
+  # a real release attempt.                                             #
+  # ------------------------------------------------------------------ #
+  dry-run-version-check:
+    name: Dry-run version-print guard
+    needs: [smoke-test, test]
+    runs-on: ubuntu-latest
+    if: inputs.dry_run == 'true'
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+
+      - name: Install python-semantic-release
+        run: |
+          python -m pip install --upgrade pip
+          pip install python-semantic-release
+
+      - name: Assert PSR would produce a release (version --print)
+        # `semantic-release version --print` computes the next semver version
+        # from conventional commits and prints it, with no side effects
+        # (no commit, no tag, no push, no GitHub release). If PSR determines
+        # there are no releasable commits since the last tag, it prints
+        # nothing (empty output). We assert that output is non-empty: if it
+        # is empty, the pipeline fails here rather than silently producing a
+        # no-op when dry_run is later set to false.
+        run: |
+          NEXT_VERSION=$(semantic-release version --print 2>/dev/null)
+          echo "PSR computed next version: '${NEXT_VERSION}'"
+          if [ -z "${NEXT_VERSION}" ]; then
+            echo "FAIL: semantic-release version --print produced no output."
+            echo "  Either there are no releasable conventional commits since the last tag,"
+            echo "  or the PSR configuration is broken (wrong branch, wrong parser, etc.)."
+            echo "  Fix the configuration or add a releasable commit before dispatching a real release."
+            exit 1
+          fi
+          echo "PASS: PSR would produce version ${NEXT_VERSION} on a real release dispatch."
+
+  # ------------------------------------------------------------------ #
   # Phase 4: PSR tag + CHANGELOG + GitHub release (gated on dry_run=false) #
   # PSR does NOT publish to PyPI (upload_to_pypi = false in pyproject.toml).
   # The dedicated publish-pypi OIDC job is the sole PyPI publish path.   #
@@ -184,39 +236,56 @@ jobs:
           name: dist
           path: dist/
 
+      # Post-release assert baseline (doctrine §5): record the current latest
+      # tag BEFORE PSR runs so the post-assert can compare pre vs. post and
+      # detect a no-op (PSR exits zero without creating a new tag).
+      - name: Capture pre-release tag baseline
+        id: pre-release
+        run: |
+          git fetch --tags origin
+          PRE_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+          echo "Pre-release latest tag: ${PRE_TAG}"
+          echo "pre_tag=${PRE_TAG}" >> "$GITHUB_OUTPUT"
+
       - name: Run python-semantic-release
-        # GITHUB_TOKEN pre-flight: the token is always present in Actions but
-        # can be blocked by environment protection rules or token scopes. The
-        # post-release tag assert below is the real gate: it confirms PSR
-        # actually pushed a tag to origin, distinguishing a successful release
-        # from a no-op (no releasable commits since last tag).
+        # In PSR v10, `version` is the command that computes the semver bump
+        # from conventional commits, writes CHANGELOG.md, commits (when
+        # commit_version_number=true), creates and pushes the tag, and creates
+        # the GitHub VCS release. `publish` in v10 is a separate command that
+        # only uploads pre-built dists to an existing release; it does NOT
+        # create a tag or a GitHub release. Running `publish` instead of
+        # `version` is what caused the v0.1.1 attempt to exit zero without
+        # cutting anything. The dedicated publish-pypi OIDC job handles PyPI;
+        # PSR's own upload_to_pypi is false, so `version` here only tags and
+        # creates the GitHub release (upload_to_release = true in pyproject.toml).
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: semantic-release publish
+        run: semantic-release version
 
-      # Post-release assert (doctrine §5): verify the tag was actually
-      # pushed. PSR exits zero even when no releasable commits exist
-      # (no-op). This step distinguishes "release created" from "ran
-      # clean but created nothing."
       - name: Post-release tag assert
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           git fetch --tags origin
-          LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
-          if [ -z "${LATEST_TAG}" ]; then
-            echo "WARN: no tags found on origin after semantic-release. Possible no-op (no releasable commits since last tag)."
-            echo "release_outcome=no-op" >> "$GITHUB_OUTPUT"
-          else
-            REMOTE_CHECK=$(git ls-remote --tags origin "refs/tags/${LATEST_TAG}")
-            if [ -z "${REMOTE_CHECK}" ]; then
-              echo "FAIL: tag ${LATEST_TAG} not found on origin after semantic-release push."
-              exit 1
-            fi
-            echo "Post-release assert: tag ${LATEST_TAG} confirmed on origin."
-            echo "release_outcome=released" >> "$GITHUB_OUTPUT"
-            echo "release_tag=${LATEST_TAG}" >> "$GITHUB_OUTPUT"
+          POST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+          PRE_TAG="${{ steps.pre-release.outputs.pre_tag }}"
+          echo "Pre-release tag:  ${PRE_TAG}"
+          echo "Post-release tag: ${POST_TAG}"
+          if [ -z "${POST_TAG}" ] || [ "${POST_TAG}" = "${PRE_TAG}" ]; then
+            echo "FAIL: no new tag was created by semantic-release."
+            echo "  Expected a new vX.Y.Z tag beyond '${PRE_TAG}' on origin."
+            echo "  PSR exited zero without cutting a release (no releasable commits since last tag,"
+            echo "  or the wrong subcommand was used)."
+            exit 1
           fi
+          REMOTE_CHECK=$(git ls-remote --tags origin "refs/tags/${POST_TAG}")
+          if [ -z "${REMOTE_CHECK}" ]; then
+            echo "FAIL: new tag ${POST_TAG} was created locally but not found on origin."
+            exit 1
+          fi
+          echo "Post-release assert PASS: new tag ${POST_TAG} confirmed on origin (was: ${PRE_TAG})."
+          echo "release_outcome=released" >> "$GITHUB_OUTPUT"
+          echo "release_tag=${POST_TAG}" >> "$GITHUB_OUTPUT"
 
   # ------------------------------------------------------------------ #
   # Phase 5: PyPI publish (gated on dry_run=false)                      #
@@ -254,7 +323,7 @@ jobs:
   # ------------------------------------------------------------------ #
   release-outcome:
     name: Release Outcome
-    needs: [build, smoke-test, test, semantic-release, publish-pypi]
+    needs: [build, smoke-test, test, dry-run-version-check, semantic-release, publish-pypi]
     runs-on: ubuntu-latest
     if: always()
 
@@ -264,6 +333,7 @@ jobs:
           BUILD="${{ needs.build.result }}"
           SMOKE="${{ needs.smoke-test.result }}"
           TEST="${{ needs.test.result }}"
+          DRY_CHECK="${{ needs.dry-run-version-check.result }}"
           PSR="${{ needs.semantic-release.result }}"
           PYPI="${{ needs.publish-pypi.result }}"
           DRY_RUN="${{ inputs.dry_run }}"
@@ -275,7 +345,9 @@ jobs:
           echo "| build | ${BUILD} |" >> "$GITHUB_STEP_SUMMARY"
           echo "| smoke-test | ${SMOKE} |" >> "$GITHUB_STEP_SUMMARY"
           echo "| test | ${TEST} |" >> "$GITHUB_STEP_SUMMARY"
-          if [ "${DRY_RUN}" != "true" ]; then
+          if [ "${DRY_RUN}" = "true" ]; then
+            echo "| dry-run-version-check | ${DRY_CHECK} |" >> "$GITHUB_STEP_SUMMARY"
+          else
             echo "| semantic-release | ${PSR} |" >> "$GITHUB_STEP_SUMMARY"
             echo "| publish-pypi | ${PYPI} |" >> "$GITHUB_STEP_SUMMARY"
           fi
@@ -292,7 +364,11 @@ jobs:
             fi
           done
 
-          if [ "${DRY_RUN}" != "true" ]; then
+          if [ "${DRY_RUN}" = "true" ]; then
+            if [ "${DRY_CHECK}" = "failure" ] && [ -z "${FAILED_PHASE}" ]; then
+              FAILED_PHASE="dry-run-version-check"
+            fi
+          else
             for PHASE_RESULT in "${PSR}:semantic-release" "${PYPI}:publish-pypi"; do
               RESULT="${PHASE_RESULT%%:*}"
               PHASE="${PHASE_RESULT##*:}"
@@ -309,7 +385,7 @@ jobs:
             exit 1
           else
             if [ "${DRY_RUN}" = "true" ]; then
-              echo "**Outcome: SUCCESS (dry run)** Build, smoke-test, and test matrix all passed. No tag or publish performed." >> "$GITHUB_STEP_SUMMARY"
+              echo "**Outcome: SUCCESS (dry run)** Build, smoke-test, test matrix, and PSR version-print check all passed. No tag or publish performed." >> "$GITHUB_STEP_SUMMARY"
             else
               echo "**Outcome: SUCCESS** Tag created, GitHub release published, PyPI artifact pushed." >> "$GITHUB_STEP_SUMMARY"
             fi
