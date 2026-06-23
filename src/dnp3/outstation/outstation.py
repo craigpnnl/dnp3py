@@ -279,14 +279,31 @@ def _parse_crob_block(block: ObjectBlock) -> list[ParsedCrob]:
       - Buffer too short for the declared count
       - Undefined control-code nibble (0x05-0x0F not in ControlCode enum)
 
-    A malformed entry is represented as a ParsedCrob with
-    control_code=None and status=FORMAT_ERROR so the callers never raise.
+    Frame-level vs per-object failure semantics:
+
+    Frame-level failures (unknown qualifier, count-field truncated before any
+    object is reached) return a single-element list containing a synthetic
+    ParsedCrob with index=0 and status=FORMAT_ERROR. The index=0 is a
+    placeholder: no real point index is available at that parse stage. The
+    single-element return is intentional: an empty list would leave callers
+    with no result to forward to _build_control_response, so IIN.PARAMETER_ERROR
+    would never be set and the malformed frame would produce a clean null
+    response (silent protocol violation).
+
+    Per-object failures (undefined control-code nibble, truncated body
+    discovered mid-loop) carry the real parsed index and status=FORMAT_ERROR
+    so the caller can include the correct point index in the response.
+
+    In all cases control_code=None signals the entry is an error sentinel;
+    callers must check status before accessing control_code.
 
     Args:
         block: CROB ObjectBlock from a SELECT, OPERATE, or DIRECT_OPERATE request.
 
     Returns:
-        List of ParsedCrob entries (may contain FORMAT_ERROR sentinels).
+        List of ParsedCrob entries. Empty only when the payload itself is empty
+        (zero-length data field). Otherwise contains at least one entry, which
+        may be a FORMAT_ERROR sentinel on frame-level parse failure.
     """
     data = block.data
     if len(data) < 1:
