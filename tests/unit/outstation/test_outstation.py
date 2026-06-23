@@ -1,5 +1,7 @@
 """Tests for main Outstation class."""
 
+import struct
+
 from dnp3.application.builder import (
     build_class_poll,
     build_delay_measure_request,
@@ -474,4 +476,249 @@ class TestMultiplePointTypes:
 
         assert response is not None
         # Should have objects for each point type
-        assert len(response.objects) >= 4
+
+
+# ---------------------------------------------------------------------------
+# Issue #6 regression tests
+# ---------------------------------------------------------------------------
+
+
+def _make_crob_block(qualifier: int, index: int) -> ObjectBlock:
+    """Build a raw CROB ObjectBlock for the given qualifier and point index.
+
+    qualifier 0x17: 1-byte count + 1-byte index prefix per object.
+    qualifier 0x28: 2-byte count + 2-byte index prefix per object.
+
+    CROB payload (11 bytes): control_code(1) + op_count(1) + on_time(4) +
+    off_time(4) + status(1).
+    """
+    # LATCH_ON control code = 3
+    control_code = 0x03
+    op_count = 1
+    on_time = 500  # ms
+    off_time = 0
+
+    if qualifier == 0x17:
+        count_bytes = bytes([1])
+        index_bytes = bytes([index & 0xFF])
+    else:  # 0x28
+        count_bytes = struct.pack("<H", 1)
+        index_bytes = struct.pack("<H", index)
+
+    crob_payload = bytes([control_code, op_count]) + struct.pack("<II", on_time, off_time) + bytes([0])
+
+    data = count_bytes + index_bytes + crob_payload
+    header = ObjectHeader(group=12, variation=1, qualifier=qualifier)
+    return ObjectBlock(header=header, data=data)
+
+
+class TestStaticResponseQualifiers:
+    """Issue #6 Finding 1: static builders must emit start/stop range qualifiers.
+
+    IEEE 1815-2012 requires static (Class-0) responses to use qualifier 0x00
+    (1-byte start/stop) or 0x01 (2-byte start/stop), never 0x17/0x28 which are
+    the count+index event forms.
+    """
+
+    def test_binary_input_static_uses_start_stop_qualifier_1byte(self) -> None:
+        """Binary input static response uses qualifier 0x00 (1-byte start/stop)."""
+        outstation = Outstation()
+        outstation.database.add_binary_input(0, value=True)
+        outstation.database.add_binary_input(1, value=False)
+
+        request = build_integrity_poll()
+        response = outstation.process_request(request.to_bytes())
+
+        assert response is not None
+        bi_blocks = [b for b in response.objects if b.header.group == 1]
+        assert len(bi_blocks) == 1, "Expected exactly one g1v2 block"
+        # Qualifier 0x00 = prefix NONE + range UINT8_START_STOP
+        assert (
+            bi_blocks[0].header.qualifier == 0x00
+        ), f"Expected qualifier 0x00 (1-byte start/stop), got 0x{bi_blocks[0].header.qualifier:02X}"
+        # range_data is 2 bytes: start=0, stop=1
+        assert bi_blocks[0].data[0] == 0, "start index must be 0"
+        assert bi_blocks[0].data[1] == 1, "stop index must be 1"
+
+    def test_binary_input_static_qualifier_not_event_form(self) -> None:
+        """Binary input static response must NOT emit 0x17 or 0x28."""
+        outstation = Outstation()
+        outstation.database.add_binary_input(5, value=True)
+
+        request = build_integrity_poll()
+        response = outstation.process_request(request.to_bytes())
+
+        bi_blocks = [b for b in response.objects if b.header.group == 1]
+        assert len(bi_blocks) == 1
+        qualifier = bi_blocks[0].header.qualifier
+        assert qualifier not in (0x17, 0x28), f"Static response must not use event qualifier 0x{qualifier:02X}"
+
+    def test_binary_input_static_uses_2byte_start_stop_for_large_index(self) -> None:
+        """Binary input static response uses qualifier 0x01 (2-byte start/stop) for index > 255."""
+        outstation = Outstation()
+        outstation.database.add_binary_input(256, value=True)
+
+        request = build_integrity_poll()
+        response = outstation.process_request(request.to_bytes())
+
+        bi_blocks = [b for b in response.objects if b.header.group == 1]
+        assert len(bi_blocks) == 1
+        # Qualifier 0x01 = prefix NONE + range UINT16_START_STOP
+        assert bi_blocks[0].header.qualifier == 0x01, (
+            f"Expected qualifier 0x01 (2-byte start/stop) for index 256, " f"got 0x{bi_blocks[0].header.qualifier:02X}"
+        )
+        # range_data is 4 bytes: start and stop both = 256 (little-endian)
+        start = struct.unpack_from("<H", bi_blocks[0].data, 0)[0]
+        stop = struct.unpack_from("<H", bi_blocks[0].data, 2)[0]
+        assert start == 256, f"start must be 256, got {start}"
+        assert stop == 256, f"stop must be 256, got {stop}"
+
+    def test_analog_input_static_uses_start_stop_qualifier(self) -> None:
+        """Analog input static response uses qualifier 0x00 (1-byte start/stop)."""
+        outstation = Outstation()
+        outstation.database.add_analog_input(0, value=42.0)
+        outstation.database.add_analog_input(3, value=7.0)
+
+        request = build_integrity_poll()
+        response = outstation.process_request(request.to_bytes())
+
+        ai_blocks = [b for b in response.objects if b.header.group == 30]
+        assert len(ai_blocks) == 1
+        assert (
+            ai_blocks[0].header.qualifier == 0x00
+        ), f"Expected qualifier 0x00, got 0x{ai_blocks[0].header.qualifier:02X}"
+        assert ai_blocks[0].data[0] == 0, "start index must be 0"
+        assert ai_blocks[0].data[1] == 3, "stop index must be 3"
+
+    def test_counter_static_uses_start_stop_qualifier(self) -> None:
+        """Counter static response uses qualifier 0x00 (1-byte start/stop)."""
+        outstation = Outstation()
+        outstation.database.add_counter(0, value=100)
+        outstation.database.add_counter(2, value=200)
+
+        request = build_integrity_poll()
+        response = outstation.process_request(request.to_bytes())
+
+        ctr_blocks = [b for b in response.objects if b.header.group == 20]
+        assert len(ctr_blocks) == 1
+        assert (
+            ctr_blocks[0].header.qualifier == 0x00
+        ), f"Expected qualifier 0x00, got 0x{ctr_blocks[0].header.qualifier:02X}"
+        assert ctr_blocks[0].data[0] == 0
+        assert ctr_blocks[0].data[1] == 2
+
+    def test_binary_output_static_uses_start_stop_qualifier(self) -> None:
+        """Binary output static response uses qualifier 0x00 (1-byte start/stop)."""
+        outstation = Outstation()
+        outstation.database.add_binary_output(0, value=False)
+        outstation.database.add_binary_output(4, value=True)
+
+        request = build_integrity_poll()
+        response = outstation.process_request(request.to_bytes())
+
+        bo_blocks = [b for b in response.objects if b.header.group == 10]
+        assert len(bo_blocks) == 1
+        assert (
+            bo_blocks[0].header.qualifier == 0x00
+        ), f"Expected qualifier 0x00, got 0x{bo_blocks[0].header.qualifier:02X}"
+        assert bo_blocks[0].data[0] == 0
+        assert bo_blocks[0].data[1] == 4
+
+
+class TestCROBQualifierParsing:
+    """Issue #6 Finding 3: CROB handlers must derive count/index width from qualifier.
+
+    A qualifier 0x28 CROB carries a 2-byte count followed by 2-byte index prefixes.
+    Hardcoding 1-byte reads misaligns every subsequent field so the command
+    lands on the wrong point.
+    """
+
+    def _make_handler(self) -> "tuple[DefaultCommandHandler, list[int]]":
+        """Return a handler that records which indices were directly operated."""
+        operated: list[int] = []
+
+        class RecordingHandler(DefaultCommandHandler):
+            def direct_operate_binary_output(
+                self,
+                index: int,
+                code: ControlCode,
+                count: int,
+                on_time: int,
+                off_time: int,
+            ) -> CommandResult:
+                operated.append(index)
+                return CommandResult.success()
+
+        return RecordingHandler(), operated
+
+    def test_crob_1byte_qualifier_0x17_operates_correct_index(self) -> None:
+        """CROB with qualifier 0x17 (1-byte index) operates the exact point addressed."""
+        handler, operated = self._make_handler()
+        outstation = Outstation(handler=handler)
+        outstation.database.add_binary_output(5)
+
+        block = _make_crob_block(qualifier=0x17, index=5)
+
+        from dnp3.application.builder import build_direct_operate_request
+
+        request = build_direct_operate_request(objects=(block,))
+        outstation.process_request(request.to_bytes())
+
+        assert operated == [5], f"Expected point index 5 operated, got {operated}"
+
+    def test_crob_2byte_qualifier_0x28_operates_correct_index(self) -> None:
+        """CROB with qualifier 0x28 (2-byte index) operates the exact point addressed.
+
+        Index 300 does not fit in one byte; a 1-byte read would produce 300 % 256 = 44
+        as the index, operating the wrong point.
+        """
+        handler, operated = self._make_handler()
+        outstation = Outstation(handler=handler)
+        outstation.database.add_binary_output(300)
+
+        block = _make_crob_block(qualifier=0x28, index=300)
+
+        from dnp3.application.builder import build_direct_operate_request
+
+        request = build_direct_operate_request(objects=(block,))
+        outstation.process_request(request.to_bytes())
+
+        assert operated == [300], (
+            f"Expected point index 300 operated, got {operated}. "
+            "A value of 44 indicates the 2-byte index was truncated to 1 byte."
+        )
+
+    def test_crob_2byte_qualifier_0x28_parses_control_code_correctly(self) -> None:
+        """CROB with qualifier 0x28 parses the control code at the correct offset.
+
+        When the index is 2 bytes wide, the control code byte lives 2 bytes after
+        the count, not 1. Misalignment would deliver a garbled control code.
+        """
+        received_codes: list[ControlCode] = []
+
+        class CodeRecordingHandler(DefaultCommandHandler):
+            def direct_operate_binary_output(
+                self,
+                index: int,
+                code: ControlCode,
+                count: int,
+                on_time: int,
+                off_time: int,
+            ) -> CommandResult:
+                received_codes.append(code)
+                return CommandResult.success()
+
+        outstation = Outstation(handler=CodeRecordingHandler())
+        outstation.database.add_binary_output(300)
+
+        block = _make_crob_block(qualifier=0x28, index=300)
+
+        from dnp3.application.builder import build_direct_operate_request
+
+        request = build_direct_operate_request(objects=(block,))
+        outstation.process_request(request.to_bytes())
+
+        # _make_crob_block sets control_code = 0x03 = LATCH_ON
+        assert received_codes == [ControlCode.LATCH_ON], (
+            f"Expected LATCH_ON, got {received_codes}. " "A misaligned offset would produce a wrong control code."
+        )

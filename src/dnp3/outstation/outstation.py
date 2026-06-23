@@ -76,6 +76,12 @@ VAR_CLASS_3 = 4
 MAX_1_BYTE_INDEX = 255  # 0xFF
 MAX_2_BYTE_INDEX = 65535  # 0xFFFF
 
+# CROB qualifier codes (IEEE 1815-2012 Table 4-3)
+# 0x17: 1-byte count field + 1-byte index prefix per object
+# 0x28: 2-byte count field + 2-byte index prefix per object
+CROB_QUALIFIER_1BYTE = 0x17
+CROB_QUALIFIER_2BYTE = 0x28
+
 
 def _serialize_binary_input(value: bool, quality: BinaryQuality) -> bytes:
     """Serialize a binary input point to g1v2 format."""
@@ -104,6 +110,30 @@ def _serialize_counter_32(value: int, quality: int) -> bytes:
     """Serialize a counter point to g20v1 format."""
     # 1 byte flags + 4 bytes value (little-endian unsigned)
     return bytes([quality]) + value.to_bytes(4, byteorder="little", signed=False)
+
+
+def _crob_count_index_sizes(qualifier: int) -> tuple[int, int]:
+    """Return (count_bytes, index_bytes) for a CROB qualifier.
+
+    IEEE 1815-2012 Table 4-3:
+      0x17 => 1-byte count, 1-byte index prefix per object
+      0x28 => 2-byte count, 2-byte index prefix per object
+
+    Args:
+        qualifier: The qualifier byte from the object header.
+
+    Returns:
+        A tuple of (count_bytes, index_bytes).
+
+    Raises:
+        ValueError: If the qualifier is not 0x17 or 0x28.
+    """
+    if qualifier == CROB_QUALIFIER_1BYTE:
+        return 1, 1
+    if qualifier == CROB_QUALIFIER_2BYTE:
+        return 2, 2
+    msg = f"Unsupported CROB qualifier 0x{qualifier:02X}; expected 0x17 or 0x28"
+    raise ValueError(msg)
 
 
 def _build_start_stop_header(
@@ -379,167 +409,131 @@ class Outstation:
         return objects
 
     def _build_binary_input_blocks(self, points: list[Any]) -> list[ObjectBlock]:
-        """Build object blocks for binary input points."""
+        """Build object blocks for binary input points.
+
+        Static responses use start/stop range qualifiers (0x00 or 0x01) per
+        IEEE 1815-2012 Table 4-2. Points are sorted by index by the database.
+        """
         if not points:
             return []
 
-        # Build data with indices and values
-        data = bytearray()
-        indices = [p.index for p in points]
-        max_index = max(indices)
+        # Points are sorted by index; first is start, last is stop.
+        start = points[0].index
+        stop = points[-1].index
 
-        # Determine index size
-        if max_index <= MAX_1_BYTE_INDEX:
-            index_size = 1
-            count_data = CountRange(count=len(points)).to_bytes_1()
-            qualifier = 0x17
-        else:
-            index_size = 2
-            count_data = CountRange(count=len(points)).to_bytes_2()
-            qualifier = 0x28
-
-        # Build indexed data
-        for point in points:
-            if index_size == 1:
-                data.append(point.index & 0xFF)
-            else:
-                data.extend(point.index.to_bytes(2, "little"))
-            data.extend(_serialize_binary_input(point.value, point.quality))
-
-        header = ObjectHeader(
+        header, range_data = _build_start_stop_header(
             group=GV_BINARY_INPUT_FLAGS[0],
             variation=GV_BINARY_INPUT_FLAGS[1],
-            qualifier=qualifier,
+            start=start,
+            stop=stop,
         )
-        return [ObjectBlock(header=header, data=count_data + bytes(data))]
+
+        # Object data in index order, no per-object index prefix.
+        data = bytearray()
+        for point in points:
+            data.extend(_serialize_binary_input(point.value, point.quality))
+
+        return [ObjectBlock(header=header, data=range_data + bytes(data))]
 
     def _build_binary_output_blocks(self, points: list[Any]) -> list[ObjectBlock]:
-        """Build object blocks for binary output points."""
+        """Build object blocks for binary output points.
+
+        Static responses use start/stop range qualifiers (0x00 or 0x01) per
+        IEEE 1815-2012 Table 4-2. Points are sorted by index by the database.
+        """
         if not points:
             return []
 
-        data = bytearray()
-        indices = [p.index for p in points]
-        max_index = max(indices)
+        start = points[0].index
+        stop = points[-1].index
 
-        if max_index <= MAX_1_BYTE_INDEX:
-            index_size = 1
-            count_data = CountRange(count=len(points)).to_bytes_1()
-            qualifier = 0x17
-        else:
-            index_size = 2
-            count_data = CountRange(count=len(points)).to_bytes_2()
-            qualifier = 0x28
-
-        for point in points:
-            if index_size == 1:
-                data.append(point.index & 0xFF)
-            else:
-                data.extend(point.index.to_bytes(2, "little"))
-            data.extend(_serialize_binary_output(point.value, point.quality))
-
-        header = ObjectHeader(
+        header, range_data = _build_start_stop_header(
             group=GV_BINARY_OUTPUT_FLAGS[0],
             variation=GV_BINARY_OUTPUT_FLAGS[1],
-            qualifier=qualifier,
+            start=start,
+            stop=stop,
         )
-        return [ObjectBlock(header=header, data=count_data + bytes(data))]
+
+        data = bytearray()
+        for point in points:
+            data.extend(_serialize_binary_output(point.value, point.quality))
+
+        return [ObjectBlock(header=header, data=range_data + bytes(data))]
 
     def _build_analog_input_blocks(self, points: list[Any]) -> list[ObjectBlock]:
-        """Build object blocks for analog input points."""
+        """Build object blocks for analog input points.
+
+        Static responses use start/stop range qualifiers (0x00 or 0x01) per
+        IEEE 1815-2012 Table 4-2. Points are sorted by index by the database.
+        """
         if not points:
             return []
 
-        data = bytearray()
-        indices = [p.index for p in points]
-        max_index = max(indices)
+        start = points[0].index
+        stop = points[-1].index
 
-        if max_index <= MAX_1_BYTE_INDEX:
-            index_size = 1
-            count_data = CountRange(count=len(points)).to_bytes_1()
-            qualifier = 0x17
-        else:
-            index_size = 2
-            count_data = CountRange(count=len(points)).to_bytes_2()
-            qualifier = 0x28
-
-        for point in points:
-            if index_size == 1:
-                data.append(point.index & 0xFF)
-            else:
-                data.extend(point.index.to_bytes(2, "little"))
-            data.extend(_serialize_analog_input_32(point.value, int(point.quality)))
-
-        header = ObjectHeader(
+        header, range_data = _build_start_stop_header(
             group=GV_ANALOG_INPUT_32[0],
             variation=GV_ANALOG_INPUT_32[1],
-            qualifier=qualifier,
+            start=start,
+            stop=stop,
         )
-        return [ObjectBlock(header=header, data=count_data + bytes(data))]
+
+        data = bytearray()
+        for point in points:
+            data.extend(_serialize_analog_input_32(point.value, int(point.quality)))
+
+        return [ObjectBlock(header=header, data=range_data + bytes(data))]
 
     def _build_counter_blocks(self, points: list[Any]) -> list[ObjectBlock]:
-        """Build object blocks for counter points."""
+        """Build object blocks for counter points.
+
+        Static responses use start/stop range qualifiers (0x00 or 0x01) per
+        IEEE 1815-2012 Table 4-2. Points are sorted by index by the database.
+        """
         if not points:
             return []
 
-        data = bytearray()
-        indices = [p.index for p in points]
-        max_index = max(indices)
+        start = points[0].index
+        stop = points[-1].index
 
-        if max_index <= MAX_1_BYTE_INDEX:
-            index_size = 1
-            count_data = CountRange(count=len(points)).to_bytes_1()
-            qualifier = 0x17
-        else:
-            index_size = 2
-            count_data = CountRange(count=len(points)).to_bytes_2()
-            qualifier = 0x28
-
-        for point in points:
-            if index_size == 1:
-                data.append(point.index & 0xFF)
-            else:
-                data.extend(point.index.to_bytes(2, "little"))
-            data.extend(_serialize_counter_32(point.value, int(point.quality)))
-
-        header = ObjectHeader(
+        header, range_data = _build_start_stop_header(
             group=GV_COUNTER_32[0],
             variation=GV_COUNTER_32[1],
-            qualifier=qualifier,
+            start=start,
+            stop=stop,
         )
-        return [ObjectBlock(header=header, data=count_data + bytes(data))]
+
+        data = bytearray()
+        for point in points:
+            data.extend(_serialize_counter_32(point.value, int(point.quality)))
+
+        return [ObjectBlock(header=header, data=range_data + bytes(data))]
 
     def _build_frozen_counter_blocks(self, points: list[Any]) -> list[ObjectBlock]:
-        """Build object blocks for frozen counter points."""
+        """Build object blocks for frozen counter points.
+
+        Static responses use start/stop range qualifiers (0x00 or 0x01) per
+        IEEE 1815-2012 Table 4-2. Points are sorted by index by the database.
+        """
         if not points:
             return []
 
-        data = bytearray()
-        indices = [p.index for p in points]
-        max_index = max(indices)
+        start = points[0].index
+        stop = points[-1].index
 
-        if max_index <= MAX_1_BYTE_INDEX:
-            index_size = 1
-            count_data = CountRange(count=len(points)).to_bytes_1()
-            qualifier = 0x17
-        else:
-            index_size = 2
-            count_data = CountRange(count=len(points)).to_bytes_2()
-            qualifier = 0x28
-
-        for point in points:
-            if index_size == 1:
-                data.append(point.index & 0xFF)
-            else:
-                data.extend(point.index.to_bytes(2, "little"))
-            data.extend(_serialize_counter_32(point.value, int(point.quality)))
-
-        header = ObjectHeader(
+        header, range_data = _build_start_stop_header(
             group=GV_FROZEN_COUNTER_32[0],
             variation=GV_FROZEN_COUNTER_32[1],
-            qualifier=qualifier,
+            start=start,
+            stop=stop,
         )
-        return [ObjectBlock(header=header, data=count_data + bytes(data))]
+
+        data = bytearray()
+        for point in points:
+            data.extend(_serialize_counter_32(point.value, int(point.quality)))
+
+        return [ObjectBlock(header=header, data=range_data + bytes(data))]
 
     def _read_class_events(self, event_class: EventClass) -> list[ObjectBlock]:
         """Read and clear events for a class."""
@@ -739,26 +733,37 @@ class Outstation:
         return self._build_control_response(request, results)
 
     def _process_crob_select(self, block: ObjectBlock, seq: int) -> list[tuple[int, CommandStatus]]:
-        """Process CROB SELECT."""
+        """Process CROB SELECT.
+
+        Derives count and index widths from block.header.qualifier so that both
+        0x17 (1-byte count + 1-byte index) and 0x28 (2-byte count + 2-byte index)
+        CROB requests are parsed at the correct offsets per IEEE 1815-2012 Table 4-3.
+        """
         results: list[tuple[int, CommandStatus]] = []
 
-        # Parse CROB data - format: index (1-2 bytes) + CROB (11 bytes)
         data = block.data
         if len(data) < 1:
             return results
 
-        # Get count from first byte
-        count = data[0]
-        offset = 1
+        try:
+            count_bytes, index_bytes = _crob_count_index_sizes(block.header.qualifier)
+        except ValueError:
+            return results
+
+        if len(data) < count_bytes:
+            return results
+
+        count = int.from_bytes(data[0:count_bytes], "little")
+        offset = count_bytes
 
         for _ in range(count):
-            if offset + 12 > len(data):  # 1 byte index + 11 byte CROB
+            if offset + index_bytes + 11 > len(data):
                 break
 
-            index = data[offset]
-            offset += 1
+            index = int.from_bytes(data[offset : offset + index_bytes], "little")
+            offset += index_bytes
 
-            # Parse CROB: control code (1) + count (1) + on_time (4) + off_time (4) + status (1)
+            # Parse CROB: control code (1) + op_count (1) + on_time (4) + off_time (4) + status (1)
             control_code = ControlCode(data[offset] & 0x0F)
             op_count = data[offset + 1]
             on_time = int.from_bytes(data[offset + 2 : offset + 6], "little")
@@ -807,22 +812,35 @@ class Outstation:
         return self._build_control_response(request, results)
 
     def _process_crob_operate(self, block: ObjectBlock, seq: int) -> list[tuple[int, CommandStatus]]:
-        """Process CROB OPERATE."""
+        """Process CROB OPERATE.
+
+        Derives count and index widths from block.header.qualifier so that both
+        0x17 (1-byte count + 1-byte index) and 0x28 (2-byte count + 2-byte index)
+        CROB requests are parsed at the correct offsets per IEEE 1815-2012 Table 4-3.
+        """
         results: list[tuple[int, CommandStatus]] = []
 
         data = block.data
         if len(data) < 1:
             return results
 
-        count = data[0]
-        offset = 1
+        try:
+            count_bytes, index_bytes = _crob_count_index_sizes(block.header.qualifier)
+        except ValueError:
+            return results
+
+        if len(data) < count_bytes:
+            return results
+
+        count = int.from_bytes(data[0:count_bytes], "little")
+        offset = count_bytes
 
         for _ in range(count):
-            if offset + 12 > len(data):
+            if offset + index_bytes + 11 > len(data):
                 break
 
-            index = data[offset]
-            offset += 1
+            index = int.from_bytes(data[offset : offset + index_bytes], "little")
+            offset += index_bytes
 
             control_code = ControlCode(data[offset] & 0x0F)
             op_count = data[offset + 1]
@@ -870,22 +888,35 @@ class Outstation:
         return self._build_control_response(request, results)
 
     def _process_crob_direct_operate(self, block: ObjectBlock) -> list[tuple[int, CommandStatus]]:
-        """Process CROB DIRECT_OPERATE."""
+        """Process CROB DIRECT_OPERATE.
+
+        Derives count and index widths from block.header.qualifier so that both
+        0x17 (1-byte count + 1-byte index) and 0x28 (2-byte count + 2-byte index)
+        CROB requests are parsed at the correct offsets per IEEE 1815-2012 Table 4-3.
+        """
         results: list[tuple[int, CommandStatus]] = []
 
         data = block.data
         if len(data) < 1:
             return results
 
-        count = data[0]
-        offset = 1
+        try:
+            count_bytes, index_bytes = _crob_count_index_sizes(block.header.qualifier)
+        except ValueError:
+            return results
+
+        if len(data) < count_bytes:
+            return results
+
+        count = int.from_bytes(data[0:count_bytes], "little")
+        offset = count_bytes
 
         for _ in range(count):
-            if offset + 12 > len(data):
+            if offset + index_bytes + 11 > len(data):
                 break
 
-            index = data[offset]
-            offset += 1
+            index = int.from_bytes(data[offset : offset + index_bytes], "little")
+            offset += index_bytes
 
             control_code = ControlCode(data[offset] & 0x0F)
             op_count = data[offset + 1]
