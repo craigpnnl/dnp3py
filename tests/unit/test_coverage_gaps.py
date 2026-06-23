@@ -925,8 +925,9 @@ class TestOutstationCoverage:
         master = Master()
 
         request = master.build_integrity_poll()
-        response = outstation.process_request(request.to_bytes())
-        assert response is not None
+        responses = outstation.process_request(request.to_bytes())
+        assert len(responses) > 0
+        response = responses[0]
 
     def test_2byte_index_binary_input(self) -> None:
         """Test binary input with index > 255."""
@@ -938,8 +939,9 @@ class TestOutstationCoverage:
         master = Master()
 
         request = master.build_integrity_poll()
-        response = outstation.process_request(request.to_bytes())
-        assert response is not None
+        responses = outstation.process_request(request.to_bytes())
+        assert len(responses) > 0
+        response = responses[0]
 
     def test_2byte_index_binary_output(self) -> None:
         """Test binary output with index > 255."""
@@ -951,8 +953,9 @@ class TestOutstationCoverage:
         master = Master()
 
         request = master.build_integrity_poll()
-        response = outstation.process_request(request.to_bytes())
-        assert response is not None
+        responses = outstation.process_request(request.to_bytes())
+        assert len(responses) > 0
+        response = responses[0]
 
     def test_2byte_index_analog_input(self) -> None:
         """Test analog input with index > 255."""
@@ -964,8 +967,9 @@ class TestOutstationCoverage:
         master = Master()
 
         request = master.build_integrity_poll()
-        response = outstation.process_request(request.to_bytes())
-        assert response is not None
+        responses = outstation.process_request(request.to_bytes())
+        assert len(responses) > 0
+        response = responses[0]
 
     def test_2byte_index_counter(self) -> None:
         """Test counter with index > 255."""
@@ -977,8 +981,9 @@ class TestOutstationCoverage:
         master = Master()
 
         request = master.build_integrity_poll()
-        response = outstation.process_request(request.to_bytes())
-        assert response is not None
+        responses = outstation.process_request(request.to_bytes())
+        assert len(responses) > 0
+        response = responses[0]
 
     def test_unsupported_function_code(self) -> None:
         """Test handling of unsupported function code."""
@@ -987,8 +992,9 @@ class TestOutstationCoverage:
         from dnp3.application.builder import build_cold_restart_request
 
         request = build_cold_restart_request()
-        response = outstation.process_request(request.to_bytes())
-        assert response is not None
+        responses = outstation.process_request(request.to_bytes())
+        assert len(responses) > 0
+        response = responses[0]
 
     def test_freeze_counters(self) -> None:
         """Test freeze counters function."""
@@ -1012,8 +1018,9 @@ class TestOutstationCoverage:
         )
         block = ObjectBlock(header=obj_header)
         request = RequestFragment(header=header, objects=(block,))
-        response = outstation.process_request(request.to_bytes())
-        assert response is not None
+        responses = outstation.process_request(request.to_bytes())
+        assert len(responses) > 0
+        response = responses[0]
 
     def test_frozen_counter_response(self) -> None:
         """Test outstation responds with frozen counter data."""
@@ -1026,8 +1033,9 @@ class TestOutstationCoverage:
         master = Master()
 
         request = master.build_integrity_poll()
-        response = outstation.process_request(request.to_bytes())
-        assert response is not None
+        responses = outstation.process_request(request.to_bytes())
+        assert len(responses) > 0
+        response = responses[0]
         assert len(response.objects) > 0
 
     def test_1byte_index_binary_inputs(self) -> None:
@@ -1041,8 +1049,9 @@ class TestOutstationCoverage:
         master = Master()
 
         request = master.build_integrity_poll()
-        response = outstation.process_request(request.to_bytes())
-        assert response is not None
+        responses = outstation.process_request(request.to_bytes())
+        assert len(responses) > 0
+        response = responses[0]
 
 
 class TestParserEdgeCases:
@@ -1412,9 +1421,10 @@ class TestOutstationOperatePaths:
         operate_task = builder.build_operate()
 
         request = master.build_operate(operate_task)
-        response = outstation.process_request(request.to_bytes())
+        responses = outstation.process_request(request.to_bytes())
 
-        assert response is not None
+        assert len(responses) > 0
+        response = responses[0]
         # Response should contain status indicating NO_SELECT
 
     def test_select_then_operate_success(self) -> None:
@@ -1432,13 +1442,17 @@ class TestOutstationOperatePaths:
         builder.latch_on(index=0)
         select_task = builder.build_select()
         select_request = master.build_select(select_task)
-        select_response = outstation.process_request(select_request.to_bytes())
+        select_responses = outstation.process_request(select_request.to_bytes())
+
+        select_response = select_responses[0]
         assert select_response is not None
 
         # Then OPERATE with same parameters - should match and call handler
         operate_task = builder.build_operate()
         operate_request = master.build_operate(operate_task)
-        operate_response = outstation.process_request(operate_request.to_bytes())
+        operate_responses = outstation.process_request(operate_request.to_bytes())
+
+        operate_response = operate_responses[0]
         assert operate_response is not None
 
     def test_select_then_mismatched_operate(self) -> None:
@@ -1464,7 +1478,9 @@ class TestOutstationOperatePaths:
         builder2.latch_on(index=1)
         operate_task = builder2.build_operate()
         operate_request = master.build_operate(operate_task)
-        operate_response = outstation.process_request(operate_request.to_bytes())
+        operate_responses = outstation.process_request(operate_request.to_bytes())
+
+        operate_response = operate_responses[0]
         assert operate_response is not None
 
     def test_select_then_mismatched_control_code(self) -> None:
@@ -1488,7 +1504,9 @@ class TestOutstationOperatePaths:
         builder2.latch_off(index=0)
         operate_task = builder2.build_operate()
         operate_request = master.build_operate(operate_task)
-        operate_response = outstation.process_request(operate_request.to_bytes())
+        operate_responses = outstation.process_request(operate_request.to_bytes())
+
+        operate_response = operate_responses[0]
         assert operate_response is not None
 
 
@@ -1506,8 +1524,9 @@ class TestOutstationEmptyDatabasePaths:
 
         # Integrity poll should work with missing point types
         request = master.build_integrity_poll()
-        response = outstation.process_request(request.to_bytes())
-        assert response is not None
+        responses = outstation.process_request(request.to_bytes())
+        assert len(responses) > 0
+        response = responses[0]
 
     def test_read_empty_analog_inputs(self) -> None:
         """Reading analog inputs from empty database."""
@@ -1519,8 +1538,9 @@ class TestOutstationEmptyDatabasePaths:
         master = Master()
 
         request = master.build_integrity_poll()
-        response = outstation.process_request(request.to_bytes())
-        assert response is not None
+        responses = outstation.process_request(request.to_bytes())
+        assert len(responses) > 0
+        response = responses[0]
 
     def test_read_empty_counters(self) -> None:
         """Reading counters from empty database."""
@@ -1532,8 +1552,9 @@ class TestOutstationEmptyDatabasePaths:
         master = Master()
 
         request = master.build_integrity_poll()
-        response = outstation.process_request(request.to_bytes())
-        assert response is not None
+        responses = outstation.process_request(request.to_bytes())
+        assert len(responses) > 0
+        response = responses[0]
 
     def test_read_empty_frozen_counters(self) -> None:
         """Reading frozen counters from empty database."""
@@ -1545,8 +1566,9 @@ class TestOutstationEmptyDatabasePaths:
         master = Master()
 
         request = master.build_integrity_poll()
-        response = outstation.process_request(request.to_bytes())
-        assert response is not None
+        responses = outstation.process_request(request.to_bytes())
+        assert len(responses) > 0
+        response = responses[0]
 
 
 class TestEventClassReading:
@@ -1563,8 +1585,9 @@ class TestEventClassReading:
         master = Master()
 
         request = master.build_class_poll(class_1=True, class_2=False, class_3=False)
-        response = outstation.process_request(request.to_bytes())
-        assert response is not None
+        responses = outstation.process_request(request.to_bytes())
+        assert len(responses) > 0
+        response = responses[0]
 
     def test_class_2_poll_with_events(self) -> None:
         """Class 2 poll returns analog input events."""
@@ -1577,8 +1600,9 @@ class TestEventClassReading:
         master = Master()
 
         request = master.build_class_poll(class_1=False, class_2=True, class_3=False)
-        response = outstation.process_request(request.to_bytes())
-        assert response is not None
+        responses = outstation.process_request(request.to_bytes())
+        assert len(responses) > 0
+        response = responses[0]
 
     def test_class_3_poll_with_events(self) -> None:
         """Class 3 poll returns counter events."""
@@ -1591,8 +1615,9 @@ class TestEventClassReading:
         master = Master()
 
         request = master.build_class_poll(class_1=False, class_2=False, class_3=True)
-        response = outstation.process_request(request.to_bytes())
-        assert response is not None
+        responses = outstation.process_request(request.to_bytes())
+        assert len(responses) > 0
+        response = responses[0]
 
 
 class TestCounterObjectEdgeCases:
@@ -1673,8 +1698,9 @@ class TestOutstationSpecificReadPaths:
             ),
             objects=[ObjectBlock(header=header, data=b"")],
         )
-        response = outstation.process_request(request.to_bytes())
-        assert response is not None
+        responses = outstation.process_request(request.to_bytes())
+        assert len(responses) > 0
+        response = responses[0]
 
     def test_read_binary_outputs_group(self) -> None:
         """Read binary outputs by group (g10)."""
@@ -1697,8 +1723,9 @@ class TestOutstationSpecificReadPaths:
             ),
             objects=[ObjectBlock(header=header, data=b"")],
         )
-        response = outstation.process_request(request.to_bytes())
-        assert response is not None
+        responses = outstation.process_request(request.to_bytes())
+        assert len(responses) > 0
+        response = responses[0]
 
     def test_read_analog_input_events_group(self) -> None:
         """Read analog input events by group (g32)."""
@@ -1721,8 +1748,9 @@ class TestOutstationSpecificReadPaths:
             ),
             objects=[ObjectBlock(header=header, data=b"")],
         )
-        response = outstation.process_request(request.to_bytes())
-        assert response is not None
+        responses = outstation.process_request(request.to_bytes())
+        assert len(responses) > 0
+        response = responses[0]
 
     def test_read_counters_group(self) -> None:
         """Read counters by group (g20)."""
@@ -1745,8 +1773,9 @@ class TestOutstationSpecificReadPaths:
             ),
             objects=[ObjectBlock(header=header, data=b"")],
         )
-        response = outstation.process_request(request.to_bytes())
-        assert response is not None
+        responses = outstation.process_request(request.to_bytes())
+        assert len(responses) > 0
+        response = responses[0]
 
     def test_read_counter_events_group(self) -> None:
         """Read counter events by group (g22)."""
@@ -1769,8 +1798,9 @@ class TestOutstationSpecificReadPaths:
             ),
             objects=[ObjectBlock(header=header, data=b"")],
         )
-        response = outstation.process_request(request.to_bytes())
-        assert response is not None
+        responses = outstation.process_request(request.to_bytes())
+        assert len(responses) > 0
+        response = responses[0]
 
     def test_read_frozen_counters_group(self) -> None:
         """Read frozen counters by group (g21)."""
@@ -1795,8 +1825,9 @@ class TestOutstationSpecificReadPaths:
             ),
             objects=[ObjectBlock(header=header, data=b"")],
         )
-        response = outstation.process_request(request.to_bytes())
-        assert response is not None
+        responses = outstation.process_request(request.to_bytes())
+        assert len(responses) > 0
+        response = responses[0]
 
 
 class TestOutstationNoAckAndFreeze:
@@ -1841,9 +1872,9 @@ class TestOutstationNoAckAndFreeze:
             ),
             objects=[ObjectBlock(header=header, data=crob_data)],
         )
-        response = outstation.process_request(request.to_bytes())
+        responses = outstation.process_request(request.to_bytes())
         # NO_ACK means no response
-        assert response is None
+        assert len(responses) == 0
 
     def test_freeze_clear(self) -> None:
         """FREEZE_CLEAR freezes and clears counters - covers line 258."""
@@ -1870,8 +1901,9 @@ class TestOutstationNoAckAndFreeze:
             ),
             objects=[ObjectBlock(header=header, data=b"")],
         )
-        response = outstation.process_request(request.to_bytes())
-        assert response is not None
+        responses = outstation.process_request(request.to_bytes())
+        assert len(responses) > 0
+        response = responses[0]
 
 
 class TestLargeIndexPaths:
@@ -1888,8 +1920,9 @@ class TestLargeIndexPaths:
         master = Master()
 
         request = master.build_integrity_poll()
-        response = outstation.process_request(request.to_bytes())
-        assert response is not None
+        responses = outstation.process_request(request.to_bytes())
+        assert len(responses) > 0
+        response = responses[0]
         # Response should contain 2-byte index
 
     def test_read_frozen_counters_large_index(self) -> None:
@@ -1904,8 +1937,9 @@ class TestLargeIndexPaths:
         master = Master()
 
         request = master.build_integrity_poll()
-        response = outstation.process_request(request.to_bytes())
-        assert response is not None
+        responses = outstation.process_request(request.to_bytes())
+        assert len(responses) > 0
+        response = responses[0]
 
     def test_read_counters_large_index(self) -> None:
         """Read counters with index > 255."""
@@ -1917,8 +1951,9 @@ class TestLargeIndexPaths:
         master = Master()
 
         request = master.build_integrity_poll()
-        response = outstation.process_request(request.to_bytes())
-        assert response is not None
+        responses = outstation.process_request(request.to_bytes())
+        assert len(responses) > 0
+        response = responses[0]
 
     def test_read_analog_inputs_large_index(self) -> None:
         """Read analog inputs with index > 255."""
@@ -1930,8 +1965,9 @@ class TestLargeIndexPaths:
         master = Master()
 
         request = master.build_integrity_poll()
-        response = outstation.process_request(request.to_bytes())
-        assert response is not None
+        responses = outstation.process_request(request.to_bytes())
+        assert len(responses) > 0
+        response = responses[0]
 
 
 class TestOutstationCROBEdgeCases:
@@ -1957,8 +1993,9 @@ class TestOutstationCROBEdgeCases:
             ),
             objects=[ObjectBlock(header=header, data=b"")],
         )
-        response = outstation.process_request(request.to_bytes())
-        assert response is not None
+        responses = outstation.process_request(request.to_bytes())
+        assert len(responses) > 0
+        response = responses[0]
 
     def test_operate_truncated_crob_data(self) -> None:
         """OPERATE with truncated CROB data - covers line 824."""
@@ -1980,8 +2017,9 @@ class TestOutstationCROBEdgeCases:
             ),
             objects=[ObjectBlock(header=header, data=bytes([1, 0, 3]))],  # count=1, partial data
         )
-        response = outstation.process_request(request.to_bytes())
-        assert response is not None
+        responses = outstation.process_request(request.to_bytes())
+        assert len(responses) > 0
+        response = responses[0]
 
     def test_direct_operate_empty_crob_data(self) -> None:
         """DIRECT_OPERATE with empty CROB data - covers line 880."""
@@ -2002,8 +2040,9 @@ class TestOutstationCROBEdgeCases:
             ),
             objects=[ObjectBlock(header=header, data=b"")],
         )
-        response = outstation.process_request(request.to_bytes())
-        assert response is not None
+        responses = outstation.process_request(request.to_bytes())
+        assert len(responses) > 0
+        response = responses[0]
 
     def test_direct_operate_truncated_crob_data(self) -> None:
         """DIRECT_OPERATE with truncated CROB data - covers line 887."""
@@ -2024,8 +2063,9 @@ class TestOutstationCROBEdgeCases:
             ),
             objects=[ObjectBlock(header=header, data=bytes([1, 0, 3, 1]))],  # count=1, partial data
         )
-        response = outstation.process_request(request.to_bytes())
-        assert response is not None
+        responses = outstation.process_request(request.to_bytes())
+        assert len(responses) > 0
+        response = responses[0]
 
     def test_select_empty_crob_data(self) -> None:
         """SELECT with empty CROB data - covers line 748."""
@@ -2046,8 +2086,9 @@ class TestOutstationCROBEdgeCases:
             ),
             objects=[ObjectBlock(header=header, data=b"")],
         )
-        response = outstation.process_request(request.to_bytes())
-        assert response is not None
+        responses = outstation.process_request(request.to_bytes())
+        assert len(responses) > 0
+        response = responses[0]
 
     def test_select_truncated_crob_data(self) -> None:
         """SELECT with truncated CROB data - covers line 756."""
@@ -2068,8 +2109,9 @@ class TestOutstationCROBEdgeCases:
             ),
             objects=[ObjectBlock(header=header, data=bytes([1, 0]))],  # count=1, only index
         )
-        response = outstation.process_request(request.to_bytes())
-        assert response is not None
+        responses = outstation.process_request(request.to_bytes())
+        assert len(responses) > 0
+        response = responses[0]
 
 
 class TestParserEdgeCases2:
@@ -2284,8 +2326,9 @@ class TestMasterResponseParsing:
             ),
             objects=[ObjectBlock(header=header, data=b"")],
         )
-        response = outstation.process_request(request.to_bytes())
-        assert response is not None
+        responses = outstation.process_request(request.to_bytes())
+        assert len(responses) > 0
+        response = responses[0]
 
         # Master processes response with binary outputs
         master.process_response(response.to_bytes())
@@ -2314,8 +2357,9 @@ class TestMasterResponseParsing:
             ),
             objects=[ObjectBlock(header=header, data=b"")],
         )
-        response = outstation.process_request(request.to_bytes())
-        assert response is not None
+        responses = outstation.process_request(request.to_bytes())
+        assert len(responses) > 0
+        response = responses[0]
 
         master.process_response(response.to_bytes())
         assert len(handler.frozen_counters) > 0
@@ -2338,8 +2382,9 @@ class TestOutstationUnknownVariation:
             ),
             objects=[ObjectBlock(header=header, data=b"")],
         )
-        response = outstation.process_request(request.to_bytes())
-        assert response is not None
+        responses = outstation.process_request(request.to_bytes())
+        assert len(responses) > 0
+        response = responses[0]
         # Response should have OBJECT_UNKNOWN IIN
 
 
@@ -2512,8 +2557,9 @@ class TestOutstationEventOverflow:
         # Process a request which should update IIN internally
         master = Master()
         request = master.build_integrity_poll()
-        response = outstation.process_request(request.to_bytes())
-        assert response is not None
+        responses = outstation.process_request(request.to_bytes())
+        assert len(responses) > 0
+        response = responses[0]
 
 
 class TestOutstationLargeIndexPaths:
@@ -2532,8 +2578,9 @@ class TestOutstationLargeIndexPaths:
         master = Master()
 
         request = master.build_integrity_poll()
-        response = outstation.process_request(request.to_bytes())
-        assert response is not None
+        responses = outstation.process_request(request.to_bytes())
+        assert len(responses) > 0
+        response = responses[0]
         assert len(response.objects) > 0
 
     def test_read_large_index_binary_outputs(self) -> None:
@@ -2548,8 +2595,9 @@ class TestOutstationLargeIndexPaths:
         master = Master()
 
         request = master.build_integrity_poll()
-        response = outstation.process_request(request.to_bytes())
-        assert response is not None
+        responses = outstation.process_request(request.to_bytes())
+        assert len(responses) > 0
+        response = responses[0]
 
     def test_read_large_index_analog_inputs(self) -> None:
         """Reading analog inputs with large indices uses 2-byte indices."""
@@ -2563,8 +2611,9 @@ class TestOutstationLargeIndexPaths:
         master = Master()
 
         request = master.build_integrity_poll()
-        response = outstation.process_request(request.to_bytes())
-        assert response is not None
+        responses = outstation.process_request(request.to_bytes())
+        assert len(responses) > 0
+        response = responses[0]
 
     def test_read_large_index_counters(self) -> None:
         """Reading counters with large indices uses 2-byte indices."""
@@ -2578,8 +2627,9 @@ class TestOutstationLargeIndexPaths:
         master = Master()
 
         request = master.build_integrity_poll()
-        response = outstation.process_request(request.to_bytes())
-        assert response is not None
+        responses = outstation.process_request(request.to_bytes())
+        assert len(responses) > 0
+        response = responses[0]
 
 
 class TestOutstationSelectUnsupportedObject:
@@ -2600,8 +2650,9 @@ class TestOutstationSelectUnsupportedObject:
         from dnp3.application.builder import build_select_request
 
         request = build_select_request(objects=(block,), seq=0)
-        response = outstation.process_request(request.to_bytes())
-        assert response is not None
+        responses = outstation.process_request(request.to_bytes())
+        assert len(responses) > 0
+        response = responses[0]
 
 
 class TestOutstationWarmRestart:
@@ -2620,8 +2671,9 @@ class TestOutstationWarmRestart:
         from dnp3.application.builder import build_warm_restart_request
 
         request = build_warm_restart_request(seq=0)
-        response = outstation.process_request(request.to_bytes())
-        assert response is not None
+        responses = outstation.process_request(request.to_bytes())
+        assert len(responses) > 0
+        response = responses[0]
         assert len(response.objects) > 0  # Should have delay object
 
     def test_warm_restart_not_supported(self) -> None:
@@ -2632,8 +2684,9 @@ class TestOutstationWarmRestart:
         from dnp3.application.builder import build_warm_restart_request
 
         request = build_warm_restart_request(seq=0)
-        response = outstation.process_request(request.to_bytes())
-        assert response is not None
+        responses = outstation.process_request(request.to_bytes())
+        assert len(responses) > 0
+        response = responses[0]
         # Should have NO_FUNC_CODE_SUPPORT IIN bit set
 
 
@@ -2653,8 +2706,9 @@ class TestOutstationColdRestart:
         from dnp3.application.builder import build_cold_restart_request
 
         request = build_cold_restart_request(seq=0)
-        response = outstation.process_request(request.to_bytes())
-        assert response is not None
+        responses = outstation.process_request(request.to_bytes())
+        assert len(responses) > 0
+        response = responses[0]
         assert len(response.objects) > 0
 
 
@@ -2677,8 +2731,9 @@ class TestOutstationControlResponseErrors:
         builder.latch_on(index=0)
         task = builder.build_direct_operate()
         request = master.build_direct_operate(task)
-        response = outstation.process_request(request.to_bytes())
-        assert response is not None
+        responses = outstation.process_request(request.to_bytes())
+        assert len(responses) > 0
+        response = responses[0]
 
 
 class TestEmptyDatabaseReadPaths:
@@ -2699,8 +2754,9 @@ class TestEmptyDatabaseReadPaths:
         block = ObjectBlock(header=header, data=b"")
         request = build_read_request(objects=(block,), seq=0)
 
-        response = outstation.process_request(request.to_bytes())
-        assert response is not None
+        responses = outstation.process_request(request.to_bytes())
+        assert len(responses) > 0
+        response = responses[0]
 
     def test_read_empty_binary_outputs_direct(self) -> None:
         """Direct read of empty binary outputs section."""
@@ -2715,8 +2771,9 @@ class TestEmptyDatabaseReadPaths:
         block = ObjectBlock(header=header, data=b"")
         request = build_read_request(objects=(block,), seq=0)
 
-        response = outstation.process_request(request.to_bytes())
-        assert response is not None
+        responses = outstation.process_request(request.to_bytes())
+        assert len(responses) > 0
+        response = responses[0]
 
     def test_read_empty_analog_inputs_direct(self) -> None:
         """Direct read of empty analog inputs section."""
@@ -2731,8 +2788,9 @@ class TestEmptyDatabaseReadPaths:
         block = ObjectBlock(header=header, data=b"")
         request = build_read_request(objects=(block,), seq=0)
 
-        response = outstation.process_request(request.to_bytes())
-        assert response is not None
+        responses = outstation.process_request(request.to_bytes())
+        assert len(responses) > 0
+        response = responses[0]
 
     def test_read_empty_counters_direct(self) -> None:
         """Direct read of empty counters section."""
@@ -2747,8 +2805,9 @@ class TestEmptyDatabaseReadPaths:
         block = ObjectBlock(header=header, data=b"")
         request = build_read_request(objects=(block,), seq=0)
 
-        response = outstation.process_request(request.to_bytes())
-        assert response is not None
+        responses = outstation.process_request(request.to_bytes())
+        assert len(responses) > 0
+        response = responses[0]
 
     def test_read_empty_frozen_counters_direct(self) -> None:
         """Direct read of empty frozen counters section."""
@@ -2763,8 +2822,9 @@ class TestEmptyDatabaseReadPaths:
         block = ObjectBlock(header=header, data=b"")
         request = build_read_request(objects=(block,), seq=0)
 
-        response = outstation.process_request(request.to_bytes())
-        assert response is not None
+        responses = outstation.process_request(request.to_bytes())
+        assert len(responses) > 0
+        response = responses[0]
 
 
 class TestTcpServerCoverage2:
@@ -3451,9 +3511,9 @@ class TestOutstationSelectUnsupportedObject2:
         block = ObjectBlock(header=header, data=b"\x01\x00\x01")
 
         request = build_select_request(seq=0, objects=[block])
-        response = outstation.process_request(request.to_bytes())
+        responses = outstation.process_request(request.to_bytes())
         # Response is still generated (with empty results)
-        assert response is not None
+        assert len(responses) > 0
 
 
 class TestSimulatorCoveragePaths:

@@ -18,6 +18,7 @@ from dnp3.outstation.state import (
     OutstationState,
     SelectState,
 )
+from dnp3.outstation.tcp_runner import OutstationTcpRunner
 
 __all__ = [
     "CommandHandler",
@@ -26,6 +27,7 @@ __all__ = [
     "Outstation",
     "OutstationConfig",
     "OutstationState",
+    "OutstationTcpRunner",
     "SelectState",
     "UnsolicitedConfig",
 ]

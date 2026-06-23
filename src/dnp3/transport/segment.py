@@ -1,8 +1,8 @@
 """Transport Layer segments per IEEE 1815-2012 Clause 8.
 
 Transport header byte layout:
-- Bit 7: FIR (first segment of fragment)
-- Bit 6: FIN (final segment of fragment)
+- Bit 7: FIN (final segment of fragment)
+- Bit 6: FIR (first segment of fragment)
 - Bits 5-0: SEQ (sequence number, 0-63)
 
 Maximum segment payload is 249 bytes (data link user data - 1 byte header).
@@ -10,9 +10,9 @@ Maximum segment payload is 249 bytes (data link user data - 1 byte header).
 
 from dataclasses import dataclass
 
-# Bit positions and masks
-_FIR_BIT = 0x80
-_FIN_BIT = 0x40
+# Bit positions and masks per IEEE 1815-2012 Clause 8.2
+_FIN_BIT = 0x80
+_FIR_BIT = 0x40
 _SEQ_MASK = 0x3F
 
 # Transport layer constants

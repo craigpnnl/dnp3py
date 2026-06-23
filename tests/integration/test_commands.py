@@ -31,8 +31,9 @@ class TestDirectOperate:
         request = master.build_direct_operate(task)
         assert request.header.function == FunctionCode.DIRECT_OPERATE
 
-        response = outstation.process_request(request.to_bytes())
-        assert response is not None
+        responses = outstation.process_request(request.to_bytes())
+        assert len(responses) > 0
+        response = responses[0]
         assert response.header.function == FunctionCode.RESPONSE
 
     def test_direct_operate_latch_off(self) -> None:
@@ -49,8 +50,9 @@ class TestDirectOperate:
         task = builder.build_direct_operate()
 
         request = master.build_direct_operate(task)
-        response = outstation.process_request(request.to_bytes())
-        assert response is not None
+        responses = outstation.process_request(request.to_bytes())
+        assert len(responses) > 0
+        response = responses[0]
 
     def test_direct_operate_pulse_on(self) -> None:
         """Direct operate with pulse on command."""
@@ -65,8 +67,9 @@ class TestDirectOperate:
         task = builder.build_direct_operate()
 
         request = master.build_direct_operate(task)
-        response = outstation.process_request(request.to_bytes())
-        assert response is not None
+        responses = outstation.process_request(request.to_bytes())
+        assert len(responses) > 0
+        response = responses[0]
 
     def test_direct_operate_multiple_points(self) -> None:
         """Direct operate on multiple points."""
@@ -84,8 +87,9 @@ class TestDirectOperate:
         task = builder.build_direct_operate()
 
         request = master.build_direct_operate(task)
-        response = outstation.process_request(request.to_bytes())
-        assert response is not None
+        responses = outstation.process_request(request.to_bytes())
+        assert len(responses) > 0
+        response = responses[0]
 
 
 class TestSelectBeforeOperate:
@@ -107,8 +111,9 @@ class TestSelectBeforeOperate:
         select_request = master.build_select(select_task)
         assert select_request.header.function == FunctionCode.SELECT
 
-        select_response = outstation.process_request(select_request.to_bytes())
-        assert select_response is not None
+        select_responses = outstation.process_request(select_request.to_bytes())
+        assert len(select_responses) > 0
+        select_response = select_responses[0]
         assert select_response.header.function == FunctionCode.RESPONSE
 
         # Build OPERATE (using same operations)
@@ -116,8 +121,8 @@ class TestSelectBeforeOperate:
         operate_request = master.build_operate(operate_task)
         assert operate_request.header.function == FunctionCode.OPERATE
 
-        operate_response = outstation.process_request(operate_request.to_bytes())
-        assert operate_response is not None
+        operate_responses = outstation.process_request(operate_request.to_bytes())
+        assert len(operate_responses) > 0
 
     def test_select_expires_without_operate(self) -> None:
         """SELECT expires if OPERATE not sent in time."""
@@ -146,8 +151,8 @@ class TestSelectBeforeOperate:
         # Try OPERATE after timeout - should fail with NO_SELECT
         operate_task = builder.build_operate()
         operate_request = master.build_operate(operate_task)
-        operate_response = outstation.process_request(operate_request.to_bytes())
-        assert operate_response is not None
+        operate_responses = outstation.process_request(operate_request.to_bytes())
+        assert len(operate_responses) > 0
 
 
 class TestCommandHandler:
@@ -300,8 +305,9 @@ class TestHighIndexCommands:
         task = builder.build_direct_operate()
 
         request = master.build_direct_operate(task)
-        response = outstation.process_request(request.to_bytes())
-        assert response is not None
+        responses = outstation.process_request(request.to_bytes())
+        assert len(responses) > 0
+        response = responses[0]
 
 
 class TestCommandSequence:

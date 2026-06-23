@@ -79,9 +79,10 @@ class TestReadRequests:
         """READ returns empty response for empty database."""
         outstation = Outstation()
         request = build_integrity_poll()
-        response = outstation.process_request(request.to_bytes())
+        responses = outstation.process_request(request.to_bytes())
 
-        assert response is not None
+        assert len(responses) > 0
+        response = responses[0]
         assert response.header.function == FunctionCode.RESPONSE
 
     def test_read_binary_inputs(self) -> None:
@@ -91,9 +92,10 @@ class TestReadRequests:
         outstation.database.add_binary_input(1, value=False)
 
         request = build_integrity_poll()
-        response = outstation.process_request(request.to_bytes())
+        responses = outstation.process_request(request.to_bytes())
 
-        assert response is not None
+        assert len(responses) > 0
+        response = responses[0]
         assert len(response.objects) > 0
 
     def test_read_class_0(self) -> None:
@@ -103,9 +105,10 @@ class TestReadRequests:
         outstation.database.add_analog_input(0)
 
         request = build_integrity_poll()
-        response = outstation.process_request(request.to_bytes())
+        responses = outstation.process_request(request.to_bytes())
 
-        assert response is not None
+        assert len(responses) > 0
+        response = responses[0]
         # Should have objects for both point types
         assert len(response.objects) >= 2
 
@@ -118,9 +121,10 @@ class TestReadRequests:
         outstation.database.update_binary_input(0, value=True)
 
         request = build_class_poll(class_1=True, class_2=False, class_3=False)
-        response = outstation.process_request(request.to_bytes())
+        responses = outstation.process_request(request.to_bytes())
 
-        assert response is not None
+        assert len(responses) > 0
+        response = responses[0]
 
     def test_read_unknown_object(self) -> None:
         """READ unknown object returns OBJECT_UNKNOWN IIN."""
@@ -136,9 +140,10 @@ class TestReadRequests:
         block = ObjectBlock(header=header)
         request = build_read_request(objects=(block,))
 
-        response = outstation.process_request(request.to_bytes())
+        responses = outstation.process_request(request.to_bytes())
 
-        assert response is not None
+        assert len(responses) > 0
+        response = responses[0]
         assert IIN.OBJECT_UNKNOWN in response.header.iin
 
 
@@ -154,9 +159,10 @@ class TestWriteRequests:
 
         request = build_write_request(objects=())
 
-        response = outstation.process_request(request.to_bytes())
+        responses = outstation.process_request(request.to_bytes())
 
-        assert response is not None
+        assert len(responses) > 0
+        response = responses[0]
         assert response.header.function == FunctionCode.RESPONSE
 
 
@@ -168,9 +174,10 @@ class TestDelayMeasure:
         outstation = Outstation()
         request = build_delay_measure_request()
 
-        response = outstation.process_request(request.to_bytes())
+        responses = outstation.process_request(request.to_bytes())
 
-        assert response is not None
+        assert len(responses) > 0
+        response = responses[0]
         assert len(response.objects) > 0
         # Should be g52v2 (time delay fine)
         assert response.objects[0].header.group == 52
@@ -197,9 +204,10 @@ class TestUnsolicitedControl:
         outstation = Outstation()
         request = build_enable_unsolicited_request(class_1=True, class_2=False, class_3=False)
 
-        response = outstation.process_request(request.to_bytes())
+        responses = outstation.process_request(request.to_bytes())
 
-        assert response is not None
+        assert len(responses) > 0
+        response = responses[0]
         assert outstation._state.unsolicited.class_1_enabled is True
         assert outstation._state.unsolicited.class_2_enabled is False
         assert outstation._state.unsolicited.class_3_enabled is False
@@ -209,9 +217,10 @@ class TestUnsolicitedControl:
         outstation = Outstation()
         request = build_enable_unsolicited_request(class_1=True, class_2=True, class_3=True)
 
-        response = outstation.process_request(request.to_bytes())
+        responses = outstation.process_request(request.to_bytes())
 
-        assert response is not None
+        assert len(responses) > 0
+        response = responses[0]
         assert outstation._state.unsolicited.class_1_enabled is True
         assert outstation._state.unsolicited.class_2_enabled is True
         assert outstation._state.unsolicited.class_3_enabled is True
@@ -225,9 +234,10 @@ class TestUnsolicitedControl:
 
         # Then disable
         request = build_disable_unsolicited_request(class_1=True, class_2=True, class_3=True)
-        response = outstation.process_request(request.to_bytes())
+        responses = outstation.process_request(request.to_bytes())
 
-        assert response is not None
+        assert len(responses) > 0
+        response = responses[0]
         assert outstation._state.unsolicited.class_1_enabled is False
         assert outstation._state.unsolicited.class_2_enabled is False
         assert outstation._state.unsolicited.class_3_enabled is False
@@ -344,9 +354,10 @@ class TestSelectBeforeOperate:
         from dnp3.application.builder import build_select_request
 
         request = build_select_request(objects=(block,))
-        response = outstation.process_request(request.to_bytes())
+        responses = outstation.process_request(request.to_bytes())
 
-        assert response is not None
+        assert len(responses) > 0
+        response = responses[0]
         # Check that select state was stored
         assert outstation._state.get_select(0) is not None
 
@@ -361,9 +372,10 @@ class TestRestartHandling:
         from dnp3.application.builder import build_cold_restart_request
 
         request = build_cold_restart_request()
-        response = outstation.process_request(request.to_bytes())
+        responses = outstation.process_request(request.to_bytes())
 
-        assert response is not None
+        assert len(responses) > 0
+        response = responses[0]
         assert IIN.NO_FUNC_CODE_SUPPORT in response.header.iin
 
     def test_cold_restart_supported(self) -> None:
@@ -378,9 +390,10 @@ class TestRestartHandling:
         from dnp3.application.builder import build_cold_restart_request
 
         request = build_cold_restart_request()
-        response = outstation.process_request(request.to_bytes())
+        responses = outstation.process_request(request.to_bytes())
 
-        assert response is not None
+        assert len(responses) > 0
+        response = responses[0]
         assert IIN.NO_FUNC_CODE_SUPPORT not in response.header.iin
         assert len(response.objects) > 0
         assert response.objects[0].header.group == 52  # Time delay
@@ -397,9 +410,10 @@ class TestRestartHandling:
         from dnp3.application.builder import build_warm_restart_request
 
         request = build_warm_restart_request()
-        response = outstation.process_request(request.to_bytes())
+        responses = outstation.process_request(request.to_bytes())
 
-        assert response is not None
+        assert len(responses) > 0
+        response = responses[0]
         assert IIN.NO_FUNC_CODE_SUPPORT not in response.header.iin
 
 
@@ -417,9 +431,10 @@ class TestUnsupportedFunctionCodes:
         from dnp3.application.fragment import RequestFragment
 
         request = RequestFragment(header=header)
-        response = outstation.process_request(request.to_bytes())
+        responses = outstation.process_request(request.to_bytes())
 
-        assert response is not None
+        assert len(responses) > 0
+        response = responses[0]
         assert IIN.NO_FUNC_CODE_SUPPORT in response.header.iin
 
 
@@ -431,9 +446,10 @@ class TestParseError:
         outstation = Outstation()
 
         # Send garbage bytes
-        response = outstation.process_request(b"\x00")
+        responses = outstation.process_request(b"\x00")
 
-        assert response is not None
+        assert len(responses) > 0
+        response = responses[0]
         assert IIN.PARAMETER_ERROR in response.header.iin
 
 
@@ -470,9 +486,10 @@ class TestMultiplePointTypes:
         outstation.database.add_counter(0, value=1000)
 
         request = build_integrity_poll()
-        response = outstation.process_request(request.to_bytes())
+        responses = outstation.process_request(request.to_bytes())
 
-        assert response is not None
+        assert len(responses) > 0
+        response = responses[0]
         # Should have objects for each point type
         assert len(response.objects) >= 4
 
@@ -526,9 +543,10 @@ class TestDirectOperateResponse:
         from dnp3.application.builder import build_direct_operate_request
 
         request = build_direct_operate_request(objects=(block,))
-        response = outstation.process_request(request.to_bytes())
+        responses = outstation.process_request(request.to_bytes())
 
-        assert response is not None
+        assert len(responses) > 0
+        response = responses[0]
         assert response.header.function == FunctionCode.RESPONSE
         # Response MUST contain echoed command objects, not be empty
         assert len(response.objects) > 0, "DIRECT_OPERATE response must echo command objects"
@@ -577,9 +595,10 @@ class TestDirectOperateResponse:
         from dnp3.application.builder import build_direct_operate_request
 
         request = build_direct_operate_request(objects=(block,))
-        response = outstation.process_request(request.to_bytes())
+        responses = outstation.process_request(request.to_bytes())
 
-        assert response is not None
+        assert len(responses) > 0
+        response = responses[0]
         assert len(response.objects) > 0
         resp_data = response.objects[0].data
         # Parse response: count(1) + index(1) + CROB(11)
@@ -617,9 +636,10 @@ class TestDirectOperateResponse:
         from dnp3.application.builder import build_direct_operate_request
 
         request = build_direct_operate_request(objects=(block,))
-        response = outstation.process_request(request.to_bytes())
+        responses = outstation.process_request(request.to_bytes())
 
-        assert response is not None
+        assert len(responses) > 0
+        response = responses[0]
         assert len(response.objects) > 0
         resp_data = response.objects[0].data
         assert len(resp_data) >= 13
@@ -657,9 +677,10 @@ class TestDirectOperateAnalogOutput:
         from dnp3.application.builder import build_direct_operate_request
 
         request = build_direct_operate_request(objects=(block,))
-        response = outstation.process_request(request.to_bytes())
+        responses = outstation.process_request(request.to_bytes())
 
-        assert response is not None
+        assert len(responses) > 0
+        response = responses[0]
         assert len(response.objects) > 0, "AO DIRECT_OPERATE must echo objects"
         resp_block = response.objects[0]
         assert resp_block.header.group == 41
@@ -690,10 +711,11 @@ class TestDirectOperateAnalogOutput:
         from dnp3.application.builder import build_direct_operate_request
 
         request = build_direct_operate_request(objects=(block,))
-        response = outstation.process_request(request.to_bytes())
+        responses = outstation.process_request(request.to_bytes())
 
         assert handler_called, "direct_operate_analog_output handler must be called"
-        assert response is not None
+        assert len(responses) > 0
+        response = responses[0]
         assert len(response.objects) > 0
         resp_data = response.objects[0].data
         # count(1) + index(1) + value(4) + status(1) = 7 bytes
@@ -718,9 +740,10 @@ class TestDirectOperateAnalogOutput:
         from dnp3.application.builder import build_direct_operate_request
 
         request = build_direct_operate_request(objects=(block,))
-        response = outstation.process_request(request.to_bytes())
+        responses = outstation.process_request(request.to_bytes())
 
-        assert response is not None
+        assert len(responses) > 0
+        response = responses[0]
         assert len(response.objects) > 0
         resp_data = response.objects[0].data
         assert len(resp_data) >= 7
@@ -763,9 +786,10 @@ class TestWriteIINRestart:
         from dnp3.application.builder import build_write_request
 
         request = build_write_request(objects=(block,))
-        response = outstation.process_request(request.to_bytes())
+        responses = outstation.process_request(request.to_bytes())
 
-        assert response is not None
+        assert len(responses) > 0
+        response = responses[0]
         assert response.header.function == FunctionCode.RESPONSE
         # After processing, DEVICE_RESTART should be cleared
         assert (
@@ -784,9 +808,10 @@ class TestWriteIINRestart:
         from dnp3.application.builder import build_write_request
 
         request = build_write_request(objects=(block,))
-        response = outstation.process_request(request.to_bytes())
+        responses = outstation.process_request(request.to_bytes())
 
-        assert response is not None
+        assert len(responses) > 0
+        response = responses[0]
         assert len(response.objects) == 0, "WRITE response should have no objects"
 
     def test_write_g80v1_does_not_clear_other_iin_bits(self) -> None:

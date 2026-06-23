@@ -14,6 +14,7 @@ from dnp3.application.builder import (
     build_unsolicited_response,
 )
 from dnp3.application.fragment import ObjectBlock, RequestFragment, ResponseFragment
+from dnp3.application.header import RESPONSE_HEADER_SIZE
 from dnp3.application.parser import parse_request
 from dnp3.application.qualifiers import (
     CountRange,
@@ -21,6 +22,7 @@ from dnp3.application.qualifiers import (
     PrefixCode,
     RangeCode,
     StartStopRange,
+    get_prefix_size,
 )
 from dnp3.core.enums import CommandStatus, ControlCode, FunctionCode
 from dnp3.core.flags import IIN, BinaryQuality
@@ -92,6 +94,172 @@ MAX_1_BYTE_INDEX = 255  # 0xFF
 MAX_2_BYTE_INDEX = 65535  # 0xFFFF
 
 
+def _parse_count_from_qualifier(data: bytes, header: ObjectHeader) -> tuple[int, int]:
+    """Parse object count from data based on qualifier range code.
+
+    Args:
+        data: Raw block data starting at the count field.
+        header: Object header with qualifier info.
+
+    Returns:
+        Tuple of (count, bytes_consumed_for_count).
+    """
+    range_code = header.range_code
+    if range_code == RangeCode.UINT8_COUNT:
+        if len(data) < 1:
+            return 0, 0
+        return data[0], 1
+    if range_code == RangeCode.UINT16_COUNT:
+        if len(data) < 2:
+            return 0, 0
+        return int.from_bytes(data[0:2], "little"), 2
+    if range_code == RangeCode.UINT32_COUNT:
+        if len(data) < 4:
+            return 0, 0
+        return int.from_bytes(data[0:4], "little"), 4
+    # Fallback for unknown range codes
+    if len(data) < 1:
+        return 0, 0
+    return data[0], 1
+
+
+def _parse_index_from_qualifier(data: bytes, header: ObjectHeader) -> tuple[int, int]:
+    """Parse point index from data based on qualifier prefix code.
+
+    Args:
+        data: Raw data starting at the index prefix.
+        header: Object header with qualifier info.
+
+    Returns:
+        Tuple of (index, bytes_consumed_for_index).
+    """
+    prefix_code = header.prefix_code
+    if prefix_code == PrefixCode.UINT8_INDEX:
+        if len(data) < 1:
+            return 0, 0
+        return data[0], 1
+    if prefix_code == PrefixCode.UINT16_INDEX:
+        if len(data) < 2:
+            return 0, 0
+        return int.from_bytes(data[0:2], "little"), 2
+    if prefix_code == PrefixCode.UINT32_INDEX:
+        if len(data) < 4:
+            return 0, 0
+        return int.from_bytes(data[0:4], "little"), 4
+    # No prefix — shouldn't happen for control objects but handle gracefully
+    return 0, 0
+
+
+def _encode_count_for_qualifier(count: int, header: ObjectHeader) -> bytes:
+    """Encode object count bytes matching the qualifier range code.
+
+    Args:
+        count: Number of objects.
+        header: Object header with qualifier info.
+
+    Returns:
+        Count encoded in the correct byte width.
+    """
+    range_code = header.range_code
+    if range_code == RangeCode.UINT16_COUNT:
+        return count.to_bytes(2, "little")
+    if range_code == RangeCode.UINT32_COUNT:
+        return count.to_bytes(4, "little")
+    # Default: 1-byte count
+    return bytes([count & 0xFF])
+
+
+def _encode_index_for_qualifier(index: int, header: ObjectHeader) -> bytes:
+    """Encode point index bytes matching the qualifier prefix code.
+
+    Args:
+        index: Point index.
+        header: Object header with qualifier info.
+
+    Returns:
+        Index encoded in the correct byte width.
+    """
+    prefix_code = header.prefix_code
+    if prefix_code == PrefixCode.UINT16_INDEX:
+        return index.to_bytes(2, "little")
+    if prefix_code == PrefixCode.UINT32_INDEX:
+        return index.to_bytes(4, "little")
+    # Default: 1-byte index
+    return bytes([index & 0xFF])
+
+
+def _index_size_from_qualifier(header: ObjectHeader) -> int:
+    """Get index prefix size in bytes from qualifier."""
+    return get_prefix_size(header.prefix_code)
+
+
+def _split_response_objects(
+    objects: list[ObjectBlock],
+    iin: IIN,
+    seq: int,
+    max_fragment_size: int,
+) -> list[ResponseFragment]:
+    """Split object blocks into multiple response fragments.
+
+    Each fragment respects max_fragment_size. FIR/FIN flags are set:
+    - Single fragment: FIR=True, FIN=True
+    - First of multiple: FIR=True, FIN=False
+    - Middle: FIR=False, FIN=False
+    - Last: FIR=False, FIN=True
+
+    Args:
+        objects: Object blocks to distribute across fragments.
+        iin: Internal indications for all fragments.
+        seq: Sequence number for all fragments.
+        max_fragment_size: Maximum bytes per fragment.
+
+    Returns:
+        List of response fragments, each within size limit.
+    """
+    if not objects:
+        return [build_response(objects=(), iin=iin, seq=seq, fir=True, fin=True)]
+
+    fragments: list[ResponseFragment] = []
+    current_objects: list[ObjectBlock] = []
+    current_size = RESPONSE_HEADER_SIZE
+
+    for obj in objects:
+        obj_size = obj.size
+
+        if current_size + obj_size > max_fragment_size and current_objects:
+            # Current batch is full, emit a fragment
+            is_first = len(fragments) == 0
+            fragments.append(
+                build_response(
+                    objects=tuple(current_objects),
+                    iin=iin,
+                    seq=seq,
+                    fir=is_first,
+                    fin=False,
+                )
+            )
+            current_objects = []
+            current_size = RESPONSE_HEADER_SIZE
+
+        current_objects.append(obj)
+        current_size += obj_size
+
+    # Emit final fragment
+    if current_objects:
+        is_first = len(fragments) == 0
+        fragments.append(
+            build_response(
+                objects=tuple(current_objects),
+                iin=iin,
+                seq=seq,
+                fir=is_first,
+                fin=True,
+            )
+        )
+
+    return fragments
+
+
 def _serialize_binary_input(value: bool, quality: BinaryQuality) -> bytes:
     """Serialize a binary input point to g1v2 format."""
     flags = int(quality)
@@ -119,6 +287,37 @@ def _serialize_counter_32(value: int, quality: int) -> bytes:
     """Serialize a counter point to g20v1 format."""
     # 1 byte flags + 4 bytes value (little-endian unsigned)
     return bytes([quality]) + value.to_bytes(4, byteorder="little", signed=False)
+
+
+def _calculate_chunk_size(
+    max_fragment_size: int,
+    per_point_size: int,
+    index_size: int,
+) -> int:
+    """Calculate how many points fit in one ObjectBlock within a fragment.
+
+    Accounts for response header, object header, and count prefix.
+
+    Args:
+        max_fragment_size: Maximum fragment size in bytes.
+        per_point_size: Bytes per serialized point (excluding index).
+        index_size: Bytes per index (1 or 2).
+
+    Returns:
+        Maximum number of points per ObjectBlock.
+    """
+    from dnp3.application.qualifiers import OBJECT_HEADER_SIZE
+
+    # Available space = max_fragment - response_header - object_header - count_prefix
+    # count_prefix is 1 byte for <=255 points, 2 bytes for >255
+    # Use 2-byte count to be safe
+    count_prefix_size = 2 if index_size == 2 else 1
+    overhead = RESPONSE_HEADER_SIZE + OBJECT_HEADER_SIZE + count_prefix_size
+    available = max_fragment_size - overhead
+    bytes_per_point = index_size + per_point_size
+    if bytes_per_point <= 0:
+        return 1
+    return max(1, available // bytes_per_point)
 
 
 def _build_start_stop_header(
@@ -209,31 +408,33 @@ class Outstation:
         if buffer.has_overflow:
             self._state.set_event_overflow()
 
-    def process_request(self, data: bytes) -> ResponseFragment | None:
-        """Process a request and generate a response.
+    def process_request(self, data: bytes) -> list[ResponseFragment]:
+        """Process a request and generate response fragment(s).
 
         Args:
             data: Raw request bytes (application layer fragment).
 
         Returns:
-            Response fragment, or None if no response needed.
+            List of response fragments. Empty list if no response needed.
+            For READ requests with large databases, may return multiple
+            fragments respecting max_fragment_size.
         """
         try:
             request = parse_request(data)
         except Exception:
             # Parse error - return null response with PARAMETER_ERROR
-            return build_null_response(iin=self.iin | IIN.PARAMETER_ERROR)
+            return [build_null_response(iin=self.iin | IIN.PARAMETER_ERROR)]
 
         return self._process_request_fragment(request)
 
-    def _process_request_fragment(self, request: RequestFragment) -> ResponseFragment | None:
+    def _process_request_fragment(self, request: RequestFragment) -> list[ResponseFragment]:
         """Process a parsed request fragment.
 
         Args:
             request: Parsed request fragment.
 
         Returns:
-            Response fragment, or None if no response needed.
+            List of response fragments. Empty list if no response needed.
         """
         header = request.header
         function = header.function
@@ -245,41 +446,44 @@ class Outstation:
         if function == FunctionCode.READ:
             return self._handle_read(request)
         if function == FunctionCode.WRITE:
-            return self._handle_write(request)
+            return [self._handle_write(request)]
         if function == FunctionCode.SELECT:
-            return self._handle_select(request)
+            return [self._handle_select(request)]
         if function == FunctionCode.OPERATE:
-            return self._handle_operate(request)
+            return [self._handle_operate(request)]
         if function == FunctionCode.DIRECT_OPERATE:
-            return self._handle_direct_operate(request)
+            return [self._handle_direct_operate(request)]
         if function == FunctionCode.DIRECT_OPERATE_NO_ACK:
             self._handle_direct_operate(request)
-            return None  # No response for NO_ACK
+            return []  # No response for NO_ACK
         if function == FunctionCode.COLD_RESTART:
-            return self._handle_cold_restart(request)
+            return [self._handle_cold_restart(request)]
         if function == FunctionCode.WARM_RESTART:
-            return self._handle_warm_restart(request)
+            return [self._handle_warm_restart(request)]
         if function == FunctionCode.DELAY_MEASURE:
-            return self._handle_delay_measure(request)
+            return [self._handle_delay_measure(request)]
         if function == FunctionCode.ENABLE_UNSOLICITED:
-            return self._handle_enable_unsolicited(request)
+            return [self._handle_enable_unsolicited(request)]
         if function == FunctionCode.DISABLE_UNSOLICITED:
-            return self._handle_disable_unsolicited(request)
+            return [self._handle_disable_unsolicited(request)]
         if function == FunctionCode.CONFIRM:
-            return self._handle_confirm(request)
+            result = self._handle_confirm(request)
+            return [result] if result is not None else []
         if function == FunctionCode.IMMEDIATE_FREEZE:
-            return self._handle_freeze(request, clear=False)
+            return [self._handle_freeze(request, clear=False)]
         if function == FunctionCode.FREEZE_CLEAR:
-            return self._handle_freeze(request, clear=True)
+            return [self._handle_freeze(request, clear=True)]
 
         # Unsupported function code
-        return build_null_response(
-            iin=self.iin | IIN.NO_FUNC_CODE_SUPPORT,
-            seq=header.control.seq,
-        )
+        return [
+            build_null_response(
+                iin=self.iin | IIN.NO_FUNC_CODE_SUPPORT,
+                seq=header.control.seq,
+            )
+        ]
 
-    def _handle_read(self, request: RequestFragment) -> ResponseFragment:
-        """Handle READ request."""
+    def _handle_read(self, request: RequestFragment) -> list[ResponseFragment]:
+        """Handle READ request, splitting into multiple fragments if needed."""
         objects: list[ObjectBlock] = []
         error_iin = IIN(0)
 
@@ -332,10 +536,11 @@ class Outstation:
             else:
                 error_iin |= IIN.OBJECT_UNKNOWN
 
-        return build_response(
-            objects=tuple(objects),
+        return _split_response_objects(
+            objects=objects,
             iin=self.iin | error_iin,
             seq=request.header.control.seq,
+            max_fragment_size=self.config.max_fragment_size,
         )
 
     def _read_class_data(self, variation: int) -> tuple[list[ObjectBlock], IIN]:
@@ -394,167 +599,120 @@ class Outstation:
         return objects
 
     def _build_binary_input_blocks(self, points: list[Any]) -> list[ObjectBlock]:
-        """Build object blocks for binary input points."""
-        if not points:
-            return []
-
-        # Build data with indices and values
-        data = bytearray()
-        indices = [p.index for p in points]
-        max_index = max(indices)
-
-        # Determine index size
-        if max_index <= MAX_1_BYTE_INDEX:
-            index_size = 1
-            count_data = CountRange(count=len(points)).to_bytes_1()
-            qualifier = 0x17
-        else:
-            index_size = 2
-            count_data = CountRange(count=len(points)).to_bytes_2()
-            qualifier = 0x28
-
-        # Build indexed data
-        for point in points:
-            if index_size == 1:
-                data.append(point.index & 0xFF)
-            else:
-                data.extend(point.index.to_bytes(2, "little"))
-            data.extend(_serialize_binary_input(point.value, point.quality))
-
-        header = ObjectHeader(
+        """Build object blocks for binary input points, chunked for fragment size."""
+        return self._build_indexed_point_blocks(
+            points=points,
             group=GV_BINARY_INPUT_FLAGS[0],
             variation=GV_BINARY_INPUT_FLAGS[1],
-            qualifier=qualifier,
+            serializer=lambda p: _serialize_binary_input(p.value, p.quality),
+            per_point_data_size=1,  # g1v2: 1 byte flags
         )
-        return [ObjectBlock(header=header, data=count_data + bytes(data))]
 
     def _build_binary_output_blocks(self, points: list[Any]) -> list[ObjectBlock]:
-        """Build object blocks for binary output points."""
-        if not points:
-            return []
-
-        data = bytearray()
-        indices = [p.index for p in points]
-        max_index = max(indices)
-
-        if max_index <= MAX_1_BYTE_INDEX:
-            index_size = 1
-            count_data = CountRange(count=len(points)).to_bytes_1()
-            qualifier = 0x17
-        else:
-            index_size = 2
-            count_data = CountRange(count=len(points)).to_bytes_2()
-            qualifier = 0x28
-
-        for point in points:
-            if index_size == 1:
-                data.append(point.index & 0xFF)
-            else:
-                data.extend(point.index.to_bytes(2, "little"))
-            data.extend(_serialize_binary_output(point.value, point.quality))
-
-        header = ObjectHeader(
+        """Build object blocks for binary output points, chunked for fragment size."""
+        return self._build_indexed_point_blocks(
+            points=points,
             group=GV_BINARY_OUTPUT_FLAGS[0],
             variation=GV_BINARY_OUTPUT_FLAGS[1],
-            qualifier=qualifier,
+            serializer=lambda p: _serialize_binary_output(p.value, p.quality),
+            per_point_data_size=1,  # g10v2: 1 byte flags
         )
-        return [ObjectBlock(header=header, data=count_data + bytes(data))]
 
     def _build_analog_input_blocks(self, points: list[Any]) -> list[ObjectBlock]:
-        """Build object blocks for analog input points."""
-        if not points:
-            return []
-
-        data = bytearray()
-        indices = [p.index for p in points]
-        max_index = max(indices)
-
-        if max_index <= MAX_1_BYTE_INDEX:
-            index_size = 1
-            count_data = CountRange(count=len(points)).to_bytes_1()
-            qualifier = 0x17
-        else:
-            index_size = 2
-            count_data = CountRange(count=len(points)).to_bytes_2()
-            qualifier = 0x28
-
-        for point in points:
-            if index_size == 1:
-                data.append(point.index & 0xFF)
-            else:
-                data.extend(point.index.to_bytes(2, "little"))
-            data.extend(_serialize_analog_input_32(point.value, int(point.quality)))
-
-        header = ObjectHeader(
+        """Build object blocks for analog input points, chunked for fragment size."""
+        return self._build_indexed_point_blocks(
+            points=points,
             group=GV_ANALOG_INPUT_32[0],
             variation=GV_ANALOG_INPUT_32[1],
-            qualifier=qualifier,
+            serializer=lambda p: _serialize_analog_input_32(p.value, int(p.quality)),
+            per_point_data_size=5,  # g30v1: 1 byte flags + 4 byte value
         )
-        return [ObjectBlock(header=header, data=count_data + bytes(data))]
 
     def _build_counter_blocks(self, points: list[Any]) -> list[ObjectBlock]:
-        """Build object blocks for counter points."""
-        if not points:
-            return []
-
-        data = bytearray()
-        indices = [p.index for p in points]
-        max_index = max(indices)
-
-        if max_index <= MAX_1_BYTE_INDEX:
-            index_size = 1
-            count_data = CountRange(count=len(points)).to_bytes_1()
-            qualifier = 0x17
-        else:
-            index_size = 2
-            count_data = CountRange(count=len(points)).to_bytes_2()
-            qualifier = 0x28
-
-        for point in points:
-            if index_size == 1:
-                data.append(point.index & 0xFF)
-            else:
-                data.extend(point.index.to_bytes(2, "little"))
-            data.extend(_serialize_counter_32(point.value, int(point.quality)))
-
-        header = ObjectHeader(
+        """Build object blocks for counter points, chunked for fragment size."""
+        return self._build_indexed_point_blocks(
+            points=points,
             group=GV_COUNTER_32[0],
             variation=GV_COUNTER_32[1],
-            qualifier=qualifier,
+            serializer=lambda p: _serialize_counter_32(p.value, int(p.quality)),
+            per_point_data_size=5,  # g20v1: 1 byte flags + 4 byte value
         )
-        return [ObjectBlock(header=header, data=count_data + bytes(data))]
 
     def _build_frozen_counter_blocks(self, points: list[Any]) -> list[ObjectBlock]:
-        """Build object blocks for frozen counter points."""
+        """Build object blocks for frozen counter points, chunked for fragment size."""
+        return self._build_indexed_point_blocks(
+            points=points,
+            group=GV_FROZEN_COUNTER_32[0],
+            variation=GV_FROZEN_COUNTER_32[1],
+            serializer=lambda p: _serialize_counter_32(p.value, int(p.quality)),
+            per_point_data_size=5,  # g21v1: 1 byte flags + 4 byte value
+        )
+
+    def _build_indexed_point_blocks(
+        self,
+        points: list[Any],
+        group: int,
+        variation: int,
+        serializer: Any,
+        per_point_data_size: int,
+    ) -> list[ObjectBlock]:
+        """Build chunked object blocks for indexed points.
+
+        Splits points into multiple ObjectBlocks so each block fits
+        within a single fragment respecting max_fragment_size.
+
+        Args:
+            points: List of point objects with .index attribute.
+            group: DNP3 group number.
+            variation: DNP3 variation number.
+            serializer: Callable that takes a point and returns bytes.
+            per_point_data_size: Bytes per point (excluding index bytes).
+
+        Returns:
+            List of ObjectBlocks, each small enough for a fragment.
+        """
         if not points:
             return []
 
-        data = bytearray()
-        indices = [p.index for p in points]
-        max_index = max(indices)
-
+        max_index = max(p.index for p in points)
         if max_index <= MAX_1_BYTE_INDEX:
             index_size = 1
-            count_data = CountRange(count=len(points)).to_bytes_1()
             qualifier = 0x17
         else:
             index_size = 2
-            count_data = CountRange(count=len(points)).to_bytes_2()
             qualifier = 0x28
 
-        for point in points:
-            if index_size == 1:
-                data.append(point.index & 0xFF)
-            else:
-                data.extend(point.index.to_bytes(2, "little"))
-            data.extend(_serialize_counter_32(point.value, int(point.quality)))
-
-        header = ObjectHeader(
-            group=GV_FROZEN_COUNTER_32[0],
-            variation=GV_FROZEN_COUNTER_32[1],
-            qualifier=qualifier,
+        chunk_size = _calculate_chunk_size(
+            self.config.max_fragment_size,
+            per_point_data_size,
+            index_size,
         )
-        return [ObjectBlock(header=header, data=count_data + bytes(data))]
+
+        blocks: list[ObjectBlock] = []
+        for start in range(0, len(points), chunk_size):
+            chunk = points[start : start + chunk_size]
+
+            if index_size == 1:
+                count_data = CountRange(count=len(chunk)).to_bytes_1()
+            else:
+                count_data = CountRange(count=len(chunk)).to_bytes_2()
+
+            data = bytearray()
+            for point in chunk:
+                if index_size == 1:
+                    data.append(point.index & 0xFF)
+                else:
+                    data.extend(point.index.to_bytes(2, "little"))
+                data.extend(serializer(point))
+
+            header = ObjectHeader(
+                group=group,
+                variation=variation,
+                qualifier=qualifier,
+            )
+            blocks.append(ObjectBlock(header=header, data=count_data + bytes(data)))
+
+        return blocks
 
     def _read_class_events(self, event_class: EventClass) -> list[ObjectBlock]:
         """Read and clear events for a class."""
@@ -795,21 +953,20 @@ class Outstation:
         """Process CROB SELECT."""
         results: list[tuple[int, CommandStatus]] = []
 
-        # Parse CROB data - format: index (1-2 bytes) + CROB (11 bytes)
         data = block.data
         if len(data) < 1:
             return results
 
-        # Get count from first byte
-        count = data[0]
-        offset = 1
+        count, count_size = _parse_count_from_qualifier(data, block.header)
+        offset = count_size
+        index_size = _index_size_from_qualifier(block.header)
 
         for _ in range(count):
-            if offset + 12 > len(data):  # 1 byte index + 11 byte CROB
+            if offset + index_size + 11 > len(data):
                 break
 
-            index = data[offset]
-            offset += 1
+            index, idx_consumed = _parse_index_from_qualifier(data[offset:], block.header)
+            offset += idx_consumed
 
             # Parse CROB: control code (1) + count (1) + on_time (4) + off_time (4) + status (1)
             control_code = ControlCode(data[offset] & 0x0F)
@@ -867,15 +1024,16 @@ class Outstation:
         if len(data) < 1:
             return results
 
-        count = data[0]
-        offset = 1
+        count, count_size = _parse_count_from_qualifier(data, block.header)
+        offset = count_size
+        index_size = _index_size_from_qualifier(block.header)
 
         for _ in range(count):
-            if offset + 12 > len(data):
+            if offset + index_size + 11 > len(data):
                 break
 
-            index = data[offset]
-            offset += 1
+            index, idx_consumed = _parse_index_from_qualifier(data[offset:], block.header)
+            offset += idx_consumed
 
             control_code = ControlCode(data[offset] & 0x0F)
             op_count = data[offset + 1]
@@ -933,15 +1091,16 @@ class Outstation:
         if len(data) < 1:
             return results
 
-        count = data[0]
-        offset = 1
+        count, count_size = _parse_count_from_qualifier(data, block.header)
+        offset = count_size
+        index_size = _index_size_from_qualifier(block.header)
 
         for _ in range(count):
-            if offset + 12 > len(data):
+            if offset + index_size + 11 > len(data):
                 break
 
-            index = data[offset]
-            offset += 1
+            index, idx_consumed = _parse_index_from_qualifier(data[offset:], block.header)
+            offset += idx_consumed
 
             control_code = ControlCode(data[offset] & 0x0F)
             op_count = data[offset + 1]
@@ -983,18 +1142,19 @@ class Outstation:
         if len(data) < 1:
             return results
 
-        count = data[0]
-        offset = 1
+        count, count_size = _parse_count_from_qualifier(data, block.header)
+        offset = count_size
+        index_size = _index_size_from_qualifier(block.header)
 
-        # object size = 1 byte index + value_size + 1 byte status
-        obj_size = 1 + value_size + 1
+        # object size = index_size + value_size + 1 byte status
+        obj_size = index_size + value_size + 1
 
         for _ in range(count):
             if offset + obj_size > len(data):
                 break
 
-            index = data[offset]
-            offset += 1
+            index, idx_consumed = _parse_index_from_qualifier(data[offset:], block.header)
+            offset += idx_consumed
 
             # Parse value based on variation
             raw_value = data[offset : offset + value_size]
@@ -1071,18 +1231,20 @@ class Outstation:
         if len(data) < 1:
             return block
 
-        count = data[0]
-        offset = 1
-        result_data = bytearray([count])
+        count, count_size = _parse_count_from_qualifier(data, block.header)
+        offset = count_size
+        index_size = _index_size_from_qualifier(block.header)
+
+        result_data = bytearray(_encode_count_for_qualifier(count, block.header))
 
         for _ in range(count):
-            if offset + 12 > len(data):  # 1 byte index + 11 byte CROB
+            if offset + index_size + 11 > len(data):
                 break
 
-            index = data[offset]
-            # Copy index byte
-            result_data.append(index)
-            offset += 1
+            index, idx_consumed = _parse_index_from_qualifier(data[offset:], block.header)
+            # Write index in the same byte width as the request
+            result_data.extend(_encode_index_for_qualifier(index, block.header))
+            offset += idx_consumed
 
             # Copy CROB fields (10 bytes: control + count + on_time + off_time)
             result_data.extend(data[offset : offset + 10])
@@ -1119,19 +1281,21 @@ class Outstation:
         if len(data) < 1:
             return block
 
-        count = data[0]
-        offset = 1
-        result_data = bytearray([count])
+        count, count_size = _parse_count_from_qualifier(data, block.header)
+        offset = count_size
+        index_size = _index_size_from_qualifier(block.header)
+
+        result_data = bytearray(_encode_count_for_qualifier(count, block.header))
 
         for _ in range(count):
-            obj_size = 1 + value_size + 1  # index + value + status
+            obj_size = index_size + value_size + 1  # index + value + status
             if offset + obj_size > len(data):
                 break
 
-            index = data[offset]
-            # Copy index byte
-            result_data.append(index)
-            offset += 1
+            index, idx_consumed = _parse_index_from_qualifier(data[offset:], block.header)
+            # Write index in the same byte width as the request
+            result_data.extend(_encode_index_for_qualifier(index, block.header))
+            offset += idx_consumed
 
             # Copy value bytes
             result_data.extend(data[offset : offset + value_size])

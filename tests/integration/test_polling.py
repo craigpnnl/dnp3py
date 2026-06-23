@@ -32,8 +32,9 @@ class TestClassPolling:
         master = Master(handler=handler)
 
         request = master.build_class_poll(class_1=True, class_2=False, class_3=False)
-        response = outstation.process_request(request.to_bytes())
-        assert response is not None
+        responses = outstation.process_request(request.to_bytes())
+        assert len(responses) > 0
+        response = responses[0]
 
         info = master.process_response(response.to_bytes())
         assert info is not None
@@ -51,8 +52,9 @@ class TestClassPolling:
         master = Master(handler=handler)
 
         request = master.build_class_poll(class_1=False, class_2=True, class_3=False)
-        response = outstation.process_request(request.to_bytes())
-        assert response is not None
+        responses = outstation.process_request(request.to_bytes())
+        assert len(responses) > 0
+        response = responses[0]
 
         info = master.process_response(response.to_bytes())
         assert info is not None
@@ -69,8 +71,9 @@ class TestClassPolling:
         master = Master(handler=handler)
 
         request = master.build_class_poll(class_1=False, class_2=False, class_3=True)
-        response = outstation.process_request(request.to_bytes())
-        assert response is not None
+        responses = outstation.process_request(request.to_bytes())
+        assert len(responses) > 0
+        response = responses[0]
 
         info = master.process_response(response.to_bytes())
         assert info is not None
@@ -93,8 +96,9 @@ class TestClassPolling:
         master = Master(handler=handler)
 
         request = master.build_class_poll(class_1=True, class_2=True, class_3=True)
-        response = outstation.process_request(request.to_bytes())
-        assert response is not None
+        responses = outstation.process_request(request.to_bytes())
+        assert len(responses) > 0
+        response = responses[0]
 
         info = master.process_response(response.to_bytes())
         assert info is not None
@@ -115,13 +119,13 @@ class TestEventClearing:
 
         # First poll - should get event
         request1 = master.build_class_poll(class_1=True, class_2=False, class_3=False)
-        response1 = outstation.process_request(request1.to_bytes())
-        assert response1 is not None
+        responses1 = outstation.process_request(request1.to_bytes())
+        assert len(responses1) > 0
 
         # Second poll - event should be cleared
         request2 = master.build_class_poll(class_1=True, class_2=False, class_3=False)
-        response2 = outstation.process_request(request2.to_bytes())
-        assert response2 is not None
+        responses2 = outstation.process_request(request2.to_bytes())
+        assert len(responses2) > 0
 
         # Check that event buffer is empty
         assert database.event_buffer.class1.count == 0
@@ -139,9 +143,9 @@ class TestEventClearing:
 
         # First poll clears the event
         request1 = master.build_class_poll(class_1=True, class_2=False, class_3=False)
-        response1 = outstation.process_request(request1.to_bytes())
-        assert response1 is not None
-        master.process_response(response1.to_bytes())
+        responses1 = outstation.process_request(request1.to_bytes())
+        assert len(responses1) > 0
+        master.process_response(responses1[0].to_bytes())
 
         # Generate new event
         database.update_binary_input(0, value=False)
@@ -149,9 +153,9 @@ class TestEventClearing:
         # Second poll should get new event
         handler.binary_inputs.clear()
         request2 = master.build_class_poll(class_1=True, class_2=False, class_3=False)
-        response2 = outstation.process_request(request2.to_bytes())
-        assert response2 is not None
-        master.process_response(response2.to_bytes())
+        responses2 = outstation.process_request(request2.to_bytes())
+        assert len(responses2) > 0
+        master.process_response(responses2[0].to_bytes())
 
 
 class TestPollScheduler:
@@ -181,8 +185,9 @@ class TestPollScheduler:
 
         # Execute poll
         request = next_poll.build_request(seq=0)
-        response = outstation.process_request(request.to_bytes())
-        assert response is not None
+        responses = outstation.process_request(request.to_bytes())
+        assert len(responses) > 0
+        response = responses[0]
 
         master.mark_poll_executed(poll_task)
         assert poll_task.last_poll_time > 0
@@ -220,8 +225,9 @@ class TestRangePolling:
 
         # Poll only indices 2-5
         request = master.build_range_poll(group=1, variation=2, start=2, stop=5)
-        response = outstation.process_request(request.to_bytes())
-        assert response is not None
+        responses = outstation.process_request(request.to_bytes())
+        assert len(responses) > 0
+        response = responses[0]
 
         info = master.process_response(response.to_bytes())
         assert info is not None
@@ -238,8 +244,9 @@ class TestRangePolling:
         master = Master(handler=handler)
 
         request = master.build_range_poll(group=30, variation=1, start=0, stop=4)
-        response = outstation.process_request(request.to_bytes())
-        assert response is not None
+        responses = outstation.process_request(request.to_bytes())
+        assert len(responses) > 0
+        response = responses[0]
 
         info = master.process_response(response.to_bytes())
         assert info is not None
@@ -269,8 +276,9 @@ class TestMultiplePointTypes:
         master = Master(handler=handler)
 
         request = master.build_integrity_poll()
-        response = outstation.process_request(request.to_bytes())
-        assert response is not None
+        responses = outstation.process_request(request.to_bytes())
+        assert len(responses) > 0
+        response = responses[0]
 
         info = master.process_response(response.to_bytes())
         assert info is not None
@@ -290,8 +298,9 @@ class TestMultiplePointTypes:
         master = Master(handler=handler)
 
         request = master.build_integrity_poll()
-        response = outstation.process_request(request.to_bytes())
-        assert response is not None
+        responses = outstation.process_request(request.to_bytes())
+        assert len(responses) > 0
+        response = responses[0]
 
         info = master.process_response(response.to_bytes())
         assert info is not None

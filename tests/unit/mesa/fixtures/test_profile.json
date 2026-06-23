@@ -1,0 +1,31 @@
+{
+    "entities": {"meters": 1, "ders": 0, "inverters": 0, "batteries": 1},
+    "binary_outputs": {
+        "offsets": {"scada": 0, "historical_meters": 5000, "historical_batteries": 20000},
+        "points": [
+            {"index": "BO0", "description": "System Set Lockout State", "uid": "DSTO.DEROpSt.disconnected_and_blocked", "purpose": "State", "associated_index": "BI11", "value": 1, "ieee_1815_2": true, "supported": true},
+            {"index": "BO1", "description": "Unsupported point", "uid": "TEST.unsupported", "purpose": "Test", "value": 0, "supported": false}
+        ]
+    },
+    "binary_inputs": {
+        "offsets": {"scada": 0, "historical_meters": 5000, "historical_batteries": 20000},
+        "points": [
+            {"index": "BI0", "description": "DER Available", "uid": "DGEN.OpTmh.winTms", "purpose": "Monitoring", "value": 1, "supported": true},
+            {"index": "BI5000", "description": "Meter 1 Online", "uid": "MMTR.Online", "purpose": "Monitoring", "value": 1, "supported": true, "entity_number": 1, "entity_type": "Meter", "entity_index_offset": 0}
+        ]
+    },
+    "analog_outputs": {
+        "offsets": {"scada": 0, "historical_meters": 5000, "historical_batteries": 20000},
+        "points": [
+            {"index": "AO0", "description": "Active Power Setpoint", "uid": "DWMX.WMaxPct", "purpose": "Limit", "associated_index": "AI0", "value": 100, "minimum": 0, "maximum": 100, "multiplier": 0.1, "offset": 0, "units": "percent", "supported": true},
+            {"index": "AO20000", "description": "Battery Charge Rate", "uid": "DBAT.ChgRte", "purpose": "Storage", "value": 50, "minimum": 0, "maximum": 100, "multiplier": 1.0, "offset": 0, "units": "percent", "supported": true, "entity_number": 1, "entity_type": "Battery", "entity_index_offset": 0}
+        ]
+    },
+    "analog_inputs": {
+        "offsets": {"scada": 0, "historical_meters": 5000, "historical_batteries": 20000},
+        "points": [
+            {"index": "AI0", "description": "Active Power", "uid": "DWMX.WMaxPct.val", "purpose": "Monitoring", "value": 0, "minimum": 0, "maximum": 1000, "multiplier": 0.1, "offset": 0, "units": "watts", "supported": true, "event_class": 1},
+            {"index": "AI5000", "description": "Meter 1 Voltage", "uid": "MMTR.Vol", "purpose": "Monitoring", "value": 120, "minimum": 0, "maximum": 300, "multiplier": 0.1, "offset": 0, "units": "volts", "supported": true, "entity_number": 1, "entity_type": "Meter", "entity_index_offset": 0, "event_class": 2}
+        ]
+    }
+}

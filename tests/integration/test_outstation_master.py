@@ -30,8 +30,9 @@ class TestBasicCommunication:
         request_bytes = request.to_bytes()
 
         # Outstation processes request
-        response = outstation.process_request(request_bytes)
-        assert response is not None
+        responses = outstation.process_request(request_bytes)
+        assert len(responses) > 0
+        response = responses[0]
 
         # Master processes response
         response_bytes = response.to_bytes()
@@ -58,8 +59,9 @@ class TestBasicCommunication:
 
         # Exchange integrity poll
         request = master.build_integrity_poll()
-        response = outstation.process_request(request.to_bytes())
-        assert response is not None
+        responses = outstation.process_request(request.to_bytes())
+        assert len(responses) > 0
+        response = responses[0]
         info = master.process_response(response.to_bytes())
 
         # Verify response received (exact counts depend on parsing implementation)
@@ -79,8 +81,9 @@ class TestBasicCommunication:
         master = Master(handler=handler)
 
         request = master.build_integrity_poll()
-        response = outstation.process_request(request.to_bytes())
-        assert response is not None
+        responses = outstation.process_request(request.to_bytes())
+        assert len(responses) > 0
+        response = responses[0]
         info = master.process_response(response.to_bytes())
 
         # Verify response received
@@ -100,8 +103,9 @@ class TestBasicCommunication:
         master = Master(handler=handler)
 
         request = master.build_integrity_poll()
-        response = outstation.process_request(request.to_bytes())
-        assert response is not None
+        responses = outstation.process_request(request.to_bytes())
+        assert len(responses) > 0
+        response = responses[0]
         info = master.process_response(response.to_bytes())
 
         # Verify response received
@@ -123,8 +127,9 @@ class TestBasicCommunication:
         master = Master(handler=handler)
 
         request = master.build_integrity_poll()
-        response = outstation.process_request(request.to_bytes())
-        assert response is not None
+        responses = outstation.process_request(request.to_bytes())
+        assert len(responses) > 0
+        response = responses[0]
         info = master.process_response(response.to_bytes())
 
         # Verify response received with data objects
@@ -157,8 +162,9 @@ class TestSequenceNumbers:
         master = Master()
 
         request = master.build_integrity_poll()
-        response = outstation.process_request(request.to_bytes())
-        assert response is not None
+        responses = outstation.process_request(request.to_bytes())
+        assert len(responses) > 0
+        response = responses[0]
 
         assert response.header.control.seq == request.header.control.seq
 
@@ -178,8 +184,9 @@ class TestMultipleExchanges:
 
         for _ in range(5):
             request = master.build_integrity_poll()
-            response = outstation.process_request(request.to_bytes())
-            assert response is not None
+            responses = outstation.process_request(request.to_bytes())
+            assert len(responses) > 0
+            response = responses[0]
 
             info = master.process_response(response.to_bytes())
             assert info is not None
@@ -197,9 +204,9 @@ class TestMultipleExchanges:
 
         # First poll - value is False
         request1 = master.build_integrity_poll()
-        response1 = outstation.process_request(request1.to_bytes())
-        assert response1 is not None
-        master.process_response(response1.to_bytes())
+        responses1 = outstation.process_request(request1.to_bytes())
+        assert len(responses1) > 0
+        master.process_response(responses1[0].to_bytes())
         first_values = list(handler.binary_inputs.values())
 
         # Change value
@@ -208,9 +215,9 @@ class TestMultipleExchanges:
 
         # Second poll - value is True
         request2 = master.build_integrity_poll()
-        response2 = outstation.process_request(request2.to_bytes())
-        assert response2 is not None
-        master.process_response(response2.to_bytes())
+        responses2 = outstation.process_request(request2.to_bytes())
+        assert len(responses2) > 0
+        master.process_response(responses2[0].to_bytes())
         second_values = list(handler.binary_inputs.values())
 
         # Values should be different
@@ -228,8 +235,9 @@ class TestDelayMeasure:
         request = master.build_delay_measure()
         assert request.header.function == FunctionCode.DELAY_MEASURE
 
-        response = outstation.process_request(request.to_bytes())
-        assert response is not None
+        responses = outstation.process_request(request.to_bytes())
+        assert len(responses) > 0
+        response = responses[0]
         assert response.header.function == FunctionCode.RESPONSE
 
         # Response should contain time delay object (g52v2)
@@ -247,8 +255,9 @@ class TestEnableDisableUnsolicited:
         request = master.build_enable_unsolicited()
         assert request.header.function == FunctionCode.ENABLE_UNSOLICITED
 
-        response = outstation.process_request(request.to_bytes())
-        assert response is not None
+        responses = outstation.process_request(request.to_bytes())
+        assert len(responses) > 0
+        response = responses[0]
         assert response.header.function == FunctionCode.RESPONSE
 
     def test_disable_unsolicited(self) -> None:
@@ -259,8 +268,9 @@ class TestEnableDisableUnsolicited:
         request = master.build_disable_unsolicited()
         assert request.header.function == FunctionCode.DISABLE_UNSOLICITED
 
-        response = outstation.process_request(request.to_bytes())
-        assert response is not None
+        responses = outstation.process_request(request.to_bytes())
+        assert len(responses) > 0
+        response = responses[0]
         assert response.header.function == FunctionCode.RESPONSE
 
 
@@ -273,8 +283,9 @@ class TestIINFlags:
         master = Master()
 
         request = master.build_integrity_poll()
-        response = outstation.process_request(request.to_bytes())
-        assert response is not None
+        responses = outstation.process_request(request.to_bytes())
+        assert len(responses) > 0
+        response = responses[0]
 
         info = master.process_response(response.to_bytes())
         assert info is not None
@@ -288,8 +299,9 @@ class TestIINFlags:
 
         master = Master()
         request = master.build_integrity_poll()
-        response = outstation.process_request(request.to_bytes())
-        assert response is not None
+        responses = outstation.process_request(request.to_bytes())
+        assert len(responses) > 0
+        response = responses[0]
 
         # After clearing, DEVICE_RESTART should not be set
         from dnp3.core.flags import IIN

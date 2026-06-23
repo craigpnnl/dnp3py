@@ -330,16 +330,15 @@ async def test_scenario_command_parsed_and_attempted(mesa_outstation) -> None:
 
 
 @pytest.mark.slow
-async def test_scenario_execution_direct_operate_limitation(mesa_outstation) -> None:
-    """Test DIRECT_OPERATE scenario execution with the Rust control station.
+async def test_scenario_execution_produces_conformance_events(mesa_outstation) -> None:
+    """Test full scenario execution: control station runs conformance tests against dnp3py outstation.
 
-    The dnp3py outstation now echoes back command objects with status codes
-    in DIRECT_OPERATE responses (fixing the original header mismatch).
-    It also handles WRITE g80v1 to clear the DEVICE_RESTART IIN bit.
+    The control station sends a scenario command with the MESA profile,
+    writes BO/AO values to the outstation, then runs conformance tests.
+    Conformance events are emitted to stdout as MESA_CONFORMANCE_EVENT lines.
 
-    Remaining known issue: the startup integrity scan may fail due to
-    transport-layer fragmentation when the MESA profile has many points,
-    which can cause subsequent command responses to be dropped.
+    Some tests may fail (e.g., CONN_001) due to incomplete protocol support
+    in dnp3py. The important thing is that events flow end-to-end.
     """
     _host, port = mesa_outstation.local_address
 
@@ -358,39 +357,26 @@ async def test_scenario_execution_direct_operate_limitation(mesa_outstation) -> 
         proc.stdin.write(command.encode())
         await proc.stdin.drain()
 
-        # Read all output including error messages
+        # Read all output including conformance events
         all_lines = await _drain_remaining_stdout(proc, timeout=15.0)
-        all_text = "\n".join(all_lines).lower()
 
-        has_header_mismatch = "same number of object headers" in all_text
-        has_transport_error = "insufficient bytes for object header" in all_text
-        has_conformance_events = any("mesa_conformance_event:" in line for line in all_lines)
+        # Extract conformance events
+        events = []
+        for line in all_lines:
+            if "MESA_CONFORMANCE_EVENT:" in line:
+                idx = line.index("MESA_CONFORMANCE_EVENT:") + len("MESA_CONFORMANCE_EVENT:")
+                event = json.loads(line[idx:])
+                events.append(event)
 
-        if has_conformance_events:
-            # Full success - parse and validate the events
-            events = []
-            for line in all_lines:
-                if line.startswith("MESA_CONFORMANCE_EVENT:"):
-                    event_json_str = line[len("MESA_CONFORMANCE_EVENT:") :]
-                    event = json.loads(event_json_str)
-                    events.append(event)
+        # We should get conformance events
+        assert len(events) > 0, "No conformance events received. Stdout:\n" + "\n".join(all_lines[:20])
 
-            assert len(events) > 0
-            for event in events:
-                assert "test" in event
-                assert "scenario_id" in event
-                assert event["scenario_id"] == "test-001"
-                assert isinstance(event["pass"], bool)
-        elif has_transport_error:
-            # Known remaining issue: transport-layer fragmentation
-            # The DIRECT_OPERATE response format is now correct, but
-            # large integrity scan responses can cause transport reassembly
-            # issues that drop subsequent messages.
-            pass
-        else:
-            assert has_header_mismatch, "Scenario failed but not with the expected error. " "Stdout:\n" + "\n".join(
-                all_lines[:20]
-            )
+        # Validate event structure
+        for event in events:
+            assert "test" in event
+            assert "scenario_id" in event
+            assert event["scenario_id"] == "test-001"
+            assert isinstance(event["pass"], bool)
     finally:
         await _terminate(proc)
 
