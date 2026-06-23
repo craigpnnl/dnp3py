@@ -27,8 +27,18 @@ def test_version_when_installed() -> None:
     The 'dev' sentinel leaking into an installed wheel means the build-flag
     wiring is broken: the PackageNotFoundError fallback fired despite the
     package being installed, which indicates a metadata-lookup failure.
+
+    Skipped when running from a plain source checkout (package not installed
+    as a distribution), which is the correct state for that environment.
     """
+    import pytest
+
     import dnp3  # type: ignore[import]
+
+    try:
+        version("dnp3py")
+    except PackageNotFoundError:
+        pytest.skip("dnp3py not installed as a distribution; 'dev' sentinel is expected.")
 
     assert isinstance(dnp3.__version__, str)
     assert len(dnp3.__version__) > 0

@@ -719,22 +719,35 @@ class Outstation:
 
         return objects
 
+    @staticmethod
+    def _event_framing(events: list[Any]) -> tuple[int, bytes, int]:
+        """Compute shared index-prefix framing fields for an event block.
+
+        All three event builders (binary, analog, counter) choose the same
+        index size, count-field encoding, and qualifier code from the maximum
+        point index in the event list.  This helper centralises that choice.
+
+        Args:
+            events: Non-empty list of events; callers must guard against empty.
+
+        Returns:
+            Tuple of (index_size, count_data, qualifier) where:
+              - index_size: bytes per index prefix (1 or 2)
+              - count_data: serialised count field (1 or 2 bytes, little-endian)
+              - qualifier: 0x17 (1-byte) or 0x28 (2-byte) per IEEE 1815-2012
+        """
+        max_index = max(e.index for e in events)
+        if max_index <= MAX_1_BYTE_INDEX:
+            return 1, CountRange(count=len(events)).to_bytes_1(), 0x17
+        return 2, CountRange(count=len(events)).to_bytes_2(), 0x28
+
     def _build_binary_event_blocks(self, events: list[Any]) -> list[ObjectBlock]:
         """Build object blocks for binary events."""
         if not events:
             return []
 
         data = bytearray()
-        max_index = max(e.index for e in events)
-
-        if max_index <= MAX_1_BYTE_INDEX:
-            index_size = 1
-            count_data = CountRange(count=len(events)).to_bytes_1()
-            qualifier = 0x17
-        else:
-            index_size = 2
-            count_data = CountRange(count=len(events)).to_bytes_2()
-            qualifier = 0x28
+        index_size, count_data, qualifier = self._event_framing(events)
 
         for event in events:
             if index_size == 1:
@@ -760,16 +773,7 @@ class Outstation:
             return []
 
         data = bytearray()
-        max_index = max(e.index for e in events)
-
-        if max_index <= MAX_1_BYTE_INDEX:
-            index_size = 1
-            count_data = CountRange(count=len(events)).to_bytes_1()
-            qualifier = 0x17
-        else:
-            index_size = 2
-            count_data = CountRange(count=len(events)).to_bytes_2()
-            qualifier = 0x28
+        index_size, count_data, qualifier = self._event_framing(events)
 
         for event in events:
             if index_size == 1:
@@ -794,16 +798,7 @@ class Outstation:
             return []
 
         data = bytearray()
-        max_index = max(e.index for e in events)
-
-        if max_index <= MAX_1_BYTE_INDEX:
-            index_size = 1
-            count_data = CountRange(count=len(events)).to_bytes_1()
-            qualifier = 0x17
-        else:
-            index_size = 2
-            count_data = CountRange(count=len(events)).to_bytes_2()
-            qualifier = 0x28
+        index_size, count_data, qualifier = self._event_framing(events)
 
         for event in events:
             if index_size == 1:
@@ -1036,16 +1031,19 @@ class Outstation:
     def _handle_direct_operate(self, request: RequestFragment) -> ResponseFragment:
         """Handle DIRECT_OPERATE request."""
         results: list[tuple[int, CommandStatus]] = []
+        ao_parse_error = False
 
         for block in request.objects:
             if block.header.group == GROUP_CROB and block.header.variation == 1:
                 block_results = self._process_crob_direct_operate(block)
                 results.extend(block_results)
             elif block.header.group == GROUP_ANALOG_OUTPUT:
-                block_results = self._process_ao_direct_operate(block)
+                block_results, block_parse_error = self._process_ao_direct_operate(block)
                 results.extend(block_results)
+                if block_parse_error:
+                    ao_parse_error = True
 
-        return self._build_control_response(request, results)
+        return self._build_control_response(request, results, ao_parse_error=ao_parse_error)
 
     def _process_crob_direct_operate(self, block: ObjectBlock) -> list[tuple[int, CommandStatus]]:
         """Process CROB DIRECT_OPERATE.
@@ -1073,7 +1071,7 @@ class Outstation:
 
         return results
 
-    def _process_ao_direct_operate(self, block: ObjectBlock) -> list[tuple[int, CommandStatus]]:
+    def _process_ao_direct_operate(self, block: ObjectBlock) -> tuple[list[tuple[int, CommandStatus]], bool]:
         """Process Analog Output DIRECT_OPERATE (Group 41).
 
         Supports variations 1-4:
@@ -1081,31 +1079,51 @@ class Outstation:
             Var 2: 16-bit signed integer (2 bytes value + 1 byte status)
             Var 3: single-precision float (4 bytes value + 1 byte status)
             Var 4: double-precision float (8 bytes value + 1 byte status)
+
+        Qualifiers follow the same 0x17/0x28 scheme as CROB (IEEE 1815-2012 Table 4-3):
+            0x17: 1-byte count + 1-byte index prefix per object
+            0x28: 2-byte count + 2-byte index prefix per object
+        Unknown qualifiers and unknown variations fail closed, matching the CROB path.
+
+        Returns:
+            Tuple of (results, has_parse_error). has_parse_error is True when the
+            frame is malformed (unknown variation, unknown qualifier, or truncated
+            buffer); callers must set IIN.PARAMETER_ERROR when it is True.
+            A dummy-index sentinel is NOT injected into results; the flag is the
+            sole signal so index 0 is never conflated with a parse-error placeholder.
         """
         results: list[tuple[int, CommandStatus]] = []
         variation = block.header.variation
 
-        # Unknown variations return an empty result (no-op, no side effects).
+        # Unknown variation: fail closed, no side effects, signal parse error to caller.
         value_size = _AO_VALUE_SIZES.get(variation)
         if value_size is None:
-            return results
+            return results, True
+
+        # Derive count/index widths from qualifier, identical to the CROB path.
+        try:
+            count_bytes, index_bytes = _crob_count_index_sizes(block.header.qualifier)
+        except ValueError:
+            return results, True
 
         data = block.data
-        if len(data) < 1:
-            return results
+        if len(data) < count_bytes:
+            return results, True
 
-        count = data[0]
-        offset = 1
+        count = int.from_bytes(data[0:count_bytes], "little")
+        offset = count_bytes
 
-        # object size = 1 byte index + value_size + 1 byte status
-        obj_size = 1 + value_size + 1
+        # object size = index_bytes + value_size + 1 byte status
+        obj_size = index_bytes + value_size + 1
 
+        echoed = 0
         for _ in range(count):
             if offset + obj_size > len(data):
+                # Buffer too short; remaining declared objects cannot be processed.
                 break
 
-            index = data[offset]
-            offset += 1
+            index = int.from_bytes(data[offset : offset + index_bytes], "little")
+            offset += index_bytes
 
             # Parse value based on variation
             raw_value = data[offset : offset + value_size]
@@ -1127,24 +1145,35 @@ class Outstation:
             )
 
             results.append((index, result.status))
+            echoed += 1
 
-        return results
+        # Truncation: declared count exceeds available objects.
+        has_parse_error = echoed < count
+        return results, has_parse_error
 
     def _build_control_response(
         self,
         request: RequestFragment,
         results: list[tuple[int, CommandStatus]],
+        ao_parse_error: bool = False,
     ) -> ResponseFragment:
         """Build response for control operations.
 
         Per IEEE 1815-2012, the response must echo back the same object
         headers with each command object's status field set to the result.
-        Any FORMAT_ERROR result also sets IIN.PARAMETER_ERROR in the response
-        header, signaling a malformed request to the master.
+        Any FORMAT_ERROR result or parse error also sets IIN.PARAMETER_ERROR
+        in the response header, signaling a malformed request to the master.
+
+        Args:
+            request: The original control request.
+            results: List of (index, status) pairs from processing.
+            ao_parse_error: True when the AO parse path detected a frame error
+                (unknown variation, unknown qualifier, or truncated buffer).
+                Carried separately so no dummy index-0 sentinel pollutes results.
         """
         # Build a lookup from index to status
         status_map: dict[int, CommandStatus] = {}
-        has_format_error = False
+        has_format_error = ao_parse_error
         for index, status in results:
             status_map[index] = status
             if status == CommandStatus.FORMAT_ERROR:
@@ -1159,8 +1188,10 @@ class Outstation:
                 if truncated:
                     has_format_error = True
             elif block.header.group == GROUP_ANALOG_OUTPUT:
-                echoed = self._echo_ao_block(block, status_map)
+                echoed, ao_truncated = self._echo_ao_block(block, status_map)
                 objects.append(echoed)
+                if ao_truncated:
+                    has_format_error = True
             else:
                 # For unsupported object types, echo the block as-is
                 objects.append(block)
@@ -1215,10 +1246,8 @@ class Outstation:
 
         count = int.from_bytes(data[0:count_bytes], "little")
         offset = count_bytes
-        # Preserve the original count field bytes verbatim.
         result_data = bytearray(data[0:count_bytes])
 
-        # Body bytes excluding the trailing status byte.
         body_without_status = _CROB_BODY_BYTES - 1
 
         echoed = 0
@@ -1227,20 +1256,15 @@ class Outstation:
                 # Buffer too short: remaining objects cannot be echoed.
                 break
 
-            # Read index at qualifier-derived width.
+            # IEEE 1815-2012: echo echoes the request verbatim except the per-object
+            # status byte, which is replaced with the handler result.
             index = int.from_bytes(data[offset : offset + index_bytes], "little")
-            # Copy index field verbatim.
             result_data.extend(data[offset : offset + index_bytes])
             offset += index_bytes
 
-            # Copy CROB body fields (control + op_count + on_time + off_time).
             result_data.extend(data[offset : offset + body_without_status])
-            offset += body_without_status
+            offset += body_without_status + 1  # advance past original status byte
 
-            # Skip the original status byte.
-            offset += 1
-
-            # Write the result status byte.
             status = status_map.get(index, CommandStatus.NOT_SUPPORTED)
             result_data.append(int(status))
             echoed += 1
@@ -1252,15 +1276,24 @@ class Outstation:
         self,
         block: ObjectBlock,
         status_map: dict[int, CommandStatus],
-    ) -> ObjectBlock:
+    ) -> tuple[ObjectBlock, bool]:
         """Echo an Analog Output block with status bytes set from results.
+
+        Mirrors _echo_crob_block: derives count/index widths from the qualifier
+        so 0x17 (1-byte) and 0x28 (2-byte) frames are both echoed correctly.
+
+        Returns a tuple of (echoed_block, truncation_detected). When
+        truncation_detected is True the buffer was shorter than the declared count;
+        the caller must surface IIN.PARAMETER_ERROR. An unrecognised qualifier
+        returns the original block with truncation_detected=False because the
+        parse path already produced FORMAT_ERROR for that case.
 
         Args:
             block: Original request AO block.
             status_map: Map of point index to command status.
 
         Returns:
-            ObjectBlock with status bytes updated.
+            Tuple of (ObjectBlock with status bytes updated, truncation flag).
         """
         variation = block.header.variation
         # Unknown variations are returned unchanged; _process_ao_direct_operate
@@ -1268,90 +1301,94 @@ class Outstation:
         # to echo. No silent size default: a wrong size would corrupt the wire frame.
         value_size = _AO_VALUE_SIZES.get(variation)
         if value_size is None:
-            return block
+            return block, False
+
+        try:
+            count_bytes, index_bytes = _crob_count_index_sizes(block.header.qualifier)
+        except ValueError:
+            # Unrecognised qualifier: parse path already produced FORMAT_ERROR.
+            return block, False
 
         data = block.data
-        if len(data) < 1:
-            return block
+        if len(data) < count_bytes:
+            return block, True
 
-        count = data[0]
-        offset = 1
-        result_data = bytearray([count])
+        count = int.from_bytes(data[0:count_bytes], "little")
+        offset = count_bytes
+        result_data = bytearray(data[0:count_bytes])
 
+        obj_size = index_bytes + value_size + 1  # index + value + status
+
+        echoed = 0
         for _ in range(count):
-            obj_size = 1 + value_size + 1  # index + value + status
             if offset + obj_size > len(data):
+                # Buffer too short: remaining objects cannot be echoed.
                 break
 
-            index = data[offset]
-            # Copy index byte
-            result_data.append(index)
-            offset += 1
+            # IEEE 1815-2012: echo echoes the request verbatim except the per-object
+            # status byte, which is replaced with the handler result.
+            index = int.from_bytes(data[offset : offset + index_bytes], "little")
+            result_data.extend(data[offset : offset + index_bytes])
+            offset += index_bytes
 
-            # Copy value bytes
             result_data.extend(data[offset : offset + value_size])
-            offset += value_size
+            offset += value_size + 1  # advance past original status byte
 
-            # Skip original status byte
-            offset += 1
-
-            # Write the result status byte
             status = status_map.get(index, CommandStatus.NOT_SUPPORTED)
             result_data.append(int(status))
+            echoed += 1
 
-        return ObjectBlock(header=block.header, data=bytes(result_data))
+        truncation_detected = echoed < count
+        return ObjectBlock(header=block.header, data=bytes(result_data)), truncation_detected
+
+    def _build_delay_response(
+        self,
+        restart_fn: Callable[[], int | None],
+        request: RequestFragment,
+    ) -> ResponseFragment:
+        """Build a g52v2 time-delay response for COLD_RESTART and WARM_RESTART.
+
+        Both handlers are identical except for the callable that produces the
+        delay value; this helper eliminates the duplication.
+
+        Args:
+            restart_fn: handler.cold_restart or handler.warm_restart.
+            request: The original restart request (needed for seq and IIN).
+
+        Returns:
+            Response with a g52v2 time-delay block, or a NO_FUNC_CODE_SUPPORT
+            null response when restart_fn returns None.
+        """
+        delay = restart_fn()
+        if delay is None:
+            return build_null_response(
+                iin=self.iin | IIN.NO_FUNC_CODE_SUPPORT,
+                seq=request.header.control.seq,
+            )
+
+        delay_data = delay.to_bytes(2, "little")
+        header = ObjectHeader.build(
+            group=52,
+            variation=2,
+            prefix=PrefixCode.NONE,
+            range_code=RangeCode.UINT8_COUNT,
+        )
+        count_data = CountRange(count=1).to_bytes_1()
+        block = ObjectBlock(header=header, data=count_data + delay_data)
+
+        return build_response(
+            objects=(block,),
+            iin=self.iin,
+            seq=request.header.control.seq,
+        )
 
     def _handle_cold_restart(self, request: RequestFragment) -> ResponseFragment:
         """Handle COLD_RESTART request."""
-        delay = self.handler.cold_restart()
-        if delay is None:
-            return build_null_response(
-                iin=self.iin | IIN.NO_FUNC_CODE_SUPPORT,
-                seq=request.header.control.seq,
-            )
-
-        # Build response with time delay object (g52v2)
-        delay_data = delay.to_bytes(2, "little")
-        header = ObjectHeader.build(
-            group=52,
-            variation=2,
-            prefix=PrefixCode.NONE,
-            range_code=RangeCode.UINT8_COUNT,
-        )
-        count_data = CountRange(count=1).to_bytes_1()
-        block = ObjectBlock(header=header, data=count_data + delay_data)
-
-        return build_response(
-            objects=(block,),
-            iin=self.iin,
-            seq=request.header.control.seq,
-        )
+        return self._build_delay_response(self.handler.cold_restart, request)
 
     def _handle_warm_restart(self, request: RequestFragment) -> ResponseFragment:
         """Handle WARM_RESTART request."""
-        delay = self.handler.warm_restart()
-        if delay is None:
-            return build_null_response(
-                iin=self.iin | IIN.NO_FUNC_CODE_SUPPORT,
-                seq=request.header.control.seq,
-            )
-
-        # Build response with time delay object (g52v2)
-        delay_data = delay.to_bytes(2, "little")
-        header = ObjectHeader.build(
-            group=52,
-            variation=2,
-            prefix=PrefixCode.NONE,
-            range_code=RangeCode.UINT8_COUNT,
-        )
-        count_data = CountRange(count=1).to_bytes_1()
-        block = ObjectBlock(header=header, data=count_data + delay_data)
-
-        return build_response(
-            objects=(block,),
-            iin=self.iin,
-            seq=request.header.control.seq,
-        )
+        return self._build_delay_response(self.handler.warm_restart, request)
 
     def _handle_delay_measure(self, request: RequestFragment) -> ResponseFragment:
         """Handle DELAY_MEASURE request for time sync."""
@@ -1375,37 +1412,45 @@ class Outstation:
             seq=request.header.control.seq,
         )
 
-    def _handle_enable_unsolicited(self, request: RequestFragment) -> ResponseFragment:
-        """Handle ENABLE_UNSOLICITED request."""
+    def _process_unsolicited_class_request(
+        self,
+        request: RequestFragment,
+        action: Callable[[EventClass], None],
+    ) -> ResponseFragment:
+        """Shared core for ENABLE_UNSOLICITED and DISABLE_UNSOLICITED.
+
+        Both handlers walk the same g60-class object list and differ only in
+        the per-class action (enable vs disable); this helper captures the
+        shared iteration and null-response build.
+
+        Args:
+            request: The ENABLE or DISABLE unsolicited request.
+            action: Called with the EventClass for each recognised class object.
+
+        Returns:
+            Null response with current IIN.
+        """
         for block in request.objects:
             if block.header.group == GROUP_CLASS_DATA:
                 if block.header.variation == VAR_CLASS_1:
-                    self._state.unsolicited.enable_class(EventClass.CLASS_1)
+                    action(EventClass.CLASS_1)
                 elif block.header.variation == VAR_CLASS_2:
-                    self._state.unsolicited.enable_class(EventClass.CLASS_2)
+                    action(EventClass.CLASS_2)
                 elif block.header.variation == VAR_CLASS_3:
-                    self._state.unsolicited.enable_class(EventClass.CLASS_3)
+                    action(EventClass.CLASS_3)
 
         return build_null_response(
             iin=self.iin,
             seq=request.header.control.seq,
         )
+
+    def _handle_enable_unsolicited(self, request: RequestFragment) -> ResponseFragment:
+        """Handle ENABLE_UNSOLICITED request."""
+        return self._process_unsolicited_class_request(request, self._state.unsolicited.enable_class)
 
     def _handle_disable_unsolicited(self, request: RequestFragment) -> ResponseFragment:
         """Handle DISABLE_UNSOLICITED request."""
-        for block in request.objects:
-            if block.header.group == GROUP_CLASS_DATA:
-                if block.header.variation == VAR_CLASS_1:
-                    self._state.unsolicited.disable_class(EventClass.CLASS_1)
-                elif block.header.variation == VAR_CLASS_2:
-                    self._state.unsolicited.disable_class(EventClass.CLASS_2)
-                elif block.header.variation == VAR_CLASS_3:
-                    self._state.unsolicited.disable_class(EventClass.CLASS_3)
-
-        return build_null_response(
-            iin=self.iin,
-            seq=request.header.control.seq,
-        )
+        return self._process_unsolicited_class_request(request, self._state.unsolicited.disable_class)
 
     def _handle_confirm(self, request: RequestFragment) -> ResponseFragment | None:
         """Handle CONFIRM request."""
