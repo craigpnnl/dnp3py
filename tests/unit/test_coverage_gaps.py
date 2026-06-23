@@ -3794,3 +3794,360 @@ class TestSimulatorServerQueueClear:
         await server.stop()
         assert not server.is_listening
         assert server.connection_count == 0
+
+
+class TestAOWireLevelBugs:
+    """Wire-level regression tests for Analog Output qualifier, truncation, and count bugs.
+
+    These cover the same bug class fixed for CROB in issue #6 but in the AO path:
+      - 0x28 qualifier (2-byte index) must parse and echo the correct index.
+      - A truncated AO frame must set IIN.PARAMETER_ERROR, not emit a clean echo.
+      - A crafted over-large declared count must not over-run the buffer.
+    """
+
+    @staticmethod
+    def _make_ao_direct_operate_request(
+        variation: int,
+        qualifier: int,
+        count_bytes: int,
+        index_bytes: int,
+        index: int,
+        value_bytes: bytes,
+    ) -> bytes:
+        """Build a raw g41vN DIRECT_OPERATE request frame.
+
+        Layout per IEEE 1815-2012:
+          application header (2 bytes) + object header (3 bytes)
+          + count field (count_bytes) + per-object [index (index_bytes) + value + status (1)]
+        """
+        from dnp3.application.fragment import ObjectBlock, RequestFragment
+        from dnp3.application.header import ApplicationControl, RequestHeader
+        from dnp3.application.qualifiers import ObjectHeader
+        from dnp3.core.enums import FunctionCode
+
+        count_field = (1).to_bytes(count_bytes, "little")
+        index_field = index.to_bytes(index_bytes, "little")
+        status_byte = b"\x00"
+        payload = count_field + index_field + value_bytes + status_byte
+
+        header = ObjectHeader(group=41, variation=variation, qualifier=qualifier)
+        block = ObjectBlock(header=header, data=payload)
+        request = RequestFragment(
+            header=RequestHeader(
+                control=ApplicationControl(fir=True, fin=True, con=False, uns=False, seq=5),
+                function=FunctionCode.DIRECT_OPERATE,
+            ),
+            objects=[block],
+        )
+        return request.to_bytes()
+
+    def test_ao_var1_0x17_index_and_value(self) -> None:
+        """g41v1 with qualifier 0x17 (1-byte index) operates the correct index and value."""
+        from dnp3.outstation.handler import CommandResult, DefaultCommandHandler
+
+        calls: list[tuple[int, float]] = []
+
+        class TrackingHandler(DefaultCommandHandler):
+            def direct_operate_analog_output(self, index: int, value: float) -> CommandResult:
+                calls.append((index, value))
+                return CommandResult.success()
+
+        outstation = Outstation(handler=TrackingHandler())
+        value_bytes = (42).to_bytes(4, "little", signed=True)
+        raw = self._make_ao_direct_operate_request(
+            variation=1,
+            qualifier=0x17,
+            count_bytes=1,
+            index_bytes=1,
+            index=7,
+            value_bytes=value_bytes,
+        )
+        resp = outstation.process_request(raw)
+
+        assert resp is not None
+        assert len(calls) == 1
+        assert calls[0] == (7, 42.0), f"Expected (7, 42.0), got {calls[0]}"
+
+    def test_ao_var1_0x28_index_above_255_operates_correct_index(self) -> None:
+        """g41v1 with qualifier 0x28 (2-byte index) must parse index 300, not truncate to 44."""
+        from dnp3.outstation.handler import CommandResult, DefaultCommandHandler
+
+        calls: list[tuple[int, float]] = []
+
+        class TrackingHandler(DefaultCommandHandler):
+            def direct_operate_analog_output(self, index: int, value: float) -> CommandResult:
+                calls.append((index, value))
+                return CommandResult.success()
+
+        outstation = Outstation(handler=TrackingHandler())
+        value_bytes = (999).to_bytes(4, "little", signed=True)
+        raw = self._make_ao_direct_operate_request(
+            variation=1,
+            qualifier=0x28,
+            count_bytes=2,
+            index_bytes=2,
+            index=300,
+            value_bytes=value_bytes,
+        )
+        resp = outstation.process_request(raw)
+
+        assert resp is not None
+        assert len(calls) == 1
+        assert calls[0][0] == 300, f"Expected index 300 (0x12C), got {calls[0][0]}; 1-byte read would give 44 (0x2C)"
+        assert calls[0][1] == 999.0
+
+    def test_ao_var1_0x28_echo_carries_correct_2byte_index(self) -> None:
+        """g41v1 with 0x28 qualifier: echoed response frame must contain the 2-byte index 300."""
+        from dnp3.outstation.handler import CommandResult, DefaultCommandHandler
+
+        class AcceptHandler(DefaultCommandHandler):
+            def direct_operate_analog_output(self, index: int, value: float) -> CommandResult:
+                return CommandResult.success()
+
+        outstation = Outstation(handler=AcceptHandler())
+        value_bytes = (10).to_bytes(4, "little", signed=True)
+        raw = self._make_ao_direct_operate_request(
+            variation=1,
+            qualifier=0x28,
+            count_bytes=2,
+            index_bytes=2,
+            index=300,
+            value_bytes=value_bytes,
+        )
+        resp = outstation.process_request(raw)
+        assert resp is not None
+
+        resp_bytes = resp.to_bytes()
+        # The echoed block must contain the 2-byte little-endian index 300 = 0x012C.
+        assert b"\x2c\x01" in resp_bytes, (
+            f"2-byte index 300 (0x012C, LE bytes 0x2C 0x01) not found in response; got {resp_bytes.hex()}"
+        )
+
+    def test_ao_truncated_frame_sets_parameter_error(self) -> None:
+        """A truncated AO frame (count > available objects) must set IIN.PARAMETER_ERROR."""
+        from dnp3.application.fragment import ObjectBlock, RequestFragment
+        from dnp3.application.header import ApplicationControl, RequestHeader
+        from dnp3.application.qualifiers import ObjectHeader
+        from dnp3.core.enums import FunctionCode
+
+        outstation = Outstation()
+
+        # count=2 but only 0 objects follow: truncated buffer.
+        count_bytes = (2).to_bytes(1, "little")
+        header = ObjectHeader(group=41, variation=1, qualifier=0x17)
+        block = ObjectBlock(header=header, data=count_bytes)
+        request = RequestFragment(
+            header=RequestHeader(
+                control=ApplicationControl(fir=True, fin=True, con=False, uns=False, seq=3),
+                function=FunctionCode.DIRECT_OPERATE,
+            ),
+            objects=[block],
+        )
+        resp = outstation.process_request(request.to_bytes())
+        assert resp is not None
+
+        resp_bytes = resp.to_bytes()
+        # IIN byte 2 bit 2 (0x02 in the second IIN byte, offset 3 in response) = PARAMETER_ERROR.
+        # Application response header = 4 bytes: control(1) + function(1) + IIN1(1) + IIN2(1).
+        iin2 = resp_bytes[3]
+        assert iin2 & 0x04, f"IIN2 PARAMETER_ERROR (bit 2) not set for truncated AO frame; IIN2=0x{iin2:02X}"
+
+    def test_ao_crafted_count_does_not_overrun(self) -> None:
+        """A declared count larger than the buffer must not over-read; only real objects are processed."""
+        from dnp3.outstation.handler import CommandResult, DefaultCommandHandler
+
+        calls: list[tuple[int, float]] = []
+
+        class TrackingHandler(DefaultCommandHandler):
+            def direct_operate_analog_output(self, index: int, value: float) -> CommandResult:
+                calls.append((index, value))
+                return CommandResult.success()
+
+        outstation = Outstation(handler=TrackingHandler())
+
+        # count=5 (via 0x17 1-byte count) but only 1 complete object (index=2, value=7) follows.
+        from dnp3.application.fragment import ObjectBlock, RequestFragment
+        from dnp3.application.header import ApplicationControl, RequestHeader
+        from dnp3.application.qualifiers import ObjectHeader
+        from dnp3.core.enums import FunctionCode
+
+        count_field = b"\x05"  # claims 5 objects
+        index_byte = b"\x02"
+        value_bytes = (7).to_bytes(4, "little", signed=True)
+        status_byte = b"\x00"
+        payload = count_field + index_byte + value_bytes + status_byte
+
+        header = ObjectHeader(group=41, variation=1, qualifier=0x17)
+        block = ObjectBlock(header=header, data=payload)
+        request = RequestFragment(
+            header=RequestHeader(
+                control=ApplicationControl(fir=True, fin=True, con=False, uns=False, seq=2),
+                function=FunctionCode.DIRECT_OPERATE,
+            ),
+            objects=[block],
+        )
+        resp = outstation.process_request(request.to_bytes())
+        assert resp is not None
+        # Only the 1 real object was processed; the phantom 4 did not over-run.
+        assert len(calls) == 1
+        assert calls[0] == (2, 7.0)
+
+    def test_ao_var2_int16_correct_value(self) -> None:
+        """g41v2 (16-bit int) parses and operates the correct value."""
+        from dnp3.outstation.handler import CommandResult, DefaultCommandHandler
+
+        calls: list[tuple[int, float]] = []
+
+        class TrackingHandler(DefaultCommandHandler):
+            def direct_operate_analog_output(self, index: int, value: float) -> CommandResult:
+                calls.append((index, value))
+                return CommandResult.success()
+
+        outstation = Outstation(handler=TrackingHandler())
+        value_bytes = ((-500) & 0xFFFF).to_bytes(2, "little")  # -500 as int16 LE
+        raw = self._make_ao_direct_operate_request(
+            variation=2,
+            qualifier=0x17,
+            count_bytes=1,
+            index_bytes=1,
+            index=1,
+            value_bytes=value_bytes,
+        )
+        resp = outstation.process_request(raw)
+        assert resp is not None
+        assert len(calls) == 1
+        assert calls[0] == (1, -500.0), f"Expected (1, -500.0), got {calls[0]}"
+
+    def test_ao_var3_float32_correct_value(self) -> None:
+        """g41v3 (float32) parses and operates the correct value."""
+        import struct
+
+        from dnp3.outstation.handler import CommandResult, DefaultCommandHandler
+
+        calls: list[tuple[int, float]] = []
+
+        class TrackingHandler(DefaultCommandHandler):
+            def direct_operate_analog_output(self, index: int, value: float) -> CommandResult:
+                calls.append((index, value))
+                return CommandResult.success()
+
+        outstation = Outstation(handler=TrackingHandler())
+        value_bytes = struct.pack("<f", 3.14)
+        raw = self._make_ao_direct_operate_request(
+            variation=3,
+            qualifier=0x17,
+            count_bytes=1,
+            index_bytes=1,
+            index=0,
+            value_bytes=value_bytes,
+        )
+        resp = outstation.process_request(raw)
+        assert resp is not None
+        assert len(calls) == 1
+        index_got, value_got = calls[0]
+        assert index_got == 0
+        assert abs(value_got - 3.14) < 0.001, f"Expected ~3.14, got {value_got}"
+
+    def test_ao_var4_float64_correct_value(self) -> None:
+        """g41v4 (float64) parses and operates the correct value."""
+        import struct
+
+        from dnp3.outstation.handler import CommandResult, DefaultCommandHandler
+
+        calls: list[tuple[int, float]] = []
+
+        class TrackingHandler(DefaultCommandHandler):
+            def direct_operate_analog_output(self, index: int, value: float) -> CommandResult:
+                calls.append((index, value))
+                return CommandResult.success()
+
+        outstation = Outstation(handler=TrackingHandler())
+        value_bytes = struct.pack("<d", 2.718281828)
+        raw = self._make_ao_direct_operate_request(
+            variation=4,
+            qualifier=0x17,
+            count_bytes=1,
+            index_bytes=1,
+            index=5,
+            value_bytes=value_bytes,
+        )
+        resp = outstation.process_request(raw)
+        assert resp is not None
+        assert len(calls) == 1
+        index_got, value_got = calls[0]
+        assert index_got == 5
+        assert abs(value_got - 2.718281828) < 1e-9, f"Expected ~2.718281828, got {value_got}"
+
+    def test_ao_unknown_qualifier_sets_parameter_error(self) -> None:
+        """g41v1 with unknown qualifier (0xFF) must return IIN.PARAMETER_ERROR."""
+        from dnp3.application.fragment import ObjectBlock, RequestFragment
+        from dnp3.application.header import ApplicationControl, RequestHeader
+        from dnp3.application.qualifiers import ObjectHeader
+        from dnp3.core.enums import FunctionCode
+
+        outstation = Outstation()
+
+        header = ObjectHeader(group=41, variation=1, qualifier=0xFF)
+        payload = b"\x01\x00" + (0).to_bytes(4, "little", signed=True) + b"\x00"
+        block = ObjectBlock(header=header, data=payload)
+        request = RequestFragment(
+            header=RequestHeader(
+                control=ApplicationControl(fir=True, fin=True, con=False, uns=False, seq=6),
+                function=FunctionCode.DIRECT_OPERATE,
+            ),
+            objects=[block],
+        )
+        resp = outstation.process_request(request.to_bytes())
+        assert resp is not None
+        resp_bytes = resp.to_bytes()
+        iin2 = resp_bytes[3]
+        assert iin2 & 0x04, f"IIN2 PARAMETER_ERROR (bit 2) not set for unknown AO qualifier; IIN2=0x{iin2:02X}"
+
+
+class TestG80V1MultibitRangeWrite:
+    """Regression test: g80v1 write crossing a byte boundary must not misfire."""
+
+    def test_multi_bit_range_write_crossing_byte_boundary(self) -> None:
+        """A g80v1 write with start=4 stop=11 spans two data bytes; must not clear DEVICE_RESTART."""
+        from dnp3.application.fragment import ObjectBlock, RequestFragment
+        from dnp3.application.header import ApplicationControl, RequestHeader
+        from dnp3.application.qualifiers import ObjectHeader
+        from dnp3.core.enums import FunctionCode
+        from dnp3.outstation.config import OutstationConfig
+
+        config = OutstationConfig(time_sync_required=False)
+        outstation = Outstation(config=config)
+
+        # Confirm DEVICE_RESTART is set initially.
+        assert outstation.iin & 0x80, "DEVICE_RESTART should be set on a fresh outstation"
+
+        # Write g80v1 range 4..11 with both data bytes = 0xFF (all bits = 1, not clearing anything).
+        # Bit index 7 (DEVICE_RESTART) falls in the first data byte at bit_pos = 7 - 4 = 3.
+        # With data byte 0xFF, bit 3 = 1, so DEVICE_RESTART should NOT be cleared.
+        header = ObjectHeader(group=80, variation=1, qualifier=0x00)
+        data = b"\x04\x0b\xff\xff"  # start=4, stop=11, data_byte0=0xFF, data_byte1=0xFF
+        block = ObjectBlock(header=header, data=data)
+        request = RequestFragment(
+            header=RequestHeader(
+                control=ApplicationControl(fir=True, fin=True, con=False, uns=False, seq=0),
+                function=FunctionCode.WRITE,
+            ),
+            objects=[block],
+        )
+        outstation.process_request(request.to_bytes())
+        assert outstation.iin & 0x80, "DEVICE_RESTART should still be set when written bit is 1"
+
+        # Now write range 4..11 with first byte = 0x00 (bit 3 = 0 clears DEVICE_RESTART at index 7).
+        data_clear = b"\x04\x0b\x00\xff"
+        block_clear = ObjectBlock(header=header, data=data_clear)
+        request_clear = RequestFragment(
+            header=RequestHeader(
+                control=ApplicationControl(fir=True, fin=True, con=False, uns=False, seq=1),
+                function=FunctionCode.WRITE,
+            ),
+            objects=[block_clear],
+        )
+        outstation.process_request(request_clear.to_bytes())
+        assert not (outstation.iin & 0x80), (
+            "DEVICE_RESTART should be cleared when bit index 7 is written 0 via multi-byte range"
+        )
