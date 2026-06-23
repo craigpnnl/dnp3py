@@ -187,7 +187,7 @@ jobs:
         # is empty, the pipeline fails here rather than silently producing a
         # no-op when dry_run is later set to false.
         run: |
-          NEXT_VERSION=$(semantic-release version --print 2>/dev/null)
+          NEXT_VERSION=$(semantic-release version --print)
           echo "PSR computed next version: '${NEXT_VERSION}'"
           if [ -z "${NEXT_VERSION}" ]; then
             echo "FAIL: semantic-release version --print produced no output."
