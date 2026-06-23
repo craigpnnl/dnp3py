@@ -18,7 +18,7 @@ from dnp3.database import Database, EventClass
 from dnp3.database.point import BinaryInputConfig
 from dnp3.outstation.config import OutstationConfig
 from dnp3.outstation.handler import CommandResult, DefaultCommandHandler
-from dnp3.outstation.outstation import Outstation
+from dnp3.outstation.outstation import Outstation, ParsedCrob, _contiguous_runs, _parse_crob_block
 from dnp3.outstation.state import OutstationState
 
 
@@ -533,9 +533,9 @@ class TestStaticResponseQualifiers:
         bi_blocks = [b for b in response.objects if b.header.group == 1]
         assert len(bi_blocks) == 1, "Expected exactly one g1v2 block"
         # Qualifier 0x00 = prefix NONE + range UINT8_START_STOP
-        assert (
-            bi_blocks[0].header.qualifier == 0x00
-        ), f"Expected qualifier 0x00 (1-byte start/stop), got 0x{bi_blocks[0].header.qualifier:02X}"
+        assert bi_blocks[0].header.qualifier == 0x00, (
+            f"Expected qualifier 0x00 (1-byte start/stop), got 0x{bi_blocks[0].header.qualifier:02X}"
+        )
         # range_data is 2 bytes: start=0, stop=1
         assert bi_blocks[0].data[0] == 0, "start index must be 0"
         assert bi_blocks[0].data[1] == 1, "stop index must be 1"
@@ -564,9 +564,9 @@ class TestStaticResponseQualifiers:
         bi_blocks = [b for b in response.objects if b.header.group == 1]
         assert len(bi_blocks) == 1
         # Qualifier 0x01 = prefix NONE + range UINT16_START_STOP
-        assert (
-            bi_blocks[0].header.qualifier == 0x01
-        ), f"Expected qualifier 0x01 (2-byte start/stop) for index 256, got 0x{bi_blocks[0].header.qualifier:02X}"
+        assert bi_blocks[0].header.qualifier == 0x01, (
+            f"Expected qualifier 0x01 (2-byte start/stop) for index 256, got 0x{bi_blocks[0].header.qualifier:02X}"
+        )
         # range_data is 4 bytes: start and stop both = 256 (little-endian)
         start = struct.unpack_from("<H", bi_blocks[0].data, 0)[0]
         stop = struct.unpack_from("<H", bi_blocks[0].data, 2)[0]
@@ -576,53 +576,57 @@ class TestStaticResponseQualifiers:
     def test_analog_input_static_uses_start_stop_qualifier(self) -> None:
         """Analog input static response uses qualifier 0x00 (1-byte start/stop)."""
         outstation = Outstation()
+        # Use contiguous indices so a single block is emitted; sparse behaviour
+        # is covered by TestSparseIndexStaticResponse.
         outstation.database.add_analog_input(0, value=42.0)
-        outstation.database.add_analog_input(3, value=7.0)
+        outstation.database.add_analog_input(1, value=7.0)
 
         request = build_integrity_poll()
         response = outstation.process_request(request.to_bytes())
 
         ai_blocks = [b for b in response.objects if b.header.group == 30]
         assert len(ai_blocks) == 1
-        assert (
-            ai_blocks[0].header.qualifier == 0x00
-        ), f"Expected qualifier 0x00, got 0x{ai_blocks[0].header.qualifier:02X}"
+        assert ai_blocks[0].header.qualifier == 0x00, (
+            f"Expected qualifier 0x00, got 0x{ai_blocks[0].header.qualifier:02X}"
+        )
         assert ai_blocks[0].data[0] == 0, "start index must be 0"
-        assert ai_blocks[0].data[1] == 3, "stop index must be 3"
+        assert ai_blocks[0].data[1] == 1, "stop index must be 1"
 
     def test_counter_static_uses_start_stop_qualifier(self) -> None:
         """Counter static response uses qualifier 0x00 (1-byte start/stop)."""
         outstation = Outstation()
+        # Contiguous indices; sparse behaviour is covered by TestSparseIndexStaticResponse.
         outstation.database.add_counter(0, value=100)
-        outstation.database.add_counter(2, value=200)
+        outstation.database.add_counter(1, value=200)
 
         request = build_integrity_poll()
         response = outstation.process_request(request.to_bytes())
 
         ctr_blocks = [b for b in response.objects if b.header.group == 20]
         assert len(ctr_blocks) == 1
-        assert (
-            ctr_blocks[0].header.qualifier == 0x00
-        ), f"Expected qualifier 0x00, got 0x{ctr_blocks[0].header.qualifier:02X}"
+        assert ctr_blocks[0].header.qualifier == 0x00, (
+            f"Expected qualifier 0x00, got 0x{ctr_blocks[0].header.qualifier:02X}"
+        )
         assert ctr_blocks[0].data[0] == 0
-        assert ctr_blocks[0].data[1] == 2
+        assert ctr_blocks[0].data[1] == 1
 
     def test_binary_output_static_uses_start_stop_qualifier(self) -> None:
         """Binary output static response uses qualifier 0x00 (1-byte start/stop)."""
         outstation = Outstation()
+        # Contiguous indices; sparse behaviour is covered by TestSparseIndexStaticResponse.
         outstation.database.add_binary_output(0, value=False)
-        outstation.database.add_binary_output(4, value=True)
+        outstation.database.add_binary_output(1, value=True)
 
         request = build_integrity_poll()
         response = outstation.process_request(request.to_bytes())
 
         bo_blocks = [b for b in response.objects if b.header.group == 10]
         assert len(bo_blocks) == 1
-        assert (
-            bo_blocks[0].header.qualifier == 0x00
-        ), f"Expected qualifier 0x00, got 0x{bo_blocks[0].header.qualifier:02X}"
+        assert bo_blocks[0].header.qualifier == 0x00, (
+            f"Expected qualifier 0x00, got 0x{bo_blocks[0].header.qualifier:02X}"
+        )
         assert bo_blocks[0].data[0] == 0
-        assert bo_blocks[0].data[1] == 4
+        assert bo_blocks[0].data[1] == 1
 
 
 class TestCROBQualifierParsing:
@@ -719,9 +723,9 @@ class TestCROBQualifierParsing:
         outstation.process_request(request.to_bytes())
 
         # _make_crob_block sets control_code = 0x03 = LATCH_ON
-        assert received_codes == [
-            ControlCode.LATCH_ON
-        ], f"Expected LATCH_ON, got {received_codes}. A misaligned offset would produce a wrong control code."
+        assert received_codes == [ControlCode.LATCH_ON], (
+            f"Expected LATCH_ON, got {received_codes}. A misaligned offset would produce a wrong control code."
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -739,9 +743,12 @@ class TestStaticQualifierBoundary:
     """Coverage gaps: boundary index 255 vs 256, empty list, frozen-counter builder."""
 
     def test_binary_input_stop_index_255_uses_1byte_qualifier(self) -> None:
-        """Stop index exactly 255 must still use qualifier 0x00 (1-byte start/stop)."""
+        """Stop index exactly 255 must use qualifier 0x00 (1-byte start/stop).
+
+        Only one point at index 255 is registered so the encoder emits a single
+        block [255..255] with the 1-byte qualifier.
+        """
         outstation = Outstation()
-        outstation.database.add_binary_input(0, value=False)
         outstation.database.add_binary_input(255, value=True)
 
         request = build_integrity_poll()
@@ -749,10 +756,10 @@ class TestStaticQualifierBoundary:
 
         bi_blocks = [b for b in response.objects if b.header.group == 1]
         assert len(bi_blocks) == 1
-        assert (
-            bi_blocks[0].header.qualifier == 0x00
-        ), f"Stop index 255 must use 0x00 (1-byte), got 0x{bi_blocks[0].header.qualifier:02X}"
-        assert bi_blocks[0].data[0] == 0, "start must be 0"
+        assert bi_blocks[0].header.qualifier == 0x00, (
+            f"Stop index 255 must use 0x00 (1-byte), got 0x{bi_blocks[0].header.qualifier:02X}"
+        )
+        assert bi_blocks[0].data[0] == 255, "start must be 255"
         assert bi_blocks[0].data[1] == 255, "stop must be 255"
 
     def test_binary_input_stop_index_256_uses_2byte_qualifier(self) -> None:
@@ -765,26 +772,27 @@ class TestStaticQualifierBoundary:
 
         bi_blocks = [b for b in response.objects if b.header.group == 1]
         assert len(bi_blocks) == 1
-        assert (
-            bi_blocks[0].header.qualifier == 0x01
-        ), f"Stop index 256 must use 0x01 (2-byte), got 0x{bi_blocks[0].header.qualifier:02X}"
+        assert bi_blocks[0].header.qualifier == 0x01, (
+            f"Stop index 256 must use 0x01 (2-byte), got 0x{bi_blocks[0].header.qualifier:02X}"
+        )
 
     def test_frozen_counter_static_uses_start_stop_qualifier(self) -> None:
         """Frozen counter static response uses qualifier 0x00 (1-byte start/stop)."""
         outstation = Outstation()
+        # Contiguous indices; sparse behaviour is covered by TestSparseIndexStaticResponse.
         outstation.database.add_frozen_counter(0, value=10)
-        outstation.database.add_frozen_counter(3, value=20)
+        outstation.database.add_frozen_counter(1, value=20)
 
         request = build_integrity_poll()
         response = outstation.process_request(request.to_bytes())
 
         fc_blocks = [b for b in response.objects if b.header.group == 21]
         assert len(fc_blocks) == 1
-        assert (
-            fc_blocks[0].header.qualifier == 0x00
-        ), f"Expected qualifier 0x00, got 0x{fc_blocks[0].header.qualifier:02X}"
+        assert fc_blocks[0].header.qualifier == 0x00, (
+            f"Expected qualifier 0x00, got 0x{fc_blocks[0].header.qualifier:02X}"
+        )
         assert fc_blocks[0].data[0] == 0
-        assert fc_blocks[0].data[1] == 3
+        assert fc_blocks[0].data[1] == 1
 
     def test_empty_point_list_returns_no_block(self) -> None:
         """Static builder with no points returns empty list (exercises the guard branch)."""
@@ -865,9 +873,9 @@ class TestCROBUnknownQualifier:
         results = [(0, CommandStatus.FORMAT_ERROR)]
         response = outstation._build_control_response(request, results)
 
-        assert (
-            IIN.PARAMETER_ERROR in response.header.iin
-        ), f"FORMAT_ERROR result must produce IIN.PARAMETER_ERROR, got IIN=0x{int(response.header.iin):04X}"
+        assert IIN.PARAMETER_ERROR in response.header.iin, (
+            f"FORMAT_ERROR result must produce IIN.PARAMETER_ERROR, got IIN=0x{int(response.header.iin):04X}"
+        )
 
 
 class TestCROBSelectOperate2ByteQualifier:
@@ -968,9 +976,9 @@ class TestCROBTruncatedBuffer:
         response = outstation.process_request(request.to_bytes())
 
         assert response is not None
-        assert (
-            IIN.PARAMETER_ERROR in response.header.iin
-        ), f"Truncated buffer must set PARAMETER_ERROR, got IIN=0x{int(response.header.iin):04X}"
+        assert IIN.PARAMETER_ERROR in response.header.iin, (
+            f"Truncated buffer must set PARAMETER_ERROR, got IIN=0x{int(response.header.iin):04X}"
+        )
 
     def test_truncated_0x17_buffer_sets_parameter_error(self) -> None:
         """CROB 0x17 with a buffer too short for one object sets PARAMETER_ERROR."""
@@ -987,9 +995,9 @@ class TestCROBTruncatedBuffer:
         response = outstation.process_request(request.to_bytes())
 
         assert response is not None
-        assert (
-            IIN.PARAMETER_ERROR in response.header.iin
-        ), f"Truncated 0x17 buffer must set PARAMETER_ERROR, got IIN=0x{int(response.header.iin):04X}"
+        assert IIN.PARAMETER_ERROR in response.header.iin, (
+            f"Truncated 0x17 buffer must set PARAMETER_ERROR, got IIN=0x{int(response.header.iin):04X}"
+        )
 
 
 class TestCROBBadControlCode:
@@ -1036,6 +1044,268 @@ class TestCROBBadControlCode:
         request = build_direct_operate_request(objects=(block,))
         response = outstation.process_request(request.to_bytes())
 
-        assert (
-            IIN.PARAMETER_ERROR in response.header.iin
-        ), f"Bad control code must set PARAMETER_ERROR, got IIN=0x{int(response.header.iin):04X}"
+        assert IIN.PARAMETER_ERROR in response.header.iin, (
+            f"Bad control code must set PARAMETER_ERROR, got IIN=0x{int(response.header.iin):04X}"
+        )
+
+
+class TestContiguousRuns:
+    """Unit tests for the _contiguous_runs helper.
+
+    _contiguous_runs is the correctness kernel for sparse-index encoding:
+    it must never group points from different gaps into the same ObjectBlock
+    (which would imply non-existent intermediate objects on the wire).
+    """
+
+    class _Pt:
+        """Minimal point stub for _contiguous_runs."""
+
+        def __init__(self, index: int) -> None:
+            self.index = index
+
+    def _pts(self, *indices: int) -> list["TestContiguousRuns._Pt"]:
+        return [self._Pt(i) for i in indices]
+
+    def test_empty_list_returns_empty(self) -> None:
+        """Empty input produces no runs."""
+        assert _contiguous_runs([]) == []
+
+    def test_single_point_is_one_run(self) -> None:
+        """A single point is its own run."""
+        runs = _contiguous_runs(self._pts(5))
+        assert len(runs) == 1
+        assert runs[0][0].index == 5
+
+    def test_dense_range_is_one_run(self) -> None:
+        """Contiguous indices 0,1,2 produce one run."""
+        runs = _contiguous_runs(self._pts(0, 1, 2))
+        assert len(runs) == 1
+        assert [p.index for p in runs[0]] == [0, 1, 2]
+
+    def test_sparse_indices_produce_multiple_runs(self) -> None:
+        """Indices [0, 5, 10] contain two gaps so yield three runs."""
+        runs = _contiguous_runs(self._pts(0, 5, 10))
+        assert len(runs) == 3
+        assert runs[0][0].index == 0
+        assert runs[1][0].index == 5
+        assert runs[2][0].index == 10
+
+    def test_mixed_dense_and_sparse(self) -> None:
+        """[0,1,5,6,10] yields three runs: [0,1], [5,6], [10]."""
+        runs = _contiguous_runs(self._pts(0, 1, 5, 6, 10))
+        assert len(runs) == 3
+        assert [p.index for p in runs[0]] == [0, 1]
+        assert [p.index for p in runs[1]] == [5, 6]
+        assert [p.index for p in runs[2]] == [10]
+
+
+class TestSparseIndexStaticResponse:
+    """Task 1: static builders must not emit a bogus start/stop range that implies
+    non-existent intermediate objects when the database holds sparse indices.
+
+    Data-invariants Rule 1: the wire encoding must match the actual data.
+    A start/stop range [0..10] implies 11 objects; if only 3 are serialized the
+    master will misparse the rest of the APDU.
+    """
+
+    def test_binary_input_sparse_yields_multiple_blocks(self) -> None:
+        """Binary inputs at [0, 5, 10] produce three separate ObjectBlocks.
+
+        Each block covers exactly one contiguous run, so no range header falsely
+        implies the existence of points 1-4 or 6-9.
+        """
+        outstation = Outstation()
+        outstation.database.add_binary_input(0, value=True)
+        outstation.database.add_binary_input(5, value=False)
+        outstation.database.add_binary_input(10, value=True)
+
+        request = build_integrity_poll()
+        response = outstation.process_request(request.to_bytes())
+        assert response is not None
+
+        bi_blocks = [b for b in response.objects if b.header.group == 1]
+        assert len(bi_blocks) == 3, (
+            f"Three sparse binary input points must produce 3 ObjectBlocks, got {len(bi_blocks)}"
+        )
+        # First block: range [0..0], one byte of data
+        assert bi_blocks[0].header.qualifier == 0x00, "Block 0 must use qualifier 0x00"
+        assert bi_blocks[0].data[0] == 0, "Block 0 start must be 0"
+        assert bi_blocks[0].data[1] == 0, "Block 0 stop must be 0"
+        # Second block: range [5..5]
+        assert bi_blocks[1].header.qualifier == 0x00
+        assert bi_blocks[1].data[0] == 5
+        assert bi_blocks[1].data[1] == 5
+        # Third block: range [10..10]
+        assert bi_blocks[2].header.qualifier == 0x00
+        assert bi_blocks[2].data[0] == 10
+        assert bi_blocks[2].data[1] == 10
+
+    def test_binary_input_contiguous_is_one_block(self) -> None:
+        """Binary inputs at [0, 1, 2] (dense) still produce a single block."""
+        outstation = Outstation()
+        for i in range(3):
+            outstation.database.add_binary_input(i)
+
+        response = outstation.process_request(build_integrity_poll().to_bytes())
+        assert response is not None
+        bi_blocks = [b for b in response.objects if b.header.group == 1]
+        assert len(bi_blocks) == 1, "Dense indices must produce exactly one block"
+        assert bi_blocks[0].data[0] == 0
+        assert bi_blocks[0].data[1] == 2
+
+    def test_analog_input_sparse_yields_multiple_blocks(self) -> None:
+        """Analog inputs at [3, 7] (gap at 4-6) produce two ObjectBlocks."""
+        outstation = Outstation()
+        outstation.database.add_analog_input(3, value=1.0)
+        outstation.database.add_analog_input(7, value=2.0)
+
+        response = outstation.process_request(build_integrity_poll().to_bytes())
+        assert response is not None
+        ai_blocks = [b for b in response.objects if b.header.group == 30]
+        assert len(ai_blocks) == 2, (
+            f"Two sparse analog inputs with a gap must produce 2 ObjectBlocks, got {len(ai_blocks)}"
+        )
+        assert ai_blocks[0].data[0] == 3
+        assert ai_blocks[0].data[1] == 3
+        assert ai_blocks[1].data[0] == 7
+        assert ai_blocks[1].data[1] == 7
+
+    def test_counter_sparse_yields_multiple_blocks(self) -> None:
+        """Counters at [0, 2] (gap at 1) produce two ObjectBlocks."""
+        outstation = Outstation()
+        outstation.database.add_counter(0, value=10)
+        outstation.database.add_counter(2, value=20)
+
+        response = outstation.process_request(build_integrity_poll().to_bytes())
+        assert response is not None
+        ctr_blocks = [b for b in response.objects if b.header.group == 20]
+        assert len(ctr_blocks) == 2, (
+            f"Two sparse counters with a gap must produce 2 ObjectBlocks, got {len(ctr_blocks)}"
+        )
+        assert ctr_blocks[0].data[0] == 0
+        assert ctr_blocks[0].data[1] == 0
+        assert ctr_blocks[1].data[0] == 2
+        assert ctr_blocks[1].data[1] == 2
+
+
+class TestParseCrobBlock:
+    """Unit tests for _parse_crob_block, the shared CROB-parse helper.
+
+    These tests directly exercise the helper so each error path is covered
+    without routing through the full process_request serialization pipeline.
+    """
+
+    def test_empty_data_returns_empty(self) -> None:
+        """An ObjectBlock with no payload returns an empty list."""
+        block = ObjectBlock(
+            header=ObjectHeader(group=12, variation=1, qualifier=0x17),
+            data=b"",
+        )
+        assert _parse_crob_block(block) == []
+
+    def test_unknown_qualifier_returns_format_error(self) -> None:
+        """An unknown qualifier byte yields a single FORMAT_ERROR entry."""
+        block = ObjectBlock(
+            header=ObjectHeader(group=12, variation=1, qualifier=0xFF),
+            data=bytes(20),
+        )
+        result = _parse_crob_block(block)
+        assert len(result) == 1
+        assert result[0].status == CommandStatus.FORMAT_ERROR
+        assert result[0].control_code is None
+
+    def test_truncated_count_field_returns_format_error(self) -> None:
+        """A buffer shorter than the count field yields FORMAT_ERROR."""
+        # 0x28 needs 2-byte count but we only supply 1 byte
+        block = ObjectBlock(
+            header=ObjectHeader(group=12, variation=1, qualifier=0x28),
+            data=bytes([1]),
+        )
+        result = _parse_crob_block(block)
+        assert len(result) == 1
+        assert result[0].status == CommandStatus.FORMAT_ERROR
+
+    def test_valid_1byte_qualifier_parses_correctly(self) -> None:
+        """A well-formed 0x17 CROB block yields one valid ParsedCrob."""
+        # count=1, index=3, cc=LATCH_ON(3), op=1, on=1000, off=500, status=0
+        payload = bytes(
+            [
+                1,  # count
+                3,  # index
+                0x03,  # control_code nibble = LATCH_ON
+                1,  # op_count
+                0xE8,
+                0x03,
+                0x00,
+                0x00,  # on_time = 1000 ms
+                0xF4,
+                0x01,
+                0x00,
+                0x00,  # off_time = 500 ms
+                0x00,  # status
+            ]
+        )
+        block = ObjectBlock(
+            header=ObjectHeader(group=12, variation=1, qualifier=0x17),
+            data=payload,
+        )
+        result = _parse_crob_block(block)
+        assert len(result) == 1
+        crob = result[0]
+        assert crob.index == 3
+        assert crob.control_code == ControlCode.LATCH_ON
+        assert crob.op_count == 1
+        assert crob.on_time == 1000
+        assert crob.off_time == 500
+        assert crob.status == CommandStatus.SUCCESS
+
+    def test_undefined_control_code_nibble_yields_format_error(self) -> None:
+        """Nibble 0x05 (undefined) must produce a FORMAT_ERROR ParsedCrob, not raise."""
+        payload = bytes(
+            [
+                1,  # count
+                7,  # index
+                0x05,  # undefined nibble
+                1,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,  # remainder of CROB body
+            ]
+        )
+        block = ObjectBlock(
+            header=ObjectHeader(group=12, variation=1, qualifier=0x17),
+            data=payload,
+        )
+        result = _parse_crob_block(block)
+        assert len(result) == 1
+        assert result[0].index == 7
+        assert result[0].status == CommandStatus.FORMAT_ERROR
+        assert result[0].control_code is None
+
+    def test_truncated_body_yields_format_error(self) -> None:
+        """A buffer that declares count=1 but lacks the full CROB body yields FORMAT_ERROR."""
+        payload = bytes([1, 3, 0x03, 1, 0])  # count=1, partial body
+        block = ObjectBlock(
+            header=ObjectHeader(group=12, variation=1, qualifier=0x17),
+            data=payload,
+        )
+        result = _parse_crob_block(block)
+        assert len(result) == 1
+        assert result[0].status == CommandStatus.FORMAT_ERROR
+
+    def test_returns_parsed_crob_frozen_dataclass(self) -> None:
+        """Each result is a ParsedCrob instance (frozen dataclass)."""
+        payload = bytes([1, 0, 0x01, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0])
+        block = ObjectBlock(
+            header=ObjectHeader(group=12, variation=1, qualifier=0x17),
+            data=payload,
+        )
+        result = _parse_crob_block(block)
+        assert len(result) == 1
+        assert isinstance(result[0], ParsedCrob)

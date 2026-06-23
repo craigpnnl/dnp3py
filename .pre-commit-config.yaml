@@ -11,7 +11,9 @@ repos:
       - id: debug-statements
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.8.4
+    # Pinned to match the ruff version installed in CI (see .github/workflows/ci.yml).
+    # Keep these two in sync: updating one requires updating the other.
+    rev: v0.15.18
     hooks:
       - id: ruff
         args: [--fix]
