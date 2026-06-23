@@ -1231,10 +1231,8 @@ class Outstation:
 
         count = int.from_bytes(data[0:count_bytes], "little")
         offset = count_bytes
-        # Preserve the original count field bytes verbatim.
         result_data = bytearray(data[0:count_bytes])
 
-        # Body bytes excluding the trailing status byte.
         body_without_status = _CROB_BODY_BYTES - 1
 
         echoed = 0
@@ -1243,20 +1241,15 @@ class Outstation:
                 # Buffer too short: remaining objects cannot be echoed.
                 break
 
-            # Read index at qualifier-derived width.
+            # IEEE 1815-2012: echo echoes the request verbatim except the per-object
+            # status byte, which is replaced with the handler result.
             index = int.from_bytes(data[offset : offset + index_bytes], "little")
-            # Copy index field verbatim.
             result_data.extend(data[offset : offset + index_bytes])
             offset += index_bytes
 
-            # Copy CROB body fields (control + op_count + on_time + off_time).
             result_data.extend(data[offset : offset + body_without_status])
-            offset += body_without_status
+            offset += body_without_status + 1  # advance past original status byte
 
-            # Skip the original status byte.
-            offset += 1
-
-            # Write the result status byte.
             status = status_map.get(index, CommandStatus.NOT_SUPPORTED)
             result_data.append(int(status))
             echoed += 1
@@ -1307,7 +1300,6 @@ class Outstation:
 
         count = int.from_bytes(data[0:count_bytes], "little")
         offset = count_bytes
-        # Preserve the original count field bytes verbatim.
         result_data = bytearray(data[0:count_bytes])
 
         obj_size = index_bytes + value_size + 1  # index + value + status
@@ -1318,17 +1310,15 @@ class Outstation:
                 # Buffer too short: remaining objects cannot be echoed.
                 break
 
+            # IEEE 1815-2012: echo echoes the request verbatim except the per-object
+            # status byte, which is replaced with the handler result.
             index = int.from_bytes(data[offset : offset + index_bytes], "little")
-            # Copy index field verbatim.
             result_data.extend(data[offset : offset + index_bytes])
             offset += index_bytes
 
-            # Copy value bytes verbatim.
             result_data.extend(data[offset : offset + value_size])
-            offset += value_size
+            offset += value_size + 1  # advance past original status byte
 
-            # Skip original status byte, write result status.
-            offset += 1
             status = status_map.get(index, CommandStatus.NOT_SUPPORTED)
             result_data.append(int(status))
             echoed += 1
