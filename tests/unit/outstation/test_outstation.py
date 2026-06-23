@@ -12,7 +12,7 @@ from dnp3.application.builder import (
 )
 from dnp3.application.fragment import ObjectBlock
 from dnp3.application.qualifiers import ObjectHeader, PrefixCode, RangeCode
-from dnp3.core.enums import ControlCode, FunctionCode
+from dnp3.core.enums import CommandStatus, ControlCode, FunctionCode
 from dnp3.core.flags import IIN
 from dnp3.database import Database, EventClass
 from dnp3.database.point import BinaryInputConfig
@@ -633,7 +633,7 @@ class TestCROBQualifierParsing:
     lands on the wrong point.
     """
 
-    def _make_handler(self) -> "tuple[DefaultCommandHandler, list[int]]":
+    def _make_handler(self) -> tuple[DefaultCommandHandler, list[int]]:
         """Return a handler that records which indices were directly operated."""
         operated: list[int] = []
 
@@ -722,3 +722,322 @@ class TestCROBQualifierParsing:
         assert received_codes == [ControlCode.LATCH_ON], (
             f"Expected LATCH_ON, got {received_codes}. " "A misaligned offset would produce a wrong control code."
         )
+
+
+# ---------------------------------------------------------------------------
+# Issue #6 review-round-2 regression tests
+# ---------------------------------------------------------------------------
+
+
+def _make_crob_block_raw(qualifier: int, payload: bytes) -> ObjectBlock:
+    """Build a CROB ObjectBlock with a raw payload (for truncation and bad-code tests)."""
+    header = ObjectHeader(group=12, variation=1, qualifier=qualifier)
+    return ObjectBlock(header=header, data=payload)
+
+
+class TestStaticQualifierBoundary:
+    """Coverage gaps: boundary index 255 vs 256, empty list, frozen-counter builder."""
+
+    def test_binary_input_stop_index_255_uses_1byte_qualifier(self) -> None:
+        """Stop index exactly 255 must still use qualifier 0x00 (1-byte start/stop)."""
+        outstation = Outstation()
+        outstation.database.add_binary_input(0, value=False)
+        outstation.database.add_binary_input(255, value=True)
+
+        request = build_integrity_poll()
+        response = outstation.process_request(request.to_bytes())
+
+        bi_blocks = [b for b in response.objects if b.header.group == 1]
+        assert len(bi_blocks) == 1
+        assert (
+            bi_blocks[0].header.qualifier == 0x00
+        ), f"Stop index 255 must use 0x00 (1-byte), got 0x{bi_blocks[0].header.qualifier:02X}"
+        assert bi_blocks[0].data[0] == 0, "start must be 0"
+        assert bi_blocks[0].data[1] == 255, "stop must be 255"
+
+    def test_binary_input_stop_index_256_uses_2byte_qualifier(self) -> None:
+        """Stop index 256 must use qualifier 0x01 (2-byte start/stop)."""
+        outstation = Outstation()
+        outstation.database.add_binary_input(256, value=True)
+
+        request = build_integrity_poll()
+        response = outstation.process_request(request.to_bytes())
+
+        bi_blocks = [b for b in response.objects if b.header.group == 1]
+        assert len(bi_blocks) == 1
+        assert (
+            bi_blocks[0].header.qualifier == 0x01
+        ), f"Stop index 256 must use 0x01 (2-byte), got 0x{bi_blocks[0].header.qualifier:02X}"
+
+    def test_frozen_counter_static_uses_start_stop_qualifier(self) -> None:
+        """Frozen counter static response uses qualifier 0x00 (1-byte start/stop)."""
+        outstation = Outstation()
+        outstation.database.add_frozen_counter(0, value=10)
+        outstation.database.add_frozen_counter(3, value=20)
+
+        request = build_integrity_poll()
+        response = outstation.process_request(request.to_bytes())
+
+        fc_blocks = [b for b in response.objects if b.header.group == 21]
+        assert len(fc_blocks) == 1
+        assert (
+            fc_blocks[0].header.qualifier == 0x00
+        ), f"Expected qualifier 0x00, got 0x{fc_blocks[0].header.qualifier:02X}"
+        assert fc_blocks[0].data[0] == 0
+        assert fc_blocks[0].data[1] == 3
+
+    def test_empty_point_list_returns_no_block(self) -> None:
+        """Static builder with no points returns empty list (exercises the guard branch)."""
+        outstation = Outstation()
+        # No binary inputs configured, so the builder receives an empty list.
+        request = build_integrity_poll()
+        response = outstation.process_request(request.to_bytes())
+
+        bi_blocks = [b for b in response.objects if b.header.group == 1]
+        assert bi_blocks == [], "No g1 block expected when no binary inputs configured"
+
+
+class TestCROBUnknownQualifier:
+    """Fix A: unknown qualifier must return FORMAT_ERROR and produce PARAMETER_ERROR IIN.
+
+    The test exercises _process_crob_* directly because the parser canonicalises
+    incoming bytes and some invalid qualifier values are not safely round-trippable
+    through the application-layer serializer (e.g. qualifier 0x06 = ALL_OBJECTS
+    causes the parser to treat subsequent payload bytes as new object headers).
+    The correct test surface is therefore: (1) the CROB processor returns
+    FORMAT_ERROR for an unknown qualifier, and (2) _build_control_response maps
+    FORMAT_ERROR to IIN.PARAMETER_ERROR.  Together those prove the full Fix-A
+    signal chain without depending on an unparseable wire frame.
+    """
+
+    def _make_g12_block(self, qualifier: int) -> ObjectBlock:
+        # Any non-empty payload so the length guard doesn't short-circuit.
+        return _make_crob_block_raw(qualifier=qualifier, payload=bytes([1, 0, 0x03, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0]))
+
+    def test_direct_operate_unknown_qualifier_returns_format_error(self) -> None:
+        """_process_crob_direct_operate returns FORMAT_ERROR for unknown qualifier 0x06."""
+        outstation = Outstation()
+        outstation.database.add_binary_output(0)
+
+        block = self._make_g12_block(qualifier=0x06)
+        results = outstation._process_crob_direct_operate(block)
+
+        assert len(results) == 1
+        assert results[0][1] == CommandStatus.FORMAT_ERROR, f"Expected FORMAT_ERROR, got {results[0][1]}"
+
+    def test_select_unknown_qualifier_returns_format_error(self) -> None:
+        """_process_crob_select returns FORMAT_ERROR for unknown qualifier 0x06."""
+        outstation = Outstation()
+        outstation.database.add_binary_output(0)
+
+        block = self._make_g12_block(qualifier=0x06)
+        results = outstation._process_crob_select(block, seq=0)
+
+        assert len(results) == 1
+        assert results[0][1] == CommandStatus.FORMAT_ERROR, f"Expected FORMAT_ERROR, got {results[0][1]}"
+
+    def test_operate_unknown_qualifier_returns_format_error(self) -> None:
+        """_process_crob_operate returns FORMAT_ERROR for unknown qualifier 0x06."""
+        outstation = Outstation()
+        outstation.database.add_binary_output(0)
+
+        block = self._make_g12_block(qualifier=0x06)
+        results = outstation._process_crob_operate(block, seq=0)
+
+        assert len(results) == 1
+        assert results[0][1] == CommandStatus.FORMAT_ERROR, f"Expected FORMAT_ERROR, got {results[0][1]}"
+
+    def test_build_control_response_maps_format_error_to_parameter_error_iin(self) -> None:
+        """_build_control_response sets IIN.PARAMETER_ERROR when results contain FORMAT_ERROR.
+
+        This is the IIN leg of Fix A: the FORMAT_ERROR result from unknown-qualifier
+        detection propagates to IIN.PARAMETER_ERROR in the wire response.
+        """
+        from dnp3.application.builder import build_direct_operate_request
+        from dnp3.application.parser import parse_request
+
+        outstation = Outstation()
+        # Build a minimal valid DIRECT_OPERATE request to extract a RequestFragment.
+        valid_block = _make_crob_block(qualifier=0x17, index=0)
+        raw_request = build_direct_operate_request(objects=(valid_block,))
+        request = parse_request(raw_request.to_bytes())
+
+        results = [(0, CommandStatus.FORMAT_ERROR)]
+        response = outstation._build_control_response(request, results)
+
+        assert IIN.PARAMETER_ERROR in response.header.iin, (
+            f"FORMAT_ERROR result must produce IIN.PARAMETER_ERROR, " f"got IIN=0x{int(response.header.iin):04X}"
+        )
+
+
+class TestCROBSelectOperate2ByteQualifier:
+    """Fix coverage gap: SELECT and OPERATE with qualifier 0x28 and index > 255."""
+
+    def test_select_2byte_qualifier_stores_correct_index(self) -> None:
+        """SELECT with qualifier 0x28 stores the state for the addressed index (300)."""
+
+        class AcceptAllHandler(DefaultCommandHandler):
+            def select_binary_output(
+                self,
+                index: int,
+                code: ControlCode,
+                count: int,
+                on_time: int,
+                off_time: int,
+            ) -> CommandResult:
+                return CommandResult.success()
+
+        outstation = Outstation(handler=AcceptAllHandler())
+        outstation.database.add_binary_output(300)
+
+        block = _make_crob_block(qualifier=0x28, index=300)
+
+        from dnp3.application.builder import build_select_request
+
+        request = build_select_request(objects=(block,))
+        outstation.process_request(request.to_bytes())
+
+        # The state should be stored for index 300, not 300 % 256 = 44.
+        assert outstation._state.get_select(300) is not None, "Select state for index 300 must be stored"
+        assert outstation._state.get_select(44) is None, "No state for index 44 (wrong truncation)"
+
+    def test_operate_2byte_qualifier_operates_correct_index(self) -> None:
+        """OPERATE after SELECT with qualifier 0x28 executes at the correct index (300)."""
+        operated: list[int] = []
+
+        class RecordingHandler(DefaultCommandHandler):
+            def select_binary_output(
+                self,
+                index: int,
+                code: ControlCode,
+                count: int,
+                on_time: int,
+                off_time: int,
+            ) -> CommandResult:
+                return CommandResult.success()
+
+            def operate_binary_output(
+                self,
+                index: int,
+                code: ControlCode,
+                count: int,
+                on_time: int,
+                off_time: int,
+                select_sequence: int,
+            ) -> CommandResult:
+                operated.append(index)
+                return CommandResult.success()
+
+        outstation = Outstation(handler=RecordingHandler())
+        outstation.database.add_binary_output(300)
+
+        block = _make_crob_block(qualifier=0x28, index=300)
+
+        from dnp3.application.builder import build_operate_request, build_select_request
+
+        # SELECT first.
+        sel_request = build_select_request(objects=(block,))
+        outstation.process_request(sel_request.to_bytes())
+
+        # Then OPERATE.
+        op_request = build_operate_request(objects=(block,))
+        outstation.process_request(op_request.to_bytes())
+
+        assert operated == [300], (
+            f"Expected index 300 operated, got {operated}. " "Truncation to 1 byte would produce 44."
+        )
+
+
+class TestCROBTruncatedBuffer:
+    """Fix C: a truncated CROB buffer must surface PARAMETER_ERROR, not silent drop."""
+
+    def test_truncated_0x28_buffer_sets_parameter_error(self) -> None:
+        """CROB 0x28 with a buffer too short for even one full object sets PARAMETER_ERROR.
+
+        Payload declares count=1 but provides fewer than 2 (index) + 11 (body) = 13
+        bytes after the 2-byte count header, so the buffer is truncated.
+        """
+        outstation = Outstation()
+        outstation.database.add_binary_output(300)
+
+        # count=1 (2 bytes little-endian) + 5 bytes (short: needs 13 more)
+        truncated_payload = struct.pack("<H", 1) + bytes(5)
+        block = _make_crob_block_raw(qualifier=0x28, payload=truncated_payload)
+
+        from dnp3.application.builder import build_direct_operate_request
+
+        request = build_direct_operate_request(objects=(block,))
+        response = outstation.process_request(request.to_bytes())
+
+        assert response is not None
+        assert (
+            IIN.PARAMETER_ERROR in response.header.iin
+        ), f"Truncated buffer must set PARAMETER_ERROR, got IIN=0x{int(response.header.iin):04X}"
+
+    def test_truncated_0x17_buffer_sets_parameter_error(self) -> None:
+        """CROB 0x17 with a buffer too short for one object sets PARAMETER_ERROR."""
+        outstation = Outstation()
+        outstation.database.add_binary_output(0)
+
+        # count=1 (1 byte) + 3 bytes (short: needs 1 index + 11 body = 12 more)
+        truncated_payload = bytes([1]) + bytes(3)
+        block = _make_crob_block_raw(qualifier=0x17, payload=truncated_payload)
+
+        from dnp3.application.builder import build_direct_operate_request
+
+        request = build_direct_operate_request(objects=(block,))
+        response = outstation.process_request(request.to_bytes())
+
+        assert response is not None
+        assert (
+            IIN.PARAMETER_ERROR in response.header.iin
+        ), f"Truncated 0x17 buffer must set PARAMETER_ERROR, got IIN=0x{int(response.header.iin):04X}"
+
+
+class TestCROBBadControlCode:
+    """Fix B: an undefined control-code nibble must return FORMAT_ERROR and PARAMETER_ERROR IIN.
+
+    Verified call-flow: ControlCode(undefined_nibble) raises ValueError inside the
+    CROB object loop. That loop runs inside _process_crob_*, which is called by
+    _handle_direct_operate / _handle_select / _handle_operate. Those are called from
+    _process_request_fragment, which has NO outer try/except. The outer try/except in
+    process_request at line 236 only wraps parse_request(), not _process_request_fragment.
+    So Leon is correct: without the local catch added by Fix B, the ValueError would
+    propagate out of process_request entirely (one-frame DoS). Fix B adds a per-object
+    try/except around the ControlCode() call in all three CROB handlers.
+    """
+
+    def test_bad_control_code_does_not_raise(self) -> None:
+        """An undefined nibble (0x05) must not raise from process_request."""
+        outstation = Outstation()
+        outstation.database.add_binary_output(0)
+
+        # nibble 0x05 is not a valid ControlCode
+        bad_cc_byte = 0x05
+        payload = bytes([1, 0, bad_cc_byte, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0])
+        block = _make_crob_block_raw(qualifier=0x17, payload=payload)
+
+        from dnp3.application.builder import build_direct_operate_request
+
+        request = build_direct_operate_request(objects=(block,))
+        # Must not raise ValueError.
+        response = outstation.process_request(request.to_bytes())
+        assert response is not None
+
+    def test_bad_control_code_sets_parameter_error(self) -> None:
+        """An undefined nibble (0x05) must produce IIN.PARAMETER_ERROR."""
+        outstation = Outstation()
+        outstation.database.add_binary_output(0)
+
+        bad_cc_byte = 0x05
+        payload = bytes([1, 0, bad_cc_byte, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0])
+        block = _make_crob_block_raw(qualifier=0x17, payload=payload)
+
+        from dnp3.application.builder import build_direct_operate_request
+
+        request = build_direct_operate_request(objects=(block,))
+        response = outstation.process_request(request.to_bytes())
+
+        assert (
+            IIN.PARAMETER_ERROR in response.header.iin
+        ), f"Bad control code must set PARAMETER_ERROR, got IIN=0x{int(response.header.iin):04X}"

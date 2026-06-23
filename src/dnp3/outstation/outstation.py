@@ -79,8 +79,11 @@ MAX_2_BYTE_INDEX = 65535  # 0xFFFF
 # CROB qualifier codes (IEEE 1815-2012 Table 4-3)
 # 0x17: 1-byte count field + 1-byte index prefix per object
 # 0x28: 2-byte count field + 2-byte index prefix per object
-CROB_QUALIFIER_1BYTE = 0x17
-CROB_QUALIFIER_2BYTE = 0x28
+QUALIFIER_CROB_1BYTE = 0x17
+QUALIFIER_CROB_2BYTE = 0x28
+
+# CROB body size in bytes: control_code(1) + op_count(1) + on_time(4) + off_time(4) + status(1)
+_CROB_BODY_BYTES = 11
 
 
 def _serialize_binary_input(value: bool, quality: BinaryQuality) -> bytes:
@@ -128,9 +131,9 @@ def _crob_count_index_sizes(qualifier: int) -> tuple[int, int]:
     Raises:
         ValueError: If the qualifier is not 0x17 or 0x28.
     """
-    if qualifier == CROB_QUALIFIER_1BYTE:
+    if qualifier == QUALIFIER_CROB_1BYTE:
         return 1, 1
-    if qualifier == CROB_QUALIFIER_2BYTE:
+    if qualifier == QUALIFIER_CROB_2BYTE:
         return 2, 2
     msg = f"Unsupported CROB qualifier 0x{qualifier:02X}; expected 0x17 or 0x28"
     raise ValueError(msg)
@@ -738,6 +741,10 @@ class Outstation:
         Derives count and index widths from block.header.qualifier so that both
         0x17 (1-byte count + 1-byte index) and 0x28 (2-byte count + 2-byte index)
         CROB requests are parsed at the correct offsets per IEEE 1815-2012 Table 4-3.
+
+        Returns FORMAT_ERROR for any malformed frame (unknown qualifier, truncated
+        buffer, or undefined control-code nibble) so the caller can set
+        IIN.PARAMETER_ERROR rather than returning a clean null response.
         """
         results: list[tuple[int, CommandStatus]] = []
 
@@ -745,30 +752,40 @@ class Outstation:
         if len(data) < 1:
             return results
 
+        # Fix A: unknown qualifier signals a protocol error instead of silent success.
         try:
             count_bytes, index_bytes = _crob_count_index_sizes(block.header.qualifier)
         except ValueError:
-            return results
+            # Use index 0 as a placeholder; _build_control_response only reads the status.
+            return [(0, CommandStatus.FORMAT_ERROR)]
 
         if len(data) < count_bytes:
-            return results
+            return [(0, CommandStatus.FORMAT_ERROR)]
 
         count = int.from_bytes(data[0:count_bytes], "little")
         offset = count_bytes
 
         for _ in range(count):
-            if offset + index_bytes + 11 > len(data):
+            # Fix C: truncated buffer surfaces as FORMAT_ERROR, not silent partial success.
+            if offset + index_bytes + _CROB_BODY_BYTES > len(data):
+                results.append((0, CommandStatus.FORMAT_ERROR))
                 break
 
             index = int.from_bytes(data[offset : offset + index_bytes], "little")
             offset += index_bytes
 
-            # Parse CROB: control code (1) + op_count (1) + on_time (4) + off_time (4) + status (1)
-            control_code = ControlCode(data[offset] & 0x0F)
+            # Fix B: undefined control-code nibble raises ValueError from IntEnum.
+            # Catch it locally so a malformed frame cannot crash the outstation.
+            try:
+                control_code = ControlCode(data[offset] & 0x0F)
+            except ValueError:
+                results.append((index, CommandStatus.FORMAT_ERROR))
+                offset += _CROB_BODY_BYTES
+                continue
             op_count = data[offset + 1]
             on_time = int.from_bytes(data[offset + 2 : offset + 6], "little")
             off_time = int.from_bytes(data[offset + 6 : offset + 10], "little")
-            offset += 11
+            offset += _CROB_BODY_BYTES
 
             # Call handler
             result = self.handler.select_binary_output(
@@ -817,6 +834,10 @@ class Outstation:
         Derives count and index widths from block.header.qualifier so that both
         0x17 (1-byte count + 1-byte index) and 0x28 (2-byte count + 2-byte index)
         CROB requests are parsed at the correct offsets per IEEE 1815-2012 Table 4-3.
+
+        Returns FORMAT_ERROR for any malformed frame (unknown qualifier, truncated
+        buffer, or undefined control-code nibble) so the caller can set
+        IIN.PARAMETER_ERROR rather than returning a clean null response.
         """
         results: list[tuple[int, CommandStatus]] = []
 
@@ -824,29 +845,39 @@ class Outstation:
         if len(data) < 1:
             return results
 
+        # Fix A: unknown qualifier signals a protocol error instead of silent success.
         try:
             count_bytes, index_bytes = _crob_count_index_sizes(block.header.qualifier)
         except ValueError:
-            return results
+            return [(0, CommandStatus.FORMAT_ERROR)]
 
         if len(data) < count_bytes:
-            return results
+            return [(0, CommandStatus.FORMAT_ERROR)]
 
         count = int.from_bytes(data[0:count_bytes], "little")
         offset = count_bytes
 
         for _ in range(count):
-            if offset + index_bytes + 11 > len(data):
+            # Fix C: truncated buffer surfaces as FORMAT_ERROR, not silent partial success.
+            if offset + index_bytes + _CROB_BODY_BYTES > len(data):
+                results.append((0, CommandStatus.FORMAT_ERROR))
                 break
 
             index = int.from_bytes(data[offset : offset + index_bytes], "little")
             offset += index_bytes
 
-            control_code = ControlCode(data[offset] & 0x0F)
+            # Fix B: undefined control-code nibble raises ValueError from IntEnum.
+            # Catch it locally so a malformed frame cannot crash the outstation.
+            try:
+                control_code = ControlCode(data[offset] & 0x0F)
+            except ValueError:
+                results.append((index, CommandStatus.FORMAT_ERROR))
+                offset += _CROB_BODY_BYTES
+                continue
             op_count = data[offset + 1]
             on_time = int.from_bytes(data[offset + 2 : offset + 6], "little")
             off_time = int.from_bytes(data[offset + 6 : offset + 10], "little")
-            offset += 11
+            offset += _CROB_BODY_BYTES
 
             # Check for matching SELECT
             select_state = self._state.get_select(index)
@@ -893,6 +924,10 @@ class Outstation:
         Derives count and index widths from block.header.qualifier so that both
         0x17 (1-byte count + 1-byte index) and 0x28 (2-byte count + 2-byte index)
         CROB requests are parsed at the correct offsets per IEEE 1815-2012 Table 4-3.
+
+        Returns FORMAT_ERROR for any malformed frame (unknown qualifier, truncated
+        buffer, or undefined control-code nibble) so the caller can set
+        IIN.PARAMETER_ERROR rather than returning a clean null response.
         """
         results: list[tuple[int, CommandStatus]] = []
 
@@ -900,29 +935,39 @@ class Outstation:
         if len(data) < 1:
             return results
 
+        # Fix A: unknown qualifier signals a protocol error instead of silent success.
         try:
             count_bytes, index_bytes = _crob_count_index_sizes(block.header.qualifier)
         except ValueError:
-            return results
+            return [(0, CommandStatus.FORMAT_ERROR)]
 
         if len(data) < count_bytes:
-            return results
+            return [(0, CommandStatus.FORMAT_ERROR)]
 
         count = int.from_bytes(data[0:count_bytes], "little")
         offset = count_bytes
 
         for _ in range(count):
-            if offset + index_bytes + 11 > len(data):
+            # Fix C: truncated buffer surfaces as FORMAT_ERROR, not silent partial success.
+            if offset + index_bytes + _CROB_BODY_BYTES > len(data):
+                results.append((0, CommandStatus.FORMAT_ERROR))
                 break
 
             index = int.from_bytes(data[offset : offset + index_bytes], "little")
             offset += index_bytes
 
-            control_code = ControlCode(data[offset] & 0x0F)
+            # Fix B: undefined control-code nibble raises ValueError from IntEnum.
+            # Catch it locally so a malformed frame cannot crash the outstation.
+            try:
+                control_code = ControlCode(data[offset] & 0x0F)
+            except ValueError:
+                results.append((index, CommandStatus.FORMAT_ERROR))
+                offset += _CROB_BODY_BYTES
+                continue
             op_count = data[offset + 1]
             on_time = int.from_bytes(data[offset + 2 : offset + 6], "little")
             off_time = int.from_bytes(data[offset + 6 : offset + 10], "little")
-            offset += 11
+            offset += _CROB_BODY_BYTES
 
             result = self.handler.direct_operate_binary_output(
                 index=index,
