@@ -19,7 +19,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
-        python-version: ["3.11", "3.12", "3.13", "3.14"]
+        python-version: ["3.11", "3.12", "3.13"]
 
     steps:
       - uses: actions/checkout@v7
@@ -38,12 +38,12 @@ jobs:
       - name: Run tests
         run: pytest tests/ -v --tb=short
 
-      - name: Run tests with coverage (Ubuntu, Python 3.14 only)
-        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.14'
+      - name: Run tests with coverage (Ubuntu, Python 3.13 only)
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.13'
         run: pytest tests/ --cov=src/dnp3 --cov-report=xml --cov-report=term-missing
 
       - name: Upload coverage to Codecov
-        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.14'
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.13'
         uses: codecov/codecov-action@v7
         with:
           files: ./coverage.xml
@@ -61,7 +61,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
-          python-version: "3.14"
+          python-version: "3.13"
 
       - name: Install tools
         run: |
@@ -89,7 +89,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
-          python-version: "3.14"
+          python-version: "3.13"
 
       - name: Install build tools
         run: |
