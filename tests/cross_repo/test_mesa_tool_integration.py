@@ -280,12 +280,11 @@ async def test_scenario_command_parsed_and_attempted(mesa_outstation) -> None:
     """Control station receives and attempts to execute a scenario command.
 
     The control station parses the new_scenario command, loads the profile,
-    and attempts to send BO/AO writes to the outstation. Currently, this
-    fails because dnp3py returns a null response for DIRECT_OPERATE instead
-    of echoing back command objects (which the Rust DNP3 master expects).
-
-    This test validates the command is received and processing begins,
-    even though the full scenario execution does not complete.
+    and attempts to send BO/AO writes to the outstation. dnp3py now echoes
+    command objects with status codes in DIRECT_OPERATE responses (fixed in
+    this branch); the test validates that the command is received and
+    processing begins even though the full scenario execution does not
+    complete due to unrelated cross-repo integration gaps.
     """
     _host, port = mesa_outstation.local_address
 
