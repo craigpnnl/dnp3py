@@ -4104,6 +4104,121 @@ class TestAOWireLevelBugs:
         assert iin2 & 0x04, f"IIN2 PARAMETER_ERROR (bit 2) not set for unknown AO qualifier; IIN2=0x{iin2:02X}"
 
 
+class TestAOUnknownVariation:
+    """Unknown g41 variation must fail closed with IIN.PARAMETER_ERROR (item 1 review nit)."""
+
+    def test_ao_unknown_variation_sets_parameter_error(self) -> None:
+        """g41v5 (unknown variation) must set IIN.PARAMETER_ERROR, not produce a clean echo."""
+        outstation = Outstation()
+
+        header = ObjectHeader(group=41, variation=5, qualifier=0x17)
+        # count=1, index=0, 4-byte payload (arbitrary), status=0
+        payload = b"\x01\x00" + (42).to_bytes(4, "little", signed=True) + b"\x00"
+        block = ObjectBlock(header=header, data=payload)
+        request = RequestFragment(
+            header=RequestHeader(
+                control=ApplicationControl(fir=True, fin=True, con=False, uns=False, seq=7),
+                function=FunctionCode.DIRECT_OPERATE,
+            ),
+            objects=[block],
+        )
+        resp = outstation.process_request(request.to_bytes())
+        assert resp is not None
+        resp_bytes = resp.to_bytes()
+        iin2 = resp_bytes[3]
+        assert iin2 & 0x04, f"IIN2 PARAMETER_ERROR (bit 2) not set for unknown AO variation g41v5; IIN2=0x{iin2:02X}"
+
+    def test_ao_index0_real_result_not_replaced_when_variation_unknown(self) -> None:
+        """An index-0 real result must not be overwritten by a dummy parse-error sentinel.
+
+        Send a valid g41v1 DIRECT_OPERATE at index 0.  Separately confirm that
+        processing an unknown-variation block via _process_ao_direct_operate returns
+        an empty results list (no index-0 dummy entry) alongside has_parse_error=True.
+        This verifies the sentinel-free design: the parse-error flag travels separately.
+        """
+        from dnp3.outstation.handler import CommandResult, DefaultCommandHandler
+
+        calls: list[tuple[int, float]] = []
+
+        class TrackingHandler(DefaultCommandHandler):
+            def direct_operate_analog_output(self, index: int, value: float) -> CommandResult:
+                calls.append((index, value))
+                return CommandResult.success()
+
+        outstation = Outstation(handler=TrackingHandler())
+
+        # Directly call _process_ao_direct_operate with an unknown variation block.
+        header_v5 = ObjectHeader(group=41, variation=5, qualifier=0x17)
+        payload_v5 = b"\x01\x00" + (99).to_bytes(4, "little", signed=True) + b"\x00"
+        block_v5 = ObjectBlock(header=header_v5, data=payload_v5)
+
+        results, has_parse_error = outstation._process_ao_direct_operate(block_v5)
+
+        # No dummy index-0 entry in results: the sentinel is gone.
+        assert results == [], f"Expected empty results for unknown variation, got {results}"
+        assert has_parse_error is True
+
+        # A real index-0 result from a valid block is not overwritten.
+        header_v1 = ObjectHeader(group=41, variation=1, qualifier=0x17)
+        payload_v1 = b"\x01\x00" + (10).to_bytes(4, "little", signed=True) + b"\x00"
+        block_v1 = ObjectBlock(header=header_v1, data=payload_v1)
+        valid_results, valid_error = outstation._process_ao_direct_operate(block_v1)
+        assert len(valid_results) == 1
+        assert valid_results[0][0] == 0  # index 0
+        assert valid_error is False
+
+
+class TestEventFraming2ByteBranch:
+    """Regression test: _event_framing 0x28 branch (index > 255) end-to-end (item 2 review nit)."""
+
+    def test_binary_event_at_high_index_uses_0x28_qualifier_and_2byte_index(self) -> None:
+        """A binary input event at index 300 must produce a 0x28 block with 2-byte LE index 300."""
+        from dnp3.database import BinaryInputConfig, EventClass
+
+        db = Database()
+        db.add_binary_input(300, BinaryInputConfig(event_class=EventClass.CLASS_1))
+        db.update_binary_input(300, value=True)  # generates CLASS_1 event
+
+        outstation = Outstation(database=db)
+
+        # Read class 1 events
+        from dnp3.application.fragment import RequestFragment
+        from dnp3.application.header import ApplicationControl, RequestHeader
+        from dnp3.application.qualifiers import ObjectHeader
+        from dnp3.core.enums import FunctionCode
+
+        header = ObjectHeader(group=60, variation=2, qualifier=0x06)  # g60v2 class 1
+        request = RequestFragment(
+            header=RequestHeader(
+                control=ApplicationControl(fir=True, fin=True, con=False, uns=False, seq=0),
+                function=FunctionCode.READ,
+            ),
+            objects=[ObjectBlock(header=header, data=b"")],
+        )
+        resp = outstation.process_request(request.to_bytes())
+        assert resp is not None
+        assert len(resp.objects) > 0
+
+        # The event block must use qualifier 0x28 (2-byte count + 2-byte index prefix)
+        event_block = resp.objects[0]
+        assert event_block.header.qualifier == 0x28, (
+            f"Expected qualifier 0x28 for index 300, got 0x{event_block.header.qualifier:02X}"
+        )
+
+        # The 2-byte little-endian encoding of index 300 = 0x012C = bytes [0x2C, 0x01].
+        # Layout: count_field (2 bytes) + index (2 bytes) + flags (1 byte)
+        block_data = event_block.data
+        assert len(block_data) >= 5, f"Event block data too short: {block_data.hex()}"
+        # count field (2 bytes LE) should be 1
+        count_val = int.from_bytes(block_data[0:2], "little")
+        assert count_val == 1, f"Expected count=1, got {count_val}"
+        # index field (2 bytes LE) should be 300
+        index_val = int.from_bytes(block_data[2:4], "little")
+        assert index_val == 300, (
+            f"Expected index 300 (0x012C) in 2-byte LE field, got {index_val} ({block_data[2:4].hex()})"
+        )
+
+
 class TestG80V1MultibitRangeWrite:
     """Regression test: g80v1 write crossing a byte boundary must not misfire."""
 

@@ -1031,16 +1031,19 @@ class Outstation:
     def _handle_direct_operate(self, request: RequestFragment) -> ResponseFragment:
         """Handle DIRECT_OPERATE request."""
         results: list[tuple[int, CommandStatus]] = []
+        ao_parse_error = False
 
         for block in request.objects:
             if block.header.group == GROUP_CROB and block.header.variation == 1:
                 block_results = self._process_crob_direct_operate(block)
                 results.extend(block_results)
             elif block.header.group == GROUP_ANALOG_OUTPUT:
-                block_results = self._process_ao_direct_operate(block)
+                block_results, block_parse_error = self._process_ao_direct_operate(block)
                 results.extend(block_results)
+                if block_parse_error:
+                    ao_parse_error = True
 
-        return self._build_control_response(request, results)
+        return self._build_control_response(request, results, ao_parse_error=ao_parse_error)
 
     def _process_crob_direct_operate(self, block: ObjectBlock) -> list[tuple[int, CommandStatus]]:
         """Process CROB DIRECT_OPERATE.
@@ -1068,7 +1071,7 @@ class Outstation:
 
         return results
 
-    def _process_ao_direct_operate(self, block: ObjectBlock) -> list[tuple[int, CommandStatus]]:
+    def _process_ao_direct_operate(self, block: ObjectBlock) -> tuple[list[tuple[int, CommandStatus]], bool]:
         """Process Analog Output DIRECT_OPERATE (Group 41).
 
         Supports variations 1-4:
@@ -1080,26 +1083,32 @@ class Outstation:
         Qualifiers follow the same 0x17/0x28 scheme as CROB (IEEE 1815-2012 Table 4-3):
             0x17: 1-byte count + 1-byte index prefix per object
             0x28: 2-byte count + 2-byte index prefix per object
-        Unknown qualifiers fail closed with FORMAT_ERROR, matching the CROB path.
+        Unknown qualifiers and unknown variations fail closed, matching the CROB path.
+
+        Returns:
+            Tuple of (results, has_parse_error). has_parse_error is True when the
+            frame is malformed (unknown variation, unknown qualifier, or truncated
+            buffer); callers must set IIN.PARAMETER_ERROR when it is True.
+            A dummy-index sentinel is NOT injected into results; the flag is the
+            sole signal so index 0 is never conflated with a parse-error placeholder.
         """
         results: list[tuple[int, CommandStatus]] = []
         variation = block.header.variation
 
-        # Unknown variations return an empty result (no-op, no side effects).
+        # Unknown variation: fail closed, no side effects, signal parse error to caller.
         value_size = _AO_VALUE_SIZES.get(variation)
         if value_size is None:
-            return results
+            return results, True
 
         # Derive count/index widths from qualifier, identical to the CROB path.
         try:
             count_bytes, index_bytes = _crob_count_index_sizes(block.header.qualifier)
         except ValueError:
-            # Unknown qualifier: fail closed so _build_control_response sets PARAMETER_ERROR.
-            return [(0, CommandStatus.FORMAT_ERROR)]
+            return results, True
 
         data = block.data
         if len(data) < count_bytes:
-            return [(0, CommandStatus.FORMAT_ERROR)]
+            return results, True
 
         count = int.from_bytes(data[0:count_bytes], "little")
         offset = count_bytes
@@ -1138,27 +1147,33 @@ class Outstation:
             results.append((index, result.status))
             echoed += 1
 
-        # Truncation: count > echoed means the buffer was shorter than the declared count.
-        if echoed < count:
-            results.append((0, CommandStatus.FORMAT_ERROR))
-
-        return results
+        # Truncation: declared count exceeds available objects.
+        has_parse_error = echoed < count
+        return results, has_parse_error
 
     def _build_control_response(
         self,
         request: RequestFragment,
         results: list[tuple[int, CommandStatus]],
+        ao_parse_error: bool = False,
     ) -> ResponseFragment:
         """Build response for control operations.
 
         Per IEEE 1815-2012, the response must echo back the same object
         headers with each command object's status field set to the result.
-        Any FORMAT_ERROR result also sets IIN.PARAMETER_ERROR in the response
-        header, signaling a malformed request to the master.
+        Any FORMAT_ERROR result or parse error also sets IIN.PARAMETER_ERROR
+        in the response header, signaling a malformed request to the master.
+
+        Args:
+            request: The original control request.
+            results: List of (index, status) pairs from processing.
+            ao_parse_error: True when the AO parse path detected a frame error
+                (unknown variation, unknown qualifier, or truncated buffer).
+                Carried separately so no dummy index-0 sentinel pollutes results.
         """
         # Build a lookup from index to status
         status_map: dict[int, CommandStatus] = {}
-        has_format_error = False
+        has_format_error = ao_parse_error
         for index, status in results:
             status_map[index] = status
             if status == CommandStatus.FORMAT_ERROR:
