@@ -1,10 +1,14 @@
 [build-system]
-requires = ["hatchling"]
+# hatch-vcs must be in build-system.requires (not just a dev dependency) because
+# hatchling resolves the dynamic version during the isolated build step before
+# any project dependencies are installed. Without it here, `python -m build`
+# fails with "unknown version source 'vcs'" in the isolated build environment.
+requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"
 
 [project]
 name = "dnp3py"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Pure Python DNP3 implementation (IEEE 1815-2012)"
 readme = "README.md"
 license = {text = "MIT"}
@@ -24,6 +28,9 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Interface Engine/Protocol Translator",
     "Typing :: Typed",
 ]
+
+[tool.hatch.version]
+source = "vcs"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/dnp3"]
@@ -86,3 +93,49 @@ exclude_lines = [
 ]
 fail_under = 95
 show_missing = true
+
+# python-semantic-release: tag-authoritative, no source-file version rewriting.
+# PSR computes the semver bump from conventional commits, writes CHANGELOG.md,
+# creates the GitHub release, and pushes the tag. hatch-vcs then derives the
+# version from the tag at build time. We do NOT set version_variables so PSR
+# never rewrites a source constant.
+#
+# upload_to_pypi = false: PyPI publication is handled solely by the dedicated
+# OIDC trusted-publisher job in release.yml. Enabling PSR's own PyPI upload
+# would create a double-publish path and PSR has no OIDC credentials, making
+# it either a hard failure or a non-OIDC route that defeats trusted-publisher.
+#
+# build_command = "": PSR must NOT re-build the distribution. The canary
+# smoke-tested wheel uploaded by the build job is the artifact that reaches
+# PyPI. A PSR re-build would shadow the validated artifact with an unverified one.
+#
+# commit_version_number = false: hatch-vcs derives the version from the git
+# tag at build time, so no version constant lives in source. A PSR version
+# commit would add a meaningless bump commit with nothing to change.
+#
+# branch = "main": PSR runs on main and pushes the tag back to main. This is
+# safe because commit_version_number = false means PSR never pushes a bump
+# commit, only the annotated tag itself.
+[tool.semantic_release]
+version_toml = []
+version_variables = []
+tag_format = "v{version}"
+branch = "main"
+changelog_file = "CHANGELOG.md"
+build_command = ""
+dist_path = "dist/"
+upload_to_pypi = false
+upload_to_release = true
+commit_version_number = false
+commit_parser = "angular"
+logging_use_named_masks = false
+major_on_zero = false
+
+[tool.semantic_release.changelog]
+changelog_sections = [
+    {type = "feat", section = "Added"},
+    {type = "fix", section = "Fixed"},
+    {type = "perf", section = "Changed"},
+    {type = "refactor", section = "Changed"},
+    {type = "docs", section = "Changed"},
+]
