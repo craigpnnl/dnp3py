@@ -88,6 +88,16 @@ IIN_BIT_DEVICE_RESTART = 7  # Bit 7 of IIN byte 1
 # Minimum data sizes
 MIN_IIN_WRITE_DATA = 2  # start + stop bytes
 
+# Analog output value sizes in bytes, keyed by variation number.
+# Used by both _process_ao_direct_operate and _echo_ao_block so the mapping
+# is defined exactly once (parallel to _CROB_BODY_BYTES for CROB).
+_AO_VALUE_SIZES: dict[int, int] = {
+    AO_VAR_INT32: 4,  # Group 41 Var 1: 32-bit signed integer
+    AO_VAR_INT16: 2,  # Group 41 Var 2: 16-bit signed integer
+    AO_VAR_FLOAT32: 4,  # Group 41 Var 3: single-precision float
+    AO_VAR_FLOAT64: 8,  # Group 41 Var 4: double-precision float
+}
+
 # Index size thresholds
 MAX_1_BYTE_INDEX = 255  # 0xFF
 MAX_2_BYTE_INDEX = 65535  # 0xFFFF
@@ -877,11 +887,19 @@ class Outstation:
         """Handle WRITE for Group 80 Variation 1 (Internal Indications).
 
         Per IEEE 1815-2012, writing g80v1 with index 7 value 0 clears
-        the DEVICE_RESTART bit. Uses start-stop range qualifier (0x00).
+        the DEVICE_RESTART bit. Only qualifier 0x00 (1-byte start-stop
+        range) is valid for this object; any other qualifier is silently
+        ignored to avoid misinterpreting the data bytes as start/stop.
 
         Args:
             block: Object block with g80v1 data.
         """
+        # Only 0x00 (1-byte start-stop) is the valid qualifier for g80v1.
+        # A non-0x00 qualifier would cause the data bytes to be misread
+        # as start/stop indices, potentially clearing DEVICE_RESTART wrongly.
+        if block.header.qualifier != 0x00:
+            return
+
         data = block.data
         if len(data) < MIN_IIN_WRITE_DATA:
             return
@@ -1067,9 +1085,8 @@ class Outstation:
         results: list[tuple[int, CommandStatus]] = []
         variation = block.header.variation
 
-        # Determine value size from variation
-        value_sizes = {AO_VAR_INT32: 4, AO_VAR_INT16: 2, AO_VAR_FLOAT32: 4, AO_VAR_FLOAT64: 8}
-        value_size = value_sizes.get(variation)
+        # Unknown variations return an empty result (no-op, no side effects).
+        value_size = _AO_VALUE_SIZES.get(variation)
         if value_size is None:
             return results
 
@@ -1137,8 +1154,10 @@ class Outstation:
 
         for block in request.objects:
             if block.header.group == GROUP_CROB and block.header.variation == 1:
-                echoed = self._echo_crob_block(block, status_map)
+                echoed, truncated = self._echo_crob_block(block, status_map)
                 objects.append(echoed)
+                if truncated:
+                    has_format_error = True
             elif block.header.group == GROUP_ANALOG_OUTPUT:
                 echoed = self._echo_ao_block(block, status_map)
                 objects.append(echoed)
@@ -1160,21 +1179,28 @@ class Outstation:
         self,
         block: ObjectBlock,
         status_map: dict[int, CommandStatus],
-    ) -> ObjectBlock:
+    ) -> tuple[ObjectBlock, bool]:
         """Echo a CROB block with status bytes set from results.
 
         Derives count-field and index-field widths from the qualifier byte
         using _crob_count_index_sizes, mirroring _parse_crob_block's framing
         so 0x17 (1-byte) and 0x28 (2-byte) qualifiers are both handled
-        correctly. If the qualifier is unrecognised the block is returned
-        unchanged; the parse path already surfaced FORMAT_ERROR for it.
+        correctly.
+
+        Returns a tuple of (echoed_block, truncation_detected). When
+        truncation_detected is True the buffer was too short to echo all
+        objects declared by the count field; the caller must surface
+        IIN.PARAMETER_ERROR so the master knows the frame was malformed.
+        If the qualifier is unrecognised the original block is returned with
+        truncation_detected=False; the parse path already produced FORMAT_ERROR
+        for that case.
 
         Args:
             block: Original request CROB block.
             status_map: Map of point index to command status.
 
         Returns:
-            ObjectBlock with status bytes updated to match results.
+            Tuple of (ObjectBlock with status bytes updated, truncation flag).
         """
         data = block.data
         try:
@@ -1182,10 +1208,10 @@ class Outstation:
         except ValueError:
             # Unrecognised qualifier: parse path already produced FORMAT_ERROR;
             # return the block unmodified so the echo is at least not silently wrong.
-            return block
+            return block, False
 
         if len(data) < count_bytes:
-            return block
+            return block, True
 
         count = int.from_bytes(data[0:count_bytes], "little")
         offset = count_bytes
@@ -1195,8 +1221,10 @@ class Outstation:
         # Body bytes excluding the trailing status byte.
         body_without_status = _CROB_BODY_BYTES - 1
 
+        echoed = 0
         for _ in range(count):
             if offset + index_bytes + _CROB_BODY_BYTES > len(data):
+                # Buffer too short: remaining objects cannot be echoed.
                 break
 
             # Read index at qualifier-derived width.
@@ -1215,8 +1243,10 @@ class Outstation:
             # Write the result status byte.
             status = status_map.get(index, CommandStatus.NOT_SUPPORTED)
             result_data.append(int(status))
+            echoed += 1
 
-        return ObjectBlock(header=block.header, data=bytes(result_data))
+        truncation_detected = echoed < count
+        return ObjectBlock(header=block.header, data=bytes(result_data)), truncation_detected
 
     def _echo_ao_block(
         self,
@@ -1233,8 +1263,12 @@ class Outstation:
             ObjectBlock with status bytes updated.
         """
         variation = block.header.variation
-        value_sizes = {AO_VAR_INT32: 4, AO_VAR_INT16: 2, AO_VAR_FLOAT32: 4, AO_VAR_FLOAT64: 8}
-        value_size = value_sizes.get(variation, 4)
+        # Unknown variations are returned unchanged; _process_ao_direct_operate
+        # already produced no results for them, so there is nothing meaningful
+        # to echo. No silent size default: a wrong size would corrupt the wire frame.
+        value_size = _AO_VALUE_SIZES.get(variation)
+        if value_size is None:
+            return block
 
         data = block.data
         if len(data) < 1:
