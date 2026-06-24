@@ -18,7 +18,8 @@
         "offsets": {"scada": 0, "historical_meters": 5000, "historical_batteries": 20000},
         "points": [
             {"index": "AO0", "description": "Active Power Setpoint", "uid": "DWMX.WMaxPct", "purpose": "Limit", "associated_index": "AI0", "value": 100, "minimum": 0, "maximum": 100, "multiplier": 0.1, "offset": 0, "units": "percent", "supported": true},
-            {"index": "AO20000", "description": "Battery Charge Rate", "uid": "DBAT.ChgRte", "purpose": "Storage", "value": 50, "minimum": 0, "maximum": 100, "multiplier": 1.0, "offset": 0, "units": "percent", "supported": true, "entity_number": 1, "entity_type": "Battery", "entity_index_offset": 0}
+            {"index": "AO20000", "description": "Battery Charge Rate", "uid": "DBAT.ChgRte", "purpose": "Storage", "value": 50, "minimum": 0, "maximum": 100, "multiplier": 1.0, "offset": 0, "units": "percent", "supported": true, "entity_number": 1, "entity_type": "Battery", "entity_index_offset": 0},
+            {"index": "AO249", "description": "Curve Point 1 X-Value", "uid": "DCGC.CrvPt1X", "purpose": "Curve", "value": 0, "units": "varies", "supported": true}
         ]
     },
     "analog_inputs": {

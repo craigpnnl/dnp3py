@@ -18,6 +18,8 @@ from dnp3.database import (
 from dnp3.mesa.ao_store import AnalogOutputStore, AnalogOutputValue
 from dnp3.mesa.profile import PointType, Profile
 
+__all__ = ["build_database"]
+
 # Headroom added to max index so DatabaseConfig limits are not too tight.
 _HEADROOM = 10
 
@@ -88,14 +90,18 @@ def build_database(
         )
 
     # --- Analog Outputs (into store, not database) ----------------------
+    # When the profile omits minimum/maximum (e.g. curve-point AOs with
+    # "varies" units), we use -inf/+inf so the range check in
+    # AnalogOutputStore.set_value never rejects a value.  Defaulting to
+    # 0.0 would silently trap all non-zero writes for those points.
     ao_store = AnalogOutputStore()
     for point in ao_points:
         ao_store.add(
             AnalogOutputValue(
                 index=point.index,
                 value=float(point.value),
-                minimum=float(point.minimum) if point.minimum is not None else 0.0,
-                maximum=float(point.maximum) if point.maximum is not None else 0.0,
+                minimum=float(point.minimum) if point.minimum is not None else float("-inf"),
+                maximum=float(point.maximum) if point.maximum is not None else float("inf"),
                 multiplier=float(point.multiplier) if point.multiplier is not None else 1.0,
                 offset=float(point.offset) if point.offset is not None else 0.0,
                 units=point.units or "",

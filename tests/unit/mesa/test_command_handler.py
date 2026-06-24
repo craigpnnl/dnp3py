@@ -200,3 +200,68 @@ class TestOperateAnalogOutput:
         assert result.status == CommandStatus.SUCCESS
         assert ao_store.get(0).value == 75.0
         assert database.get_analog_input(0).value == 75.0
+
+
+class TestOperateBinaryOutputLatchOff:
+    """Explicit coverage for LATCH_OFF path in operate_binary_output."""
+
+    def test_latch_off_sets_value_false(
+        self,
+        handler: MesaCommandHandler,
+        database: Database,
+    ) -> None:
+        # Prime to True first
+        handler.operate_binary_output(
+            index=0, code=ControlCode.LATCH_ON, count=1, on_time=0, off_time=0, select_sequence=1
+        )
+        assert database.get_binary_output(0).value is True
+
+        result = handler.operate_binary_output(
+            index=0, code=ControlCode.LATCH_OFF, count=1, on_time=0, off_time=0, select_sequence=1
+        )
+        assert result.status == CommandStatus.SUCCESS
+        assert database.get_binary_output(0).value is False
+
+
+class TestSelectAnalogOutputBoundaries:
+    """Exact min/max boundary acceptance on select_analog_output."""
+
+    def test_select_at_minimum_returns_success(self, handler: MesaCommandHandler) -> None:
+        """Value exactly at minimum (0.0) must be valid."""
+        result = handler.select_analog_output(index=0, value=0.0)
+        assert result.status == CommandStatus.SUCCESS
+
+    def test_select_at_maximum_returns_success(self, handler: MesaCommandHandler) -> None:
+        """Value exactly at maximum (100.0) must be valid."""
+        result = handler.select_analog_output(index=0, value=100.0)
+        assert result.status == CommandStatus.SUCCESS
+
+    def test_select_below_minimum_returns_out_of_range(self, handler: MesaCommandHandler) -> None:
+        result = handler.select_analog_output(index=0, value=-0.001)
+        assert result.status == CommandStatus.OUT_OF_RANGE
+
+    def test_select_above_maximum_returns_out_of_range(self, handler: MesaCommandHandler) -> None:
+        result = handler.select_analog_output(index=0, value=100.001)
+        assert result.status == CommandStatus.OUT_OF_RANGE
+
+
+class TestControlCodeElseBranch:
+    """The else branch (non-LATCH code): no state change, returns SUCCESS."""
+
+    def test_unrecognised_control_code_returns_success_no_change(
+        self,
+        handler: MesaCommandHandler,
+        database: Database,
+    ) -> None:
+        # Use PULSE_ON which is not LATCH_ON or LATCH_OFF
+        initial = database.get_binary_output(0).value
+        result = handler.direct_operate_binary_output(
+            index=0,
+            code=ControlCode.PULSE_ON,
+            count=1,
+            on_time=0,
+            off_time=0,
+        )
+        assert result.status == CommandStatus.SUCCESS
+        # Value must not have changed
+        assert database.get_binary_output(0).value == initial

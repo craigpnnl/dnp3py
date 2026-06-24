@@ -10,11 +10,12 @@ from pathlib import Path
 
 import pytest
 
-from dnp3.database import Database
+from dnp3.database import AnalogInputConfig, Database, DatabaseConfig
 from dnp3.mesa.ao_store import AnalogOutputStore
 from dnp3.mesa.command_handler import MesaCommandHandler
 from dnp3.mesa.entities import EntityType
-from dnp3.mesa.outstation import MesaOutstation, create_mesa_outstation
+from dnp3.mesa.outstation import MesaOutstation, _build_associated_indices, create_mesa_outstation
+from dnp3.mesa.profile import PointType, load_profile
 from dnp3.outstation import Outstation
 
 # ---------------------------------------------------------------------------
@@ -69,8 +70,8 @@ class TestCreateMesaOutstation:
         assert mesa.database.analog_input_count == 2
 
     def test_ao_store_length(self, mesa: MesaOutstation) -> None:
-        """Test profile has AO0 and AO20000 = 2 analog outputs."""
-        assert len(mesa.ao_store) == 2
+        """Test profile has AO0, AO20000, AO249 (unbounded curve point) = 3 analog outputs."""
+        assert len(mesa.ao_store) == 3
 
     # -- Entities -----------------------------------------------------------
 
@@ -116,15 +117,15 @@ class TestCreateMesaOutstation:
         """With batteries=0, AO20000 should not be in the AO store."""
         mesa = create_mesa_outstation(TEST_PROFILE, entity_overrides={"batteries": 0})
         assert mesa.ao_store.get(20000) is None
-        assert len(mesa.ao_store) == 1  # only AO0
+        assert len(mesa.ao_store) == 2  # AO0 + AO249 (non-entity curve point)
 
     def test_entity_override_all_zero_keeps_only_scada(self) -> None:
-        """With all entities at 0, only SCADA points remain."""
+        """With all entities at 0, only SCADA + non-entity points remain."""
         mesa = create_mesa_outstation(TEST_PROFILE, entity_overrides={"meters": 0, "batteries": 0})
         assert mesa.database.binary_input_count == 1  # BI0
         assert mesa.database.binary_output_count == 1  # BO0
         assert mesa.database.analog_input_count == 1  # AI0
-        assert len(mesa.ao_store) == 1  # AO0
+        assert len(mesa.ao_store) == 2  # AO0 + AO249 (curve point has no entity)
 
     # -- Associated indices / command handler integration --------------------
 
@@ -159,4 +160,116 @@ class TestCreateMesaOutstation:
 
     def test_profile_is_set(self, mesa: MesaOutstation) -> None:
         assert mesa.profile is not None
-        assert len(mesa.profile.analog_outputs.points) == 2
+        assert len(mesa.profile.analog_outputs.points) == 3  # AO0, AO20000, AO249
+
+
+# ---------------------------------------------------------------------------
+# _build_associated_indices unit tests
+# ---------------------------------------------------------------------------
+
+
+class TestBuildAssociatedIndices:
+    """Direct unit tests for _build_associated_indices."""
+
+    @pytest.fixture()
+    def profile(self):
+        return load_profile(TEST_PROFILE)
+
+    def _make_db_with_ai(self, *ai_indices: int) -> Database:
+        db = Database(config=DatabaseConfig(max_analog_inputs=len(ai_indices) + 5))
+        for idx in ai_indices:
+            db.add_analog_input(idx, AnalogInputConfig())
+        return db
+
+    def test_ao_with_valid_ai_target_maps_correctly(self, profile) -> None:
+        """AO0 -> AI0 in the fixture: must map index 0 to ('AI', 0)."""
+        db = self._make_db_with_ai(0, 5000)
+        result = _build_associated_indices(profile, db)
+        assert 0 in result
+        point_type_str, target_index = result[0]
+        assert point_type_str == PointType.ANALOG_INPUT.value
+        assert target_index == 0
+
+    def test_ao_without_associated_index_not_in_result(self, profile) -> None:
+        """AO20000 has no associated_index: must not appear in the result."""
+        db = self._make_db_with_ai(0, 5000)
+        result = _build_associated_indices(profile, db)
+        assert 20000 not in result
+
+    def test_missing_target_ai_raises_value_error(self, profile) -> None:
+        """AO0 has associated_index='AI0'; if AI0 is absent, must raise."""
+        db = self._make_db_with_ai(5000)  # AI0 intentionally absent
+        with pytest.raises(ValueError, match=r"AI0.*not in the database"):
+            _build_associated_indices(profile, db)
+
+    def test_malformed_associated_index_raises_value_error(self, profile) -> None:
+        """A profile with an invalid associated_index string must raise clearly."""
+        import json
+        import tempfile
+        from pathlib import Path
+
+        bad_profile_data = json.loads(TEST_PROFILE.read_text())
+        bad_profile_data["analog_outputs"]["points"][0]["associated_index"] = "XX999"
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            json.dump(bad_profile_data, f)
+            bad_path = Path(f.name)
+
+        bad_profile = load_profile(bad_path)
+        db = self._make_db_with_ai(0)
+        with pytest.raises(ValueError, match="malformed associated_index"):
+            _build_associated_indices(bad_profile, db)
+        bad_path.unlink()
+
+    def test_excluded_ao_skipped_even_if_target_missing(self, profile) -> None:
+        """When AO0 is excluded, missing AI0 must NOT raise."""
+        db = self._make_db_with_ai(5000)  # AI0 absent; AO0 excluded
+        excluded = {PointType.ANALOG_OUTPUT: {0}}
+        result = _build_associated_indices(profile, db, excluded_indices=excluded)
+        assert 0 not in result
+
+
+# ---------------------------------------------------------------------------
+# profile.py: missing 'supported' key raises ValueError
+# ---------------------------------------------------------------------------
+
+
+class TestProfileMissingSupportedKey:
+    """Missing 'supported' key must raise, not silently drop the point."""
+
+    def test_missing_supported_raises_value_error(self) -> None:
+        import json
+        import tempfile
+        from pathlib import Path
+
+        bad_data = json.loads(TEST_PROFILE.read_text())
+        # Remove 'supported' from the first binary output point
+        del bad_data["binary_outputs"]["points"][0]["supported"]
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            json.dump(bad_data, f)
+            bad_path = Path(f.name)
+
+        with pytest.raises(ValueError, match="supported"):
+            load_profile(bad_path)
+        bad_path.unlink()
+
+
+# ---------------------------------------------------------------------------
+# compute_excluded_indices: overrides={}
+# ---------------------------------------------------------------------------
+
+
+class TestComputeExcludedIndicesEmptyOverrides:
+    """Explicit coverage: compute_excluded_indices with an empty dict."""
+
+    def test_empty_overrides_excludes_nothing(self) -> None:
+        from dnp3.mesa.entities import compute_excluded_indices
+
+        profile = load_profile(TEST_PROFILE)
+        result = compute_excluded_indices(profile, overrides={})
+        # An empty overrides dict means max_counts is all zeros for any key
+        # that appears in overrides; since we passed {}, none are present,
+        # so every entity point uses 0 as the fallback from profile.entities.
+        # Meter entity_number=1, profile.entities meters=1 -> 1 <= 1 -> not excluded.
+        # Battery entity_number=1, profile.entities batteries=1 -> not excluded.
+        assert PointType.BINARY_INPUT not in result or 5000 not in result.get(PointType.BINARY_INPUT, set())
+        assert PointType.ANALOG_OUTPUT not in result or 20000 not in result.get(PointType.ANALOG_OUTPUT, set())

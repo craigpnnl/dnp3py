@@ -7,15 +7,25 @@ in the profile JSON.
 
 from __future__ import annotations
 
+import logging
 from collections import defaultdict
 from dataclasses import dataclass, field
 from enum import Enum
 
 from dnp3.mesa.profile import PointType, Profile
 
+_log = logging.getLogger(__name__)
+
 # ---------------------------------------------------------------------------
 # EntityType enum
 # ---------------------------------------------------------------------------
+
+__all__ = [
+    "Entity",
+    "EntityType",
+    "build_entities",
+    "compute_excluded_indices",
+]
 
 _PROFILE_STRING_MAP: dict[str, EntityType] = {}
 
@@ -79,6 +89,26 @@ class Entity:
 # ---------------------------------------------------------------------------
 
 
+def _resolve_max_counts(
+    profile: Profile,
+    overrides: dict[str, int] | None,
+) -> dict[str, int]:
+    """Return a per-entity-type max-allowed-count map.
+
+    Merges ``overrides`` (highest priority) with ``profile.entities``
+    (fallback).  The returned keys are profile-string entity-type names
+    (e.g. ``"Meter"``, ``"Battery"``).
+    """
+    counts_source: dict[str, int] = overrides if overrides is not None else profile.entities
+    max_counts: dict[str, int] = {}
+    for key, profile_string in _ENTITIES_KEY_TO_PROFILE_STRING.items():
+        if key in counts_source:
+            max_counts[profile_string] = counts_source[key]
+        elif key in profile.entities:
+            max_counts[profile_string] = profile.entities[key]
+    return max_counts
+
+
 def compute_excluded_indices(
     profile: Profile,
     overrides: dict[str, int] | None = None,
@@ -104,15 +134,7 @@ def compute_excluded_indices(
     if overrides is None:
         return {}
 
-    counts_source = overrides
-
-    # Resolve max allowed count per profile-string entity type
-    max_counts: dict[str, int] = {}
-    for key, profile_string in _ENTITIES_KEY_TO_PROFILE_STRING.items():
-        if key in counts_source:
-            max_counts[profile_string] = counts_source[key]
-        elif key in profile.entities:
-            max_counts[profile_string] = profile.entities[key]
+    max_counts = _resolve_max_counts(profile, overrides)
 
     sections = [
         profile.binary_outputs,
@@ -153,15 +175,7 @@ def build_entities(
     Returns:
         Sorted list of :class:`Entity` instances.
     """
-    counts_source = overrides if overrides is not None else profile.entities
-
-    # Resolve max allowed count per profile-string entity type
-    max_counts: dict[str, int] = {}
-    for key, profile_string in _ENTITIES_KEY_TO_PROFILE_STRING.items():
-        if key in counts_source:
-            max_counts[profile_string] = counts_source[key]
-        elif key in profile.entities:
-            max_counts[profile_string] = profile.entities[key]
+    max_counts = _resolve_max_counts(profile, overrides)
 
     # Group points by (entity_type_string, entity_number)
     grouped: dict[tuple[str, int], dict[PointType, list[int]]] = defaultdict(
@@ -188,7 +202,21 @@ def build_entities(
         if enum_num > allowed:
             continue
 
-        entity_type = EntityType.from_profile_string(etype_str)
+        try:
+            entity_type = EntityType.from_profile_string(etype_str)
+        except ValueError:  # pragma: no cover
+            # Unknown entity_type: the count-gate above (enum_num > allowed)
+            # already filters these out in normal operation because
+            # max_counts only contains recognised type strings. This branch
+            # is a defensive guard for future code paths where the ordering
+            # might change; log and skip rather than raise.
+            _log.warning(
+                "Unrecognized entity_type %r: all %d points for entity #%d will be excluded",
+                etype_str,
+                sum(len(v) for v in indices_map.values()),
+                enum_num,
+            )
+            continue
         entities.append(
             Entity(
                 entity_type=entity_type,

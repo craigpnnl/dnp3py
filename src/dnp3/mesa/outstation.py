@@ -14,12 +14,14 @@ from dnp3.mesa.ao_store import AnalogOutputStore
 from dnp3.mesa.command_handler import MesaCommandHandler
 from dnp3.mesa.database_builder import build_database
 from dnp3.mesa.entities import Entity, build_entities, compute_excluded_indices
-from dnp3.mesa.profile import Profile, load_profile, parse_index
+from dnp3.mesa.profile import PointType, Profile, load_profile, parse_index
 from dnp3.outstation import Outstation, OutstationConfig
 from dnp3.outstation.tcp_runner import OutstationTcpRunner
 
+__all__ = ["MesaOutstation", "create_mesa_outstation"]
 
-@dataclass
+
+@dataclass  # mutable: _runner is set on first call to run() after construction
 class MesaOutstation:
     """MESA IEEE 1815.2 outstation simulator loaded from a PICS profile."""
 
@@ -63,18 +65,59 @@ class MesaOutstation:
 
 def _build_associated_indices(
     profile: Profile,
+    database: Database,
+    excluded_indices: dict[PointType, set[int]] | None = None,
 ) -> dict[int, tuple[str, int]]:
     """Build AO index -> (point_type_prefix, target_index) mapping.
 
     Iterates analog output profile points that have an ``associated_index``
     field (e.g. ``"AI0"``), parses it, and stores the mapping so that
     the command handler can mirror AO writes to the associated point.
+
+    Only AO points that are present in the database are considered.  When
+    entity overrides exclude an AO (and its associated AI), the pair is
+    silently skipped rather than raising: the exclusion is intentional.
+    If an AO *is* in the database but its associated AI is not, that is
+    an error (stale profile reference) and a ``ValueError`` is raised.
+
+    Args:
+        profile: Fully loaded profile.
+        database: Already-built database; used to validate that every
+            included AO's associated AI target exists.
+        excluded_indices: Same exclusion set passed to ``build_database``,
+            so we can skip AOs that were intentionally omitted.
+
+    Raises:
+        ValueError: If ``associated_index`` is malformed or if the target
+            AI point is not present in the database for an included AO.
     """
+    excluded = excluded_indices or {}
+    excluded_ao: set[int] = excluded.get(PointType.ANALOG_OUTPUT, set())
+
     associated: dict[int, tuple[str, int]] = {}
     for point in profile.analog_outputs.points:
-        if point.associated_index is not None:
+        if point.associated_index is None:
+            continue
+        if point.index in excluded_ao:
+            # This AO was intentionally excluded by entity overrides; its
+            # target may also be absent.  Skip without error.
+            continue
+        try:
             point_type, target_index = parse_index(point.associated_index)
-            associated[point.index] = (point_type.value, target_index)
+        except ValueError as exc:
+            msg = f"AO{point.index}: malformed associated_index {point.associated_index!r}: {exc}"
+            raise ValueError(msg) from exc
+
+        if point_type is PointType.ANALOG_INPUT and database.get_analog_input(target_index) is None:
+            msg = (
+                f"AO{point.index}: associated_index {point.associated_index!r} "
+                f"targets AI{target_index} which is not in the database"
+            )
+            raise ValueError(msg)
+
+        # Store the PointType enum value string so the command handler
+        # can compare via PointType.ANALOG_INPUT.value (no bare "AI" magic).
+        associated[point.index] = (point_type.value, target_index)
     return associated
 
 
@@ -112,8 +155,8 @@ def create_mesa_outstation(
     # 4. Build entities
     entities = build_entities(profile, entity_overrides)
 
-    # 5. Build associated indices mapping
-    associated_indices = _build_associated_indices(profile)
+    # 5. Build associated indices mapping (validates targets against database)
+    associated_indices = _build_associated_indices(profile, database, excluded)
 
     # 6. Create command handler
     handler = MesaCommandHandler(

@@ -9,7 +9,10 @@ from __future__ import annotations
 from dnp3.core.enums import ControlCode
 from dnp3.database import Database
 from dnp3.mesa.ao_store import AnalogOutputStore
+from dnp3.mesa.profile import PointType
 from dnp3.outstation.handler import CommandResult, DefaultCommandHandler
+
+__all__ = ["MesaCommandHandler"]
 
 
 class MesaCommandHandler(DefaultCommandHandler):
@@ -29,7 +32,10 @@ class MesaCommandHandler(DefaultCommandHandler):
         super().__init__()
         self._database = database
         self._ao_store = ao_store
-        self._associated_indices = associated_indices or {}
+        # Values are (PointType.value string, target_index).  The string form
+        # is kept so the dict type stays serialisation-friendly; comparisons
+        # use the enum's .value to avoid bare-string magic.
+        self._associated_indices: dict[int, tuple[str, int]] = associated_indices or {}
 
     # -- Binary output helpers ------------------------------------------------
 
@@ -113,7 +119,7 @@ class MesaCommandHandler(DefaultCommandHandler):
         assoc = self._associated_indices.get(index)
         if assoc is not None:
             point_type, ai_index = assoc
-            if point_type == "AI":
+            if point_type == PointType.ANALOG_INPUT.value:
                 self._database.update_analog_input(ai_index, value)
 
         return CommandResult.success()

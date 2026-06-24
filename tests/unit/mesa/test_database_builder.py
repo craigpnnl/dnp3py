@@ -79,7 +79,7 @@ class TestPointCounts:
         assert database.analog_input_count == 2  # AI0, AI5000
 
     def test_ao_store_length(self, ao_store):
-        assert len(ao_store) == 2  # AO0, AO20000
+        assert len(ao_store) == 3  # AO0, AO20000, AO249 (unbounded curve point)
 
 
 # ---------------------------------------------------------------------------
@@ -221,7 +221,7 @@ class TestBuildDatabaseWithExclusion:
         excluded = {PointType.ANALOG_OUTPUT: {20000}}
         _, ao_store = build_database(profile, excluded_indices=excluded)
 
-        assert len(ao_store) == 1  # only AO0 remains
+        assert len(ao_store) == 2  # AO0 + AO249 remain; AO20000 excluded
         assert ao_store.get(0) is not None
         assert ao_store.get(20000) is None
 
@@ -236,7 +236,7 @@ class TestBuildDatabaseWithExclusion:
 
         assert database.binary_input_count == 1
         assert database.analog_input_count == 1
-        assert len(ao_store) == 1
+        assert len(ao_store) == 2  # AO0 + AO249 remain
 
     def test_empty_exclusion_dict_changes_nothing(self, profile):
         """An empty exclusion dict should behave like no exclusion."""
@@ -244,4 +244,60 @@ class TestBuildDatabaseWithExclusion:
 
         assert database.binary_input_count == 2
         assert database.analog_input_count == 2
-        assert len(ao_store) == 2
+        assert len(ao_store) == 3  # AO0 + AO20000 + AO249
+
+
+# ---------------------------------------------------------------------------
+# AO min/max behaviour
+# ---------------------------------------------------------------------------
+
+
+class TestAnalogOutputRanges:
+    """Tests for the AO [0,0] trap fix and range enforcement."""
+
+    def test_ao_with_explicit_range_has_correct_bounds(self, ao_store):
+        """AO0 has min=0, max=100 from the profile."""
+        entry = ao_store.get(0)
+        assert entry is not None
+        assert entry.minimum == 0.0
+        assert entry.maximum == 100.0
+
+    def test_ao_without_min_max_gets_unbounded_range(self, ao_store):
+        """AO249 omits min/max: must get -inf/+inf, NOT [0, 0].
+
+        The old default of 0.0 would silently trap all non-zero writes for
+        curve-point AOs whose range is legitimately 'varies'.
+        """
+        entry = ao_store.get(249)
+        assert entry is not None
+        import math
+
+        assert math.isinf(entry.minimum) and entry.minimum < 0
+        assert math.isinf(entry.maximum) and entry.maximum > 0
+
+    def test_ao_value_below_minimum_raises_in_store(self, ao_store):
+        """AO0 has min=0; writing -1.0 must raise ValueError in the store."""
+        import pytest
+
+        with pytest.raises(ValueError, match="outside"):
+            ao_store.set_value(0, -1.0)
+
+    def test_ao_value_at_minimum_accepted(self, ao_store):
+        """Exact minimum (0.0) must be accepted."""
+        updated = ao_store.set_value(0, 0.0)
+        assert updated.value == 0.0
+
+    def test_ao_value_at_maximum_accepted(self, ao_store):
+        """Exact maximum (100.0) must be accepted."""
+        updated = ao_store.set_value(0, 100.0)
+        assert updated.value == 100.0
+
+    def test_unbounded_ao_accepts_large_value(self, ao_store):
+        """AO249 has no declared range: any finite value must be accepted."""
+        updated = ao_store.set_value(249, 1_000_000.0)
+        assert updated.value == 1_000_000.0
+
+    def test_unbounded_ao_accepts_negative_value(self, ao_store):
+        """AO249 has no declared range: negative values must be accepted."""
+        updated = ao_store.set_value(249, -9999.5)
+        assert updated.value == -9999.5

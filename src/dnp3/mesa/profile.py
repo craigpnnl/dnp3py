@@ -26,6 +26,15 @@ class PointType(Enum):
     ANALOG_INPUT = "AI"
 
 
+__all__ = [
+    "PointType",
+    "Profile",
+    "ProfilePoint",
+    "ProfileSection",
+    "load_profile",
+    "parse_index",
+]
+
 _PREFIX_MAP: dict[str, PointType] = {pt.value: pt for pt in PointType}
 _INDEX_RE = re.compile(r"^(BO|BI|AO|AI)(\d+)$")
 
@@ -64,6 +73,7 @@ class ProfilePoint:
     ieee_1547_1: bool | None = None
     entity_number: int | None = None
     entity_type: str | None = None
+    # entity_index_offset: reserved for Phase 2 multi-entity index arithmetic.
     entity_index_offset: int | None = None
     minimum: float | None = None
     maximum: float | None = None
@@ -77,6 +87,8 @@ class ProfilePoint:
 class ProfileSection:
     """One of the four point-type sections in a MESA profile."""
 
+    # offsets: reserved for Phase 2 index-offset arithmetic (e.g. historical
+    # meter offsets).  Loaded from JSON but not yet consumed by the builder.
     offsets: dict[str, int]
     points: list[ProfilePoint] = field(default_factory=list)
 
@@ -114,19 +126,30 @@ _OPTIONAL_FIELDS = frozenset(
 )
 
 
-def _parse_section(section_data: dict) -> ProfileSection:
-    """Build a :class:`ProfileSection` from a raw JSON dict."""
-    offsets: dict[str, int] = section_data.get("offsets", {})
-    raw_points: list[dict] = section_data.get("points", [])
+def _parse_section(section_data: dict[str, object]) -> ProfileSection:
+    """Build a :class:`ProfileSection` from a raw JSON dict.
+
+    Raises:
+        ValueError: If a point is missing the ``supported`` key, or if the
+            ``index`` field does not match the expected ``<PREFIX><N>`` pattern.
+        KeyError: If a required field (``description``, ``uid``, ``purpose``,
+            ``value``) is absent from a supported point.
+    """
+    offsets: dict[str, int] = section_data.get("offsets", {})  # type: ignore[assignment]
+    raw_points: list[dict[str, object]] = section_data.get("points", [])  # type: ignore[assignment]
     points: list[ProfilePoint] = []
 
     for raw in raw_points:
-        if not raw.get("supported", False):
+        if "supported" not in raw:
+            index_hint = raw.get("index", "<unknown>")
+            msg = f"Point {index_hint!r} is missing required field 'supported'"
+            raise ValueError(msg)
+        if not raw["supported"]:
             continue
 
-        point_type, numeric_index = parse_index(raw["index"])
+        point_type, numeric_index = parse_index(str(raw["index"]))
 
-        kwargs: dict = {
+        kwargs: dict[str, object] = {
             "point_type": point_type,
             "index": numeric_index,
             "description": raw["description"],
@@ -140,7 +163,7 @@ def _parse_section(section_data: dict) -> ProfileSection:
             if key in raw:
                 kwargs[key] = raw[key]
 
-        points.append(ProfilePoint(**kwargs))
+        points.append(ProfilePoint(**kwargs))  # type: ignore[arg-type]
 
     return ProfileSection(offsets=offsets, points=points)
 
@@ -156,6 +179,10 @@ def load_profile(path: Path) -> Profile:
 
     Raises:
         FileNotFoundError: If *path* does not exist.
+        json.JSONDecodeError: If the file is not valid JSON.
+        ValueError: If a point is missing the ``supported`` key or has a
+            malformed ``index`` string.
+        KeyError: If a required field is absent from a supported point.
     """
     text = path.read_text(encoding="utf-8")
     data = json.loads(text)

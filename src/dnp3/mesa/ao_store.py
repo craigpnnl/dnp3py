@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 
+__all__ = ["AnalogOutputStore", "AnalogOutputValue"]
+
 
 @dataclass(frozen=True)
 class AnalogOutputValue:

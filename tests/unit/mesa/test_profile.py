@@ -58,7 +58,7 @@ class TestParseIndex:
         assert number == 0
 
     def test_invalid_prefix_raises_value_error(self) -> None:
-        with pytest.raises(ValueError, match="[Ii]nvalid"):
+        with pytest.raises(ValueError, match=r"[Ii]nvalid"):
             parse_index("XX0")
 
     def test_empty_string_raises_value_error(self) -> None:
@@ -211,7 +211,7 @@ class TestLoadProfile:
         assert len(profile.binary_inputs.points) == 2
 
     def test_analog_outputs_count(self, profile: Profile) -> None:
-        assert len(profile.analog_outputs.points) == 2
+        assert len(profile.analog_outputs.points) == 3  # AO0, AO20000, AO249
 
     def test_analog_inputs_count(self, profile: Profile) -> None:
         assert len(profile.analog_inputs.points) == 2
@@ -256,7 +256,7 @@ class TestLoadProfile:
         assert bo0.supported is True
 
     def test_analog_output_values(self, profile: Profile) -> None:
-        ao0 = [p for p in profile.analog_outputs.points if p.index == 0][0]
+        ao0 = next(p for p in profile.analog_outputs.points if p.index == 0)
         assert ao0.description == "Active Power Setpoint"
         assert ao0.value == 100
         assert ao0.minimum == 0
@@ -267,13 +267,13 @@ class TestLoadProfile:
     # -- entity fields --
 
     def test_entity_point_fields(self, profile: Profile) -> None:
-        bi5000 = [p for p in profile.binary_inputs.points if p.index == 5000][0]
+        bi5000 = next(p for p in profile.binary_inputs.points if p.index == 5000)
         assert bi5000.entity_number == 1
         assert bi5000.entity_type == "Meter"
         assert bi5000.entity_index_offset == 0
 
     def test_battery_entity_fields(self, profile: Profile) -> None:
-        ao20000 = [p for p in profile.analog_outputs.points if p.index == 20000][0]
+        ao20000 = next(p for p in profile.analog_outputs.points if p.index == 20000)
         assert ao20000.entity_number == 1
         assert ao20000.entity_type == "Battery"
         assert ao20000.entity_index_offset == 0
@@ -290,7 +290,7 @@ class TestLoadProfile:
         assert ai0.event_class == 1
 
     def test_analog_input_entity_with_event_class(self, profile: Profile) -> None:
-        ai5000 = [p for p in profile.analog_inputs.points if p.index == 5000][0]
+        ai5000 = next(p for p in profile.analog_inputs.points if p.index == 5000)
         assert ai5000.entity_number == 1
         assert ai5000.entity_type == "Meter"
         assert ai5000.event_class == 2
