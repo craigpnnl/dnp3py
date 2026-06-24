@@ -10,7 +10,10 @@ Maximum segment payload is 249 bytes (data link user data - 1 byte header).
 
 from dataclasses import dataclass
 
-# Bit positions and masks per IEEE 1815-2012 Clause 8.2
+# Bit positions and masks per IEEE 1815-2012 Clause 8.2.
+# FIN occupies bit 7 (0x80); FIR occupies bit 6 (0x40).
+# Cross-checked against opendnp3 TransportHeader.h and the Wireshark
+# DNP3 dissector (packet-dnp.c). Do not swap these two constants.
 _FIN_BIT = 0x80
 _FIR_BIT = 0x40
 _SEQ_MASK = 0x3F
