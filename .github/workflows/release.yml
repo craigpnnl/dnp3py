@@ -202,6 +202,8 @@ jobs:
   # Phase 4: PSR tag + CHANGELOG + GitHub release (gated on dry_run=false) #
   # PSR does NOT publish to PyPI (upload_to_pypi = false in pyproject.toml).
   # The dedicated publish-pypi OIDC job is the sole PyPI publish path.   #
+  # The new release tag is exposed as a job output so publish-pypi can   #
+  # check out exactly that tag and build a clean PEP 440 wheel.          #
   # ------------------------------------------------------------------ #
   semantic-release:
     name: Semantic Release (tag + CHANGELOG + GitHub release)
@@ -213,6 +215,9 @@ jobs:
       # GitHub release. Scoped here rather than at the workflow level so
       # build/smoke-test/test jobs retain read-only access.
       contents: write
+    # Expose the new tag to downstream jobs so publish-pypi can check it out.
+    outputs:
+      release_tag: ${{ steps.post-release.outputs.release_tag }}
 
     steps:
       - uses: actions/checkout@v7
@@ -263,6 +268,7 @@ jobs:
         run: semantic-release version
 
       - name: Post-release tag assert
+        id: post-release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -291,6 +297,14 @@ jobs:
   # Phase 5: PyPI publish (gated on dry_run=false)                      #
   # Sole PyPI publish path. PSR is configured with upload_to_pypi=false  #
   # so it never attempts a parallel publish. OIDC trusted publisher only. #
+  #                                                                      #
+  # ROOT-CAUSE FIX: the broken v0.1.1 flow downloaded the pre-tag       #
+  # artifact built by the `build` job (which ran before the tag existed) #
+  # and handed it to PyPI. hatch-vcs stamped it with a dev+local version #
+  # (e.g. 0.1.1.dev35+g70aac4fd3) which PyPI rejects with HTTP 400.    #
+  # Fix: check out the newly created tag, rebuild from that commit so    #
+  # hatch-vcs sees the exact tag and stamps a clean PEP 440 version      #
+  # (e.g. 0.1.2), then assert the version is clean before uploading.    #
   # ------------------------------------------------------------------ #
   publish-pypi:
     name: Publish to PyPI
@@ -306,11 +320,54 @@ jobs:
       id-token: write
 
     steps:
-      - name: Download build artifacts
-        uses: actions/download-artifact@v8
+      # Check out the exact tag that semantic-release just created.
+      # fetch-depth: 0 is required so hatch-vcs / setuptools-scm can walk
+      # the full tag graph and stamp the clean release version (e.g. 0.1.2).
+      # Without this, git describe cannot find the tag and produces a dev+local
+      # version string that PyPI rejects.
+      - uses: actions/checkout@v7
         with:
-          name: dist
-          path: dist/
+          ref: ${{ needs.semantic-release.outputs.release_tag }}
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install build tools
+        run: |
+          python -m pip install --upgrade pip
+          pip install build hatch-vcs
+
+      - name: Build wheel from release tag
+        run: python -m build
+
+      # Fail-closed guard: assert the built wheel carries a clean PEP 440
+      # release version before attempting any upload. A dev or local version
+      # (containing ".dev" or "+") is an immediate hard failure. This prevents
+      # a bad artifact from ever reaching PyPI, even if the tag-checkout
+      # ordering regresses in a future workflow edit.
+      - name: Assert wheel version is a clean PEP 440 release
+        run: |
+          WHEEL=$(ls dist/*.whl | head -1)
+          # Extract the version from the wheel filename: name-VERSION-*.whl
+          WHEEL_VERSION=$(echo "${WHEEL}" | sed 's/.*-\([0-9][^-]*\)-.*/\1/')
+          echo "Wheel file:    ${WHEEL}"
+          echo "Wheel version: ${WHEEL_VERSION}"
+          if echo "${WHEEL_VERSION}" | grep -q '[+]'; then
+            echo "FAIL: wheel version '${WHEEL_VERSION}' contains a local segment (+)."
+            echo "  This means the build did not check out the release tag correctly."
+            echo "  A local version is not allowed on PyPI (PEP 440)."
+            exit 1
+          fi
+          if echo "${WHEEL_VERSION}" | grep -q '\.dev'; then
+            echo "FAIL: wheel version '${WHEEL_VERSION}' contains a dev segment (.dev)."
+            echo "  This means hatch-vcs could not find the release tag during build."
+            echo "  Ensure fetch-depth: 0 and the correct ref are set on the checkout step."
+            exit 1
+          fi
+          echo "PASS: wheel version '${WHEEL_VERSION}' is a clean PEP 440 release version."
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@v1.14.0
