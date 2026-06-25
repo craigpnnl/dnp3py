@@ -10,7 +10,15 @@ Maximum segment payload is 249 bytes (data link user data - 1 byte header).
 
 from dataclasses import dataclass
 
-# Bit positions and masks per IEEE 1815-2012 Clause 8.2.
+__all__ = [
+    "HEADER_SIZE",
+    "MAX_PAYLOAD_SIZE",
+    "MAX_SEQUENCE",
+    "TransportHeader",
+    "TransportSegment",
+]
+
+# Bit positions and masks per IEEE 1815-2012 Clause 8.
 # FIN occupies bit 7 (0x80); FIR occupies bit 6 (0x40).
 # Cross-checked against opendnp3 TransportHeader.h and the Wireshark
 # DNP3 dissector (packet-dnp.c). Do not swap these two constants.
@@ -62,7 +70,8 @@ class TransportHeader:
         Returns:
             8-bit transport header value.
         """
-        value = self.seq & _SEQ_MASK
+        # __post_init__ guarantees 0 <= seq <= 63 (== _SEQ_MASK), so no mask needed.
+        value = self.seq
         if self.fir:
             value |= _FIR_BIT
         if self.fin:

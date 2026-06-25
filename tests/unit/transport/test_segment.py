@@ -91,6 +91,9 @@ class TestTransportHeaderSerialization:
         """Only segment: FIR=1, FIN=1, SEQ=0 -> 0xC0."""
         header = TransportHeader(fir=True, fin=True, seq=0)
         assert header.to_byte() == 0xC0
+        # Swap-guard: both-bits-set passes even with FIR/FIN swapped; a
+        # FIR-only case distinguishes them (must be 0x40, not 0x80).
+        assert TransportHeader(fir=True, fin=False, seq=0).to_byte() == 0x40
 
     def test_middle_segment_byte(self) -> None:
         """Middle segment: FIR=0, FIN=0, SEQ=10 -> 0x0A."""
@@ -101,6 +104,8 @@ class TestTransportHeaderSerialization:
         """Max sequence: FIR=1, FIN=1, SEQ=63 -> 0xFF."""
         header = TransportHeader(fir=True, fin=True, seq=63)
         assert header.to_byte() == 0xFF
+        # Swap-guard: FIN-only at max seq must be 0xBF (0x80 | 0x3F), not 0x7F.
+        assert TransportHeader(fir=False, fin=True, seq=63).to_byte() == 0xBF
 
     def test_to_bytes(self) -> None:
         """to_bytes returns single byte."""
@@ -133,6 +138,10 @@ class TestTransportHeaderParsing:
         assert header.fir is True
         assert header.fin is True
         assert header.seq == 0
+        # Swap-guard: 0x40 must parse as FIR=True, FIN=False (not the reverse).
+        fir_only = TransportHeader.from_byte(0x40)
+        assert fir_only.fir is True
+        assert fir_only.fin is False
 
     def test_parse_middle_segment(self) -> None:
         """Parse 0x0A -> FIR=0, FIN=0, SEQ=10."""
@@ -308,7 +317,7 @@ class TestTransportSegmentProperties:
 class TestMultiFragmentFirFin:
     """Verify FIR and FIN bit semantics on a multi-segment exchange.
 
-    IEEE 1815-2012 Clause 8.2: FIN occupies bit 7 (0x80), FIR occupies
+    IEEE 1815-2012 Clause 8: FIN occupies bit 7 (0x80), FIR occupies
     bit 6 (0x40).  On a three-segment fragment only the first segment has
     FIR set; only the last has FIN set; the middle segment has neither.
     This test exercises the case that actually distinguishes the two bits
