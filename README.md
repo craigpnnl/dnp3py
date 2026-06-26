@@ -8,7 +8,8 @@
 [![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
 [![Checked with mypy](https://www.mypy-lang.org/static/mypy_badge.svg)](https://mypy-lang.org/)
 
-A pure Python implementation of the DNP3 (IEEE 1815-2012) protocol.
+A pure Python implementation of the DNP3 (IEEE 1815-2012) protocol, including a
+MESA IEEE 1815.2 DER outstation simulator introduced in v0.2.0.
 
 ## Features
 
@@ -17,6 +18,8 @@ A pure Python implementation of the DNP3 (IEEE 1815-2012) protocol.
 - **Async I/O** - Built on asyncio for efficient network communication
 - **Type Safe** - Full type annotations with strict mypy compliance
 - **Well Tested** - Comprehensive test suite with 98%+ code coverage
+- **MESA IEEE 1815.2 Outstation** - Profile-driven DER outstation simulator for
+  meters, DERs, inverters, and batteries
 
 ## Installation
 
@@ -85,6 +88,81 @@ async def main():
 asyncio.run(main())
 ```
 
+## MESA IEEE 1815.2 Outstation
+
+The `dnp3.mesa` module is a DER-oriented outstation built on the IEEE 1815.2
+profile. It supports meters, DERs (distributed energy resources), inverters, and
+batteries. You describe the device by loading a JSON profile; the module builds
+the DNP3 database and command handler automatically.
+
+Profiles are authored as JSON today. Spreadsheet (xlsx) ingestion is a planned
+future capability, not yet available.
+
+### Quick start (CLI)
+
+```
+usage: python -m dnp3.mesa [-h] --profile PROFILE [--host HOST] [--port PORT]
+                           [--address ADDRESS]
+                           [--master-address MASTER_ADDRESS] [--meters METERS]
+                           [--ders DERS] [--inverters INVERTERS]
+                           [--batteries BATTERIES]
+
+options:
+  --profile PROFILE           Path to profile.json (required)
+  --host HOST                 Listen address (default: 0.0.0.0)
+  --port PORT                 Listen port (default: 20000)
+  --address ADDRESS           DNP3 outstation address (default: 1)
+  --master-address MASTER_ADDRESS
+                              Expected master address (default: 0)
+  --meters METERS             Number of meters (overrides profile entities)
+  --ders DERS                 Number of DERs (overrides profile entities)
+  --inverters INVERTERS       Number of inverters (overrides profile entities)
+  --batteries BATTERIES       Number of batteries (overrides profile entities)
+```
+
+Run a simulator from the bundled profile template:
+
+```bash
+python -m dnp3.mesa --profile data/template/profile.json
+```
+
+The `--meters`, `--ders`, `--inverters`, and `--batteries` flags override the
+entity counts declared in the profile. Use them to slice a large shared profile
+down to the device being simulated without editing the file:
+
+```bash
+# Simulate only a meter (suppress DERs, inverters, batteries)
+python -m dnp3.mesa --profile my_profile.json --meters 1 --ders 0 --inverters 0 --batteries 0
+```
+
+### Programmatic API
+
+```python
+import asyncio
+from pathlib import Path
+from dnp3.mesa.outstation import create_mesa_outstation
+
+async def main():
+    outstation = create_mesa_outstation(
+        profile_path=Path("my_profile.json"),
+        host="0.0.0.0",
+        port=20000,
+        address=1,
+        master_address=0,
+        entity_overrides={"meters": 1, "ders": 0},  # optional
+    )
+    await outstation.run()
+
+asyncio.run(main())
+```
+
+`create_mesa_outstation` returns a `MesaOutstation` dataclass. Call
+`await outstation.run()` to start the TCP server; call `await outstation.stop()`
+to shut it down cleanly.
+
+For a full description of the JSON profile schema, see
+[docs/mesa-outstation.md](docs/mesa-outstation.md).
+
 ## Supported Features
 
 ### Function Codes
@@ -151,7 +229,10 @@ dnp3py/
 │   ├── database/       # Point database and events
 │   ├── outstation/     # Outstation implementation
 │   ├── master/         # Master implementation
+│   ├── mesa/           # MESA IEEE 1815.2 DER outstation
 │   └── transport_io/   # TCP/simulator channels
+├── data/
+│   └── template/       # MESA profile template (profile.json)
 └── tests/
     ├── unit/           # Unit tests
     └── integration/    # Integration tests
