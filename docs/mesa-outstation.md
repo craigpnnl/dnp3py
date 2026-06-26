@@ -161,7 +161,6 @@ or a starting point for a custom profile.
                 "description": "System Set Lockout State",
                 "uid": "DSTO.DEROpSt.disconnected_and_blocked",
                 "purpose": "State",
-                "associated_index": "BI11",
                 "value": 1,
                 "ieee_1815_2": true,
                 "supported": true

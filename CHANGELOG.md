@@ -22,28 +22,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- DIRECT_OPERATE echoes command objects back to master.
-- WRITE g80v1 clears the restart bit correctly.
+- `_SEQ_MASK` restored in transport segment `to_byte` for wire-output integrity.
+- FIR/FIN test assertions corrected to match IEEE 1815-2012.
 
-## [0.1.2] - 2026-06-23
+## [0.1.2] - 2026-06-24
 
 ### Fixed
 
 - Build release wheel from the tag so PyPI receives a clean PEP 440 version.
-- AO wire-level qualifier, truncation, and count bugs (mirror of CROB fixes).
-- Close three review nits: unknown AO variation handling, sentinel value, and
-  event-framing 0x28 coverage.
 
-## [0.1.1] - 2026-06-23
+## [0.1.1] - 2026-06-24
 
 ### Fixed
 
 - DIRECT_OPERATE: echo CROB index at qualifier-derived width; restore
   IIN.PARAMETER_ERROR on FORMAT_ERROR in control response.
+- DIRECT_OPERATE echoes command objects back to master.
+- WRITE g80v1 clears the restart bit correctly.
 - CROB qualifier handling: close silent-failure and DoS gaps; use start/stop
   range qualifiers for static responses; parse CROB count/index by qualifier.
-- `_SEQ_MASK` restored in transport segment `to_byte` for wire-output integrity.
-- FIR/FIN test assertions corrected to match IEEE 1815-2012.
+- AO wire-level qualifier, truncation, and count bugs (mirror of CROB fixes).
+- Close three review nits: unknown AO variation handling, sentinel value, and
+  event-framing 0x28 coverage.
 
 ### Changed
 
