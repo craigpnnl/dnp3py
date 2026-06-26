@@ -1,8 +1,8 @@
 """Transport Layer segments per IEEE 1815-2012 Clause 8.
 
 Transport header byte layout:
-- Bit 7: FIR (first segment of fragment)
-- Bit 6: FIN (final segment of fragment)
+- Bit 7: FIN (final segment of fragment)
+- Bit 6: FIR (first segment of fragment)
 - Bits 5-0: SEQ (sequence number, 0-63)
 
 Maximum segment payload is 249 bytes (data link user data - 1 byte header).
@@ -10,9 +10,20 @@ Maximum segment payload is 249 bytes (data link user data - 1 byte header).
 
 from dataclasses import dataclass
 
-# Bit positions and masks
-_FIR_BIT = 0x80
-_FIN_BIT = 0x40
+__all__ = [
+    "HEADER_SIZE",
+    "MAX_PAYLOAD_SIZE",
+    "MAX_SEQUENCE",
+    "TransportHeader",
+    "TransportSegment",
+]
+
+# Bit positions and masks per IEEE 1815-2012 Clause 8.
+# FIN occupies bit 7 (0x80); FIR occupies bit 6 (0x40).
+# Cross-checked against opendnp3 TransportHeader.h and the Wireshark
+# DNP3 dissector (packet-dnp.c). Do not swap these two constants.
+_FIN_BIT = 0x80
+_FIR_BIT = 0x40
 _SEQ_MASK = 0x3F
 
 # Transport layer constants
@@ -59,6 +70,8 @@ class TransportHeader:
         Returns:
             8-bit transport header value.
         """
+        # Mask seq on the wire so bits 6-7 are always clean, preserving the
+        # FIR/FIN positions regardless of how seq arrived at this boundary.
         value = self.seq & _SEQ_MASK
         if self.fir:
             value |= _FIR_BIT

@@ -78,19 +78,22 @@ class TestTransportHeaderSerialization:
     """Tests for serializing TransportHeader to bytes."""
 
     def test_first_segment_byte(self) -> None:
-        """First segment: FIR=1, FIN=0, SEQ=0 -> 0x80."""
+        """First segment: FIR=1, FIN=0, SEQ=0 -> 0x40 (FIR=bit6 per IEEE 1815-2012)."""
         header = TransportHeader(fir=True, fin=False, seq=0)
-        assert header.to_byte() == 0x80
+        assert header.to_byte() == 0x40
 
     def test_final_segment_byte(self) -> None:
-        """Final segment: FIR=0, FIN=1, SEQ=5 -> 0x45."""
+        """Final segment: FIR=0, FIN=1, SEQ=5 -> 0x85 (FIN=bit7 per IEEE 1815-2012)."""
         header = TransportHeader(fir=False, fin=True, seq=5)
-        assert header.to_byte() == 0x45
+        assert header.to_byte() == 0x85
 
     def test_only_segment_byte(self) -> None:
         """Only segment: FIR=1, FIN=1, SEQ=0 -> 0xC0."""
         header = TransportHeader(fir=True, fin=True, seq=0)
         assert header.to_byte() == 0xC0
+        # Swap-guard: both-bits-set passes even with FIR/FIN swapped; a
+        # FIR-only case distinguishes them (must be 0x40, not 0x80).
+        assert TransportHeader(fir=True, fin=False, seq=0).to_byte() == 0x40
 
     def test_middle_segment_byte(self) -> None:
         """Middle segment: FIR=0, FIN=0, SEQ=10 -> 0x0A."""
@@ -101,6 +104,8 @@ class TestTransportHeaderSerialization:
         """Max sequence: FIR=1, FIN=1, SEQ=63 -> 0xFF."""
         header = TransportHeader(fir=True, fin=True, seq=63)
         assert header.to_byte() == 0xFF
+        # Swap-guard: FIN-only at max seq must be 0xBF (0x80 | 0x3F), not 0x7F.
+        assert TransportHeader(fir=False, fin=True, seq=63).to_byte() == 0xBF
 
     def test_to_bytes(self) -> None:
         """to_bytes returns single byte."""
@@ -114,15 +119,15 @@ class TestTransportHeaderParsing:
     """Tests for parsing TransportHeader from bytes."""
 
     def test_parse_first_segment(self) -> None:
-        """Parse 0x80 -> FIR=1, FIN=0, SEQ=0."""
-        header = TransportHeader.from_byte(0x80)
+        """Parse 0x40 -> FIR=1, FIN=0, SEQ=0 (FIR=bit6 per IEEE 1815-2012)."""
+        header = TransportHeader.from_byte(0x40)
         assert header.fir is True
         assert header.fin is False
         assert header.seq == 0
 
     def test_parse_final_segment(self) -> None:
-        """Parse 0x45 -> FIR=0, FIN=1, SEQ=5."""
-        header = TransportHeader.from_byte(0x45)
+        """Parse 0x85 -> FIR=0, FIN=1, SEQ=5 (FIN=bit7 per IEEE 1815-2012)."""
+        header = TransportHeader.from_byte(0x85)
         assert header.fir is False
         assert header.fin is True
         assert header.seq == 5
@@ -133,6 +138,21 @@ class TestTransportHeaderParsing:
         assert header.fir is True
         assert header.fin is True
         assert header.seq == 0
+        # Swap-guard: 0x40 must parse as FIR=True, FIN=False (not the reverse).
+        fir_only = TransportHeader.from_byte(0x40)
+        assert fir_only.fir is True
+        assert fir_only.fin is False
+
+    def test_parse_fin_only_swap_guard(self) -> None:
+        """FIN-only swap-guard: 0x80 must parse as FIR=False, FIN=True, SEQ=0.
+
+        Mirrors the FIR-only guard so a FIR/FIN bit-position swap fails
+        parsing in both directions (IEEE 1815-2012 Clause 8).
+        """
+        fin_only = TransportHeader.from_byte(0x80)
+        assert fin_only.fir is False
+        assert fin_only.fin is True
+        assert fin_only.seq == 0
 
     def test_parse_middle_segment(self) -> None:
         """Parse 0x0A -> FIR=0, FIN=0, SEQ=10."""
@@ -253,8 +273,8 @@ class TestTransportSegmentParsing:
         assert segment.payload == b"test"
 
     def test_parse_empty_payload(self) -> None:
-        """Parse segment with only header."""
-        segment = TransportSegment.from_bytes(b"\x80")
+        """Parse segment with only header: 0x40 = FIR=1, FIN=0 per IEEE 1815-2012."""
+        segment = TransportSegment.from_bytes(b"\x40")
         assert segment.header.fir is True
         assert segment.header.fin is False
         assert segment.payload == b""
@@ -303,3 +323,47 @@ class TestTransportSegmentProperties:
         """sequence property returns header seq."""
         segment = TransportSegment.build(fir=True, fin=True, seq=42, payload=b"")
         assert segment.sequence == 42
+
+
+class TestMultiFragmentFirFin:
+    """Verify FIR and FIN bit semantics on a multi-segment exchange.
+
+    IEEE 1815-2012 Clause 8: FIN occupies bit 7 (0x80), FIR occupies
+    bit 6 (0x40).  On a three-segment fragment only the first segment has
+    FIR set; only the last has FIN set; the middle segment has neither.
+    This test exercises the case that actually distinguishes the two bits
+    and would silently break if they were swapped.
+    """
+
+    def test_three_segment_wire_bytes(self) -> None:
+        """Three-segment fragment: first=FIR only, middle=neither, last=FIN only."""
+        first = TransportSegment.build(fir=True, fin=False, seq=0, payload=b"aaa")
+        middle = TransportSegment.build(fir=False, fin=False, seq=1, payload=b"bbb")
+        last = TransportSegment.build(fir=False, fin=True, seq=2, payload=b"ccc")
+
+        # IEEE 1815-2012: FIR=bit6=0x40, FIN=bit7=0x80
+        assert first.to_bytes()[0] == 0x40  # FIR only
+        assert middle.to_bytes()[0] == 0x01  # neither flag, seq=1
+        assert last.to_bytes()[0] == 0x82  # FIN only, seq=2
+
+        # Full wire-format fixture: header byte + payload bytes for first segment.
+        assert first.to_bytes() == b"\x40" + b"aaa"
+
+        # Structural checks
+        assert first.is_first and not first.is_final
+        assert not middle.is_first and not middle.is_final
+        assert last.is_final and not last.is_first
+
+    def test_three_segment_roundtrip(self) -> None:
+        """Roundtrip a three-segment sequence preserving FIR/FIN/seq."""
+        segments = [
+            TransportSegment.build(fir=True, fin=False, seq=0, payload=b"x" * 10),
+            TransportSegment.build(fir=False, fin=False, seq=1, payload=b"y" * 10),
+            TransportSegment.build(fir=False, fin=True, seq=2, payload=b"z" * 10),
+        ]
+        for original in segments:
+            parsed = TransportSegment.from_bytes(original.to_bytes())
+            assert parsed.header.fir == original.header.fir
+            assert parsed.header.fin == original.header.fin
+            assert parsed.header.seq == original.header.seq
+            assert parsed.payload == original.payload
