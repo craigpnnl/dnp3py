@@ -15,8 +15,10 @@ from dnp3.application.builder import (
     build_unsolicited_response,
 )
 from dnp3.application.fragment import ObjectBlock, RequestFragment, ResponseFragment
+from dnp3.application.header import RESPONSE_HEADER_SIZE
 from dnp3.application.parser import parse_request
 from dnp3.application.qualifiers import (
+    OBJECT_HEADER_SIZE,
     CountRange,
     ObjectHeader,
     PrefixCode,
@@ -112,6 +114,73 @@ QUALIFIER_CROB_2BYTE = 0x28
 _CROB_BODY_BYTES = 11
 
 
+def _split_response_objects(
+    objects: list[ObjectBlock],
+    iin: IIN,
+    seq: int,
+    max_fragment_size: int,
+) -> list[ResponseFragment]:
+    """Split object blocks into multiple response fragments.
+
+    Each fragment respects max_fragment_size. FIR/FIN flags are set:
+    - Single fragment: FIR=True, FIN=True
+    - First of multiple: FIR=True, FIN=False
+    - Middle: FIR=False, FIN=False
+    - Last: FIR=False, FIN=True
+
+    Args:
+        objects: Object blocks to distribute across fragments.
+        iin: Internal indications for all fragments.
+        seq: Sequence number for all fragments.
+        max_fragment_size: Maximum bytes per fragment.
+
+    Returns:
+        List of response fragments, each within size limit.
+    """
+    if not objects:
+        return [build_response(objects=(), iin=iin, seq=seq, fir=True, fin=True)]
+
+    fragments: list[ResponseFragment] = []
+    current_objects: list[ObjectBlock] = []
+    current_size = RESPONSE_HEADER_SIZE
+
+    for obj in objects:
+        obj_size = obj.size
+
+        if current_size + obj_size > max_fragment_size and current_objects:
+            # Current batch is full, emit a fragment
+            is_first = len(fragments) == 0
+            fragments.append(
+                build_response(
+                    objects=tuple(current_objects),
+                    iin=iin,
+                    seq=seq,
+                    fir=is_first,
+                    fin=False,
+                )
+            )
+            current_objects = []
+            current_size = RESPONSE_HEADER_SIZE
+
+        current_objects.append(obj)
+        current_size += obj_size
+
+    # Emit final fragment
+    if current_objects:
+        is_first = len(fragments) == 0
+        fragments.append(
+            build_response(
+                objects=tuple(current_objects),
+                iin=iin,
+                seq=seq,
+                fir=is_first,
+                fin=True,
+            )
+        )
+
+    return fragments
+
+
 def _serialize_binary_input(value: bool, quality: BinaryQuality) -> bytes:
     """Serialize a binary input point to g1v2 format."""
     flags = int(quality)
@@ -167,11 +236,53 @@ def _contiguous_runs(points: list[Any]) -> list[list[Any]]:
     return runs
 
 
+# Widest start/stop range data: 4-byte start + 4-byte stop. Reserved when
+# sizing a chunk so a block stays within a fragment even at a 4-byte index.
+_MAX_RANGE_DATA_SIZE = 8
+
+
+def _static_block_capacity(max_fragment_size: int, per_point_size: int) -> int:
+    """Maximum points that fit in one start/stop ObjectBlock within a fragment.
+
+    Start/stop range encoding carries no per-object index prefix, so a block
+    holds the response header, one object header, the start/stop range data, and
+    the serialized point values. The widest range-data width is reserved so the
+    chunk is wire-safe even for a 4-byte index. The result is at least 1 so a
+    single oversized point still produces a block rather than an empty result.
+
+    Args:
+        max_fragment_size: Maximum bytes per response fragment.
+        per_point_size: Serialized bytes for one point value (no index prefix).
+
+    Returns:
+        Point count per block, at least 1.
+    """
+    overhead = RESPONSE_HEADER_SIZE + OBJECT_HEADER_SIZE + _MAX_RANGE_DATA_SIZE
+    available = max_fragment_size - overhead
+    if per_point_size <= 0 or available < per_point_size:
+        return 1
+    return available // per_point_size
+
+
+def _chunk_run(run: list[Any], max_points_per_block: int | None) -> list[list[Any]]:
+    """Split one contiguous run into sub-runs of at most max_points_per_block.
+
+    A None or non-positive limit returns the run unchanged (one block per run),
+    preserving the unchunked Issue #6 behaviour. Each sub-run is a gap-free slice
+    of the original run, so it remains start/stop encodable; chunking only
+    partitions a run, it never changes the wire qualifier of a block.
+    """
+    if max_points_per_block is None or max_points_per_block <= 0:
+        return [run]
+    return [run[i : i + max_points_per_block] for i in range(0, len(run), max_points_per_block)]
+
+
 def _build_static_blocks(
     group: int,
     variation: int,
     points: list[Any],
     serialize: Callable[[Any], bytes],
+    max_points_per_block: int | None = None,
 ) -> list[ObjectBlock]:
     """Build ObjectBlocks for static data using start/stop range qualifiers.
 
@@ -179,27 +290,36 @@ def _build_static_blocks(
     one ObjectBlock with the correct start/stop range header and no per-object
     index prefix, conforming to IEEE 1815-2012 Table 4-2.
 
+    When max_points_per_block is set, each contiguous run is further partitioned
+    into sub-runs of at most that many points so every emitted block fits inside
+    one response fragment (the multi-fragment send path packs whole blocks). Each
+    sub-run stays contiguous, so the start/stop qualifier (0x00/0x01) is identical
+    to the unchunked case; only the run is partitioned, never the wire encoding.
+
     Args:
         group: Object group number.
         variation: Object variation number.
         points: Sorted list of points (may be sparse).
         serialize: Callable that converts a single point to its wire bytes.
+        max_points_per_block: Optional cap on points per block for fragment
+            sizing. None emits one block per contiguous run (Issue #6 default).
 
     Returns:
-        One ObjectBlock per contiguous run, in index order.
+        One ObjectBlock per contiguous (sub-)run, in index order.
     """
     blocks: list[ObjectBlock] = []
     for run in _contiguous_runs(points):
-        header, range_data = _build_start_stop_header(
-            group=group,
-            variation=variation,
-            start=run[0].index,
-            stop=run[-1].index,
-        )
-        data = bytearray()
-        for point in run:
-            data.extend(serialize(point))
-        blocks.append(ObjectBlock(header=header, data=range_data + bytes(data)))
+        for chunk in _chunk_run(run, max_points_per_block):
+            header, range_data = _build_start_stop_header(
+                group=group,
+                variation=variation,
+                start=chunk[0].index,
+                stop=chunk[-1].index,
+            )
+            data = bytearray()
+            for point in chunk:
+                data.extend(serialize(point))
+            blocks.append(ObjectBlock(header=header, data=range_data + bytes(data)))
     return blocks
 
 
@@ -442,31 +562,33 @@ class Outstation:
         if buffer.has_overflow:
             self._state.set_event_overflow()
 
-    def process_request(self, data: bytes) -> ResponseFragment | None:
-        """Process a request and generate a response.
+    def process_request(self, data: bytes) -> list[ResponseFragment]:
+        """Process a request and generate response fragment(s).
 
         Args:
             data: Raw request bytes (application layer fragment).
 
         Returns:
-            Response fragment, or None if no response needed.
+            List of response fragments. Empty list if no response needed.
+            For READ requests with large databases, may return multiple
+            fragments respecting max_fragment_size.
         """
         try:
             request = parse_request(data)
         except Exception:
             # Parse error - return null response with PARAMETER_ERROR
-            return build_null_response(iin=self.iin | IIN.PARAMETER_ERROR)
+            return [build_null_response(iin=self.iin | IIN.PARAMETER_ERROR)]
 
         return self._process_request_fragment(request)
 
-    def _process_request_fragment(self, request: RequestFragment) -> ResponseFragment | None:
+    def _process_request_fragment(self, request: RequestFragment) -> list[ResponseFragment]:
         """Process a parsed request fragment.
 
         Args:
             request: Parsed request fragment.
 
         Returns:
-            Response fragment, or None if no response needed.
+            List of response fragments. Empty list if no response needed.
         """
         header = request.header
         function = header.function
@@ -478,41 +600,44 @@ class Outstation:
         if function == FunctionCode.READ:
             return self._handle_read(request)
         if function == FunctionCode.WRITE:
-            return self._handle_write(request)
+            return [self._handle_write(request)]
         if function == FunctionCode.SELECT:
-            return self._handle_select(request)
+            return [self._handle_select(request)]
         if function == FunctionCode.OPERATE:
-            return self._handle_operate(request)
+            return [self._handle_operate(request)]
         if function == FunctionCode.DIRECT_OPERATE:
-            return self._handle_direct_operate(request)
+            return [self._handle_direct_operate(request)]
         if function == FunctionCode.DIRECT_OPERATE_NO_ACK:
             self._handle_direct_operate(request)
-            return None  # No response for NO_ACK
+            return []  # No response for NO_ACK
         if function == FunctionCode.COLD_RESTART:
-            return self._handle_cold_restart(request)
+            return [self._handle_cold_restart(request)]
         if function == FunctionCode.WARM_RESTART:
-            return self._handle_warm_restart(request)
+            return [self._handle_warm_restart(request)]
         if function == FunctionCode.DELAY_MEASURE:
-            return self._handle_delay_measure(request)
+            return [self._handle_delay_measure(request)]
         if function == FunctionCode.ENABLE_UNSOLICITED:
-            return self._handle_enable_unsolicited(request)
+            return [self._handle_enable_unsolicited(request)]
         if function == FunctionCode.DISABLE_UNSOLICITED:
-            return self._handle_disable_unsolicited(request)
+            return [self._handle_disable_unsolicited(request)]
         if function == FunctionCode.CONFIRM:
-            return self._handle_confirm(request)
+            result = self._handle_confirm(request)
+            return [result] if result is not None else []
         if function == FunctionCode.IMMEDIATE_FREEZE:
-            return self._handle_freeze(request, clear=False)
+            return [self._handle_freeze(request, clear=False)]
         if function == FunctionCode.FREEZE_CLEAR:
-            return self._handle_freeze(request, clear=True)
+            return [self._handle_freeze(request, clear=True)]
 
         # Unsupported function code
-        return build_null_response(
-            iin=self.iin | IIN.NO_FUNC_CODE_SUPPORT,
-            seq=header.control.seq,
-        )
+        return [
+            build_null_response(
+                iin=self.iin | IIN.NO_FUNC_CODE_SUPPORT,
+                seq=header.control.seq,
+            )
+        ]
 
-    def _handle_read(self, request: RequestFragment) -> ResponseFragment:
-        """Handle READ request."""
+    def _handle_read(self, request: RequestFragment) -> list[ResponseFragment]:
+        """Handle READ request, splitting into multiple fragments if needed."""
         objects: list[ObjectBlock] = []
         error_iin = IIN(0)
 
@@ -565,10 +690,11 @@ class Outstation:
             else:
                 error_iin |= IIN.OBJECT_UNKNOWN
 
-        return build_response(
-            objects=tuple(objects),
+        return _split_response_objects(
+            objects=objects,
             iin=self.iin | error_iin,
             seq=request.header.control.seq,
+            max_fragment_size=self.config.max_fragment_size,
         )
 
     def _read_class_data(self, variation: int) -> tuple[list[ObjectBlock], IIN]:
@@ -638,6 +764,7 @@ class Outstation:
             variation=GV_BINARY_INPUT_FLAGS[1],
             points=points,
             serialize=lambda p: _serialize_binary_input(p.value, p.quality),
+            max_points_per_block=_static_block_capacity(self.config.max_fragment_size, 1),
         )
 
     def _build_binary_output_blocks(self, points: list[Any]) -> list[ObjectBlock]:
@@ -652,6 +779,7 @@ class Outstation:
             variation=GV_BINARY_OUTPUT_FLAGS[1],
             points=points,
             serialize=lambda p: _serialize_binary_output(p.value, p.quality),
+            max_points_per_block=_static_block_capacity(self.config.max_fragment_size, 1),
         )
 
     def _build_analog_input_blocks(self, points: list[Any]) -> list[ObjectBlock]:
@@ -666,6 +794,7 @@ class Outstation:
             variation=GV_ANALOG_INPUT_32[1],
             points=points,
             serialize=lambda p: _serialize_analog_input_32(p.value, int(p.quality)),
+            max_points_per_block=_static_block_capacity(self.config.max_fragment_size, 5),
         )
 
     def _build_counter_blocks(self, points: list[Any]) -> list[ObjectBlock]:
@@ -680,6 +809,7 @@ class Outstation:
             variation=GV_COUNTER_32[1],
             points=points,
             serialize=lambda p: _serialize_counter_32(p.value, int(p.quality)),
+            max_points_per_block=_static_block_capacity(self.config.max_fragment_size, 5),
         )
 
     def _build_frozen_counter_blocks(self, points: list[Any]) -> list[ObjectBlock]:
@@ -694,6 +824,7 @@ class Outstation:
             variation=GV_FROZEN_COUNTER_32[1],
             points=points,
             serialize=lambda p: _serialize_counter_32(p.value, int(p.quality)),
+            max_points_per_block=_static_block_capacity(self.config.max_fragment_size, 5),
         )
 
     def _read_class_events(self, event_class: EventClass) -> list[ObjectBlock]:

@@ -106,8 +106,8 @@ class TestUnsolicitedConfirmation:
         assert confirm.header.function == FunctionCode.CONFIRM
 
         # Outstation processes confirm (returns None)
-        confirm_response = outstation.process_request(confirm.to_bytes())
-        assert confirm_response is None  # No response to confirm
+        confirm_responses = outstation.process_request(confirm.to_bytes())
+        assert len(confirm_responses) == 0  # No response to confirm
 
         # Mark confirm sent
         master.on_confirm_sent()
