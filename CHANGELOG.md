@@ -24,6 +24,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `_SEQ_MASK` restored in transport segment `to_byte` for wire-output integrity.
 - FIR/FIN test assertions corrected to match IEEE 1815-2012.
+- Inbound multi-fragment reassembly buffer is now bounded to the configured maximum fragment size, preventing an unbounded-memory condition caused by malformed transport input.
+- Event response blocks are now chunked to the fragment-size limit, matching the behavior of static responses.
 
 ## [0.1.2] - 2026-06-24
 
