@@ -42,6 +42,13 @@ testpaths = ["tests"]
 strict = true
 python_version = "3.11"
 
+[[tool.mypy.overrides]]
+module = "dnp3.outstation.tcp_runner"
+# Pre-existing type errors in tcp_runner.py surfaced by mypy 1.14 strict mode.
+# Tracked as a hardening item outside the MESA module scope (DNP-016).
+# Scoped per error code instead of ignore_errors so any new errors are visible.
+disable_error_code = ["type-arg", "assignment", "arg-type"]
+
 [tool.ruff]
 target-version = "py311"
 line-length = 120
@@ -69,6 +76,10 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["PLR2004"]  # magic values OK in tests
+# tcp_runner.py carries pre-existing style debt (SIM105 try/except/pass teardowns,
+# PLR0915 large handler method, PLR2004 magic literal) tracked under DNP-016.
+# Suppress here rather than restructuring out of PR-B scope.
+"src/dnp3/outstation/tcp_runner.py" = ["SIM105", "PLR0915", "PLR2004"]
 
 [tool.ruff.format]
 quote-style = "double"

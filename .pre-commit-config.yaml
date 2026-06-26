@@ -7,6 +7,8 @@ repos:
       - id: check-yaml
       - id: check-toml
       - id: check-added-large-files
+        exclude: ^data/template/profile\.json$
+        # data/template/profile.json (~1.86 MB) is a first-class 1815.2 point-map input per ADR-001, not a build artifact.
       - id: check-merge-conflict
       - id: debug-statements
 
