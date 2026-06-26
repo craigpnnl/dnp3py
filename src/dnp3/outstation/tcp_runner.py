@@ -94,10 +94,11 @@ class OutstationTcpRunner:
                      Typically TcpServerChannel, but can be SimulatorChannel for testing.
         """
         parser = FrameParser()
-        # Bound the reassembler so a never-FIN stream cannot exhaust memory.
+        # Bound the reassembler to the outstation's configured fragment cap so a
+        # never-FIN transport stream cannot exhaust process memory.
         # ReassemblyError propagates to the outer except-Exception handler which
         # logs and closes the connection (fails closed).
-        reassembler = Reassembler(max_fragment_size=2048)
+        reassembler = Reassembler(max_fragment_size=self.outstation.config.max_fragment_size)
         segmenter = Segmenter()
         outstation_addr = self.outstation.config.address
         master_addr = self.outstation.config.master_address  # 0 = learn from first frame
@@ -245,9 +246,9 @@ class OutstationTcpRunner:
         Returns:
             True if confirm received, False on timeout or error.
         """
-        # Bound confirm reassembler: an APPLICATION_CONFIRM is tiny (header only),
-        # so 2048 bytes is extremely generous.
-        confirm_reassembler = Reassembler(max_fragment_size=2048)
+        # Mirror the connection reassembler's cap so confirm frames are bounded
+        # by the same config value that governs all other reassembly.
+        confirm_reassembler = Reassembler(max_fragment_size=self.outstation.config.max_fragment_size)
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
 

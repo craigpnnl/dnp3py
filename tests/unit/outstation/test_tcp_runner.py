@@ -318,12 +318,16 @@ class TestReassemblerBounds:
 
     @pytest.mark.asyncio
     async def test_never_fin_stream_closes_connection(self) -> None:
-        """A never-FIN transport stream that exceeds 2048 bytes causes the
-        connection handler to close the channel (ReassemblyError fails closed).
+        """A never-FIN transport stream that exceeds max_fragment_size causes the
+        connection handler to exit (ReassemblyError fails closed).
 
-        The outstation's Reassembler is constructed with max_fragment_size=2048.
-        Sending FIR+non-FIN segments whose accumulated payload exceeds 2048 bytes
-        must raise ReassemblyError inside the handler, which logs and closes.
+        Proof of teardown: wait_for raises TimeoutError if the handler hangs, which
+        propagates out of the test as a failure.  The test only passes when the
+        handler task completes within the deadline.
+
+        Wire math: MAX_PAYLOAD_SIZE per segment = 249 bytes.  Outstation default
+        max_fragment_size = 2048.  249 (FIR) + 249*8 = 2241 > 2048 bytes; the
+        ReassemblyError fires on the 8th continuation (seq=8).
         """
         outstation = _make_outstation()
         runner = _make_runner(outstation)
@@ -333,12 +337,6 @@ class TestReassemblerBounds:
 
         task = asyncio.create_task(runner._handle_connection(outstation_ch))
 
-        # MAX_PAYLOAD_SIZE per transport segment is 249 bytes (data-link user data
-        # minus 1 transport header byte).  With max_fragment_size=2048, the
-        # reassembler raises ReassemblyError once the accumulated buffer exceeds
-        # 2048 bytes.
-        # 249 (FIR) + 249*8 (continuations) = 249*9 = 2241 > 2048 -> triggers on
-        # the 8th continuation (seq=8).
         payload = b"X" * 249
         fir_seg = TransportSegment.build(fir=True, fin=False, seq=0, payload=payload)
         fir_frame = build_unconfirmed_user_data(
@@ -349,7 +347,6 @@ class TestReassemblerBounds:
         )
         await master_ch.write_all(fir_frame.to_bytes())
 
-        # Send 8 continuation segments; the 8th crosses the 2048-byte cap.
         for seq in range(1, 9):
             cont_seg = TransportSegment.build(fir=False, fin=False, seq=seq, payload=payload)
             cont_frame = build_unconfirmed_user_data(
@@ -360,9 +357,18 @@ class TestReassemblerBounds:
             )
             await master_ch.write_all(cont_frame.to_bytes())
 
-        # The handler should exit (ReassemblyError closes it); wait up to 3 s.
-        with contextlib.suppress(asyncio.CancelledError, Exception):
+        # Do NOT suppress TimeoutError: if the handler hangs the await raises and
+        # the test fails.  The test only passes when the handler exits on its own.
+        try:
             await asyncio.wait_for(task, timeout=3.0)
+        except TimeoutError:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+            pytest.fail(
+                "Connection handler did not exit after never-FIN stream exceeded "
+                "max_fragment_size cap; ReassemblyError should have closed it"
+            )
 
 
 class TestMasterAddressLearning:

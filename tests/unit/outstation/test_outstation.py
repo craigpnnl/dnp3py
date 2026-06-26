@@ -2043,3 +2043,79 @@ class TestEchoCrobBlockHardenPass:
         assert IIN.PARAMETER_ERROR in response.header.iin, (
             f"Truncated echo must set IIN.PARAMETER_ERROR, got IIN=0x{int(response.header.iin):04X}"
         )
+
+
+class TestEventChunking:
+    """Verify that _read_class_events chunks event blocks to max_fragment_size.
+
+    _event_block_capacity formula (binary events, 1-byte index, 0x17 qualifier):
+      overhead = RESPONSE_HEADER_SIZE(4) + OBJECT_HEADER_SIZE(3) + count_field(1) = 8
+      capacity = min((max_fragment_size - 8) // 2, 255)
+
+    MIN_FRAGMENT_SIZE = 249.  With max_fragment_size=249:
+      capacity = min((249 - 8) // 2, 255) = min(120, 255) = 120 events per block.
+
+    Seeding 130 CLASS_1 BI events forces two chunks: block-1 with 120 events
+    and block-2 with 10 events.  The two blocks are split across two fragments
+    because block-1 is 3 (ObjHdr) + 1 (count) + 120*2 = 244 bytes and
+    4 (RspHdr) + 244 = 248 bytes, leaving no room for block-2 (24 bytes) in
+    the same fragment.
+    """
+
+    def test_events_chunked_across_multiple_blocks_and_fragments(self) -> None:
+        """130 CLASS_1 BI events with max_fragment_size=249 produce >= 2 blocks
+        and >= 2 fragments; every event index and STATE bit is recoverable."""
+        from dnp3.database import DatabaseConfig
+
+        num_events = 130
+        max_frag = 249
+
+        db_config = DatabaseConfig(max_binary_inputs=num_events + 10)
+        config = OutstationConfig(max_fragment_size=max_frag, database=db_config)
+        database = Database(config=db_config)
+
+        bi_config = BinaryInputConfig(event_class=EventClass.CLASS_1)
+        for i in range(num_events):
+            database.add_binary_input(i, config=bi_config, value=False)
+
+        outstation = Outstation(config=config, database=database)
+
+        # Toggle every point to True to generate one CLASS_1 event each.
+        for i in range(num_events):
+            outstation.database.update_binary_input(i, value=True)
+
+        request = build_class_poll(class_1=True, class_2=False, class_3=False)
+        responses = outstation.process_request(request.to_bytes())
+
+        # At 120 events per block, 130 events -> 2 blocks -> 2 fragments.
+        assert len(responses) >= 2, (
+            f"Expected at least 2 fragments for {num_events} events at "
+            f"max_fragment_size={max_frag}, got {len(responses)}"
+        )
+
+        # Decode every g2v1 event block and recover (index, STATE-bit) pairs.
+        # Wire format (qualifier 0x17): data[0]=count, then [index(1) flags(1)]...
+        recovered: dict[int, bool] = {}
+        for frag in responses:
+            assert len(frag.to_bytes()) <= max_frag, (
+                f"Fragment {len(frag.to_bytes())} bytes exceeds max_fragment_size={max_frag}"
+            )
+            for obj in frag.objects:
+                if obj.header.group != 2:
+                    continue
+                assert obj.header.qualifier == 0x17, (
+                    f"Expected 0x17 qualifier on g2v1 block, got 0x{obj.header.qualifier:02X}"
+                )
+                data = obj.data
+                count = data[0]
+                offset = 1
+                for _ in range(count):
+                    index = data[offset]
+                    flags = data[offset + 1]
+                    assert index not in recovered, f"Event index {index} emitted twice"
+                    recovered[index] = bool(flags & 0x80)
+                    offset += 2
+
+        assert set(recovered) == set(range(num_events)), f"Missing indices: {set(range(num_events)) - set(recovered)}"
+        for i in range(num_events):
+            assert recovered[i] is True, f"Event index {i}: STATE bit not set (value=True expected)"
