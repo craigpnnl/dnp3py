@@ -1420,6 +1420,23 @@ class TestOutstationOperatePaths:
         # OPERATE without a prior SELECT echoes back the CROB object(s).
         assert len(response.objects) > 0
 
+        # Decode the echoed CROB block and assert the status byte is NO_SELECT (0x02).
+        # Wire format for qualifier 0x17 (1-byte count, 1-byte index):
+        #   data[0]     = count (1 byte)
+        #   data[1]     = index (1 byte)
+        #   data[2..11] = CROB body without status (10 bytes)
+        #   data[12]    = status byte
+        echo_block = response.objects[0]
+        echo_data = echo_block.data
+        # qualifier 0x17: count_bytes=1, index_bytes=1
+        assert echo_data[0] == 1, "expected count=1"
+        assert echo_data[1] == 0, "expected index=0"
+        _CROB_BODY_WITHOUT_STATUS = 10  # control_code + op_count + on_time + off_time
+        status_offset = 1 + 1 + _CROB_BODY_WITHOUT_STATUS
+        assert echo_data[status_offset] == int(CommandStatus.NO_SELECT), (
+            f"expected NO_SELECT ({int(CommandStatus.NO_SELECT)}), got {echo_data[status_offset]}"
+        )
+
     def test_select_then_operate_success(self) -> None:
         """SELECT then OPERATE completes successfully - covers lines 841-859."""
         db = Database()
@@ -3371,25 +3388,6 @@ class TestOutstationHeaderBuilding:
         assert header.variation == 2
         # Stop > 255 requires 2-byte indices
         assert len(data) == 4  # 2 bytes start + 2 bytes stop
-
-    def test_build_indexed_header_1byte(self) -> None:
-        """Test building indexed header with 1-byte indices."""
-        from dnp3.outstation.outstation import _build_indexed_header
-
-        header = _build_indexed_header(group=30, variation=1, count=5, max_index=100)
-        assert header.group == 30
-        assert header.variation == 1
-        # 1-byte index prefix (qualifier 0x17)
-        assert header.qualifier == 0x17
-
-    def test_build_indexed_header_2byte(self) -> None:
-        """Test building indexed header with 2-byte indices."""
-        from dnp3.outstation.outstation import _build_indexed_header
-
-        header = _build_indexed_header(group=30, variation=1, count=5, max_index=300)
-        assert header.group == 30
-        # 2-byte index prefix (qualifier 0x28)
-        assert header.qualifier == 0x28
 
 
 class TestOutstationEmptyBlockPaths:

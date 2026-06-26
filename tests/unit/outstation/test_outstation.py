@@ -115,11 +115,11 @@ class TestReadRequests:
         assert len(response.objects) >= 2
 
     def test_read_class_1_events(self) -> None:
-        """READ Class 1 returns Class 1 events."""
+        """READ Class 1 returns Class 1 events with correct group, index, and value bit."""
         outstation = Outstation()
         config = BinaryInputConfig(event_class=EventClass.CLASS_1)
         outstation.database.add_binary_input(0, config=config, value=False)
-        # Generate an event
+        # Generate an event by toggling the point to True.
         outstation.database.update_binary_input(0, value=True)
 
         request = build_class_poll(class_1=True, class_2=False, class_3=False)
@@ -129,6 +129,20 @@ class TestReadRequests:
         response = responses[0]
         # Class 1 poll with a pending event must return at least one object block.
         assert len(response.objects) > 0
+
+        # Decode the event block and assert wire-level correctness.
+        # g2v1 with qualifier 0x17 (1-byte count, 1-byte index):
+        #   data[0] = count (1 byte)
+        #   data[1] = index (1 byte)
+        #   data[2] = flags (STATE bit = 0x80 when value=True)
+        event_block = response.objects[0]
+        assert event_block.header.group == 2, f"expected group 2 (BI event), got {event_block.header.group}"
+        assert event_block.header.variation == 1, f"expected variation 1, got {event_block.header.variation}"
+        event_data = event_block.data
+        assert event_data[0] == 1, "expected count=1"
+        assert event_data[1] == 0, "expected index=0"
+        _STATE_BIT = 0x80
+        assert event_data[2] & _STATE_BIT, f"expected STATE bit set (value=True), flags=0x{event_data[2]:02X}"
 
     def test_read_unknown_object(self) -> None:
         """READ unknown object returns OBJECT_UNKNOWN IIN."""

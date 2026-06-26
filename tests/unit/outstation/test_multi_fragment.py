@@ -203,6 +203,74 @@ class TestMultiFragmentMixedTypes:
         for frag in responses:
             assert len(frag.to_bytes()) <= 2048
 
+    def test_mixed_types_all_bi_points_present_with_values(self) -> None:
+        """Every binary input point is recovered with the correct value.
+
+        BI points use g1v2 with start/stop qualifier (0x00 for 1-byte, 0x01 for
+        2-byte stop): no per-object index prefix. Each point is 1 byte of flags;
+        the STATE bit (0x80) is set when value=True. Even-indexed points are True.
+        """
+        num_bi = 100
+        outstation = _make_outstation(num_bi=num_bi, num_ai=300)
+        responses = _do_integrity_poll(outstation)
+
+        recovered_bi: dict[int, bool] = {}
+        for frag in responses:
+            for obj in frag.objects:
+                if obj.header.group != 1:
+                    continue
+                qualifier = obj.header.qualifier
+                assert qualifier in (0x00, 0x01), f"BI block used non start/stop qualifier 0x{qualifier:02X}"
+                index_width = 1 if qualifier == 0x00 else 2
+                data = obj.data
+                start = int.from_bytes(data[0:index_width], "little")
+                stop = int.from_bytes(data[index_width : 2 * index_width], "little")
+                offset = 2 * index_width
+                for index in range(start, stop + 1):
+                    flags = data[offset]
+                    assert index not in recovered_bi, f"BI index {index} emitted twice"
+                    recovered_bi[index] = bool(flags & 0x80)
+                    offset += 1
+
+        assert set(recovered_bi) == set(range(num_bi))
+        for index in range(num_bi):
+            expected = index % 2 == 0
+            assert recovered_bi[index] == expected, f"BI index {index}: expected {expected}, got {recovered_bi[index]}"
+
+    def test_mixed_types_all_ai_points_present_with_values(self) -> None:
+        """Every analog input point is recovered with the correct value.
+
+        AI points use g30v1 with start/stop qualifier. Each point is 5 bytes
+        (1-byte flags + 4-byte signed integer, little-endian). Value = index * 100.
+        """
+        num_ai = 300
+        outstation = _make_outstation(num_bi=100, num_ai=num_ai)
+        responses = _do_integrity_poll(outstation)
+
+        recovered_ai: dict[int, int] = {}
+        for frag in responses:
+            for obj in frag.objects:
+                if obj.header.group != 30:
+                    continue
+                qualifier = obj.header.qualifier
+                assert qualifier in (0x00, 0x01), f"AI block used non start/stop qualifier 0x{qualifier:02X}"
+                index_width = 1 if qualifier == 0x00 else 2
+                data = obj.data
+                start = int.from_bytes(data[0:index_width], "little")
+                stop = int.from_bytes(data[index_width : 2 * index_width], "little")
+                offset = 2 * index_width
+                for index in range(start, stop + 1):
+                    value = int.from_bytes(data[offset + 1 : offset + 5], "little", signed=True)
+                    assert index not in recovered_ai, f"AI index {index} emitted twice"
+                    recovered_ai[index] = value
+                    offset += 5
+
+        assert set(recovered_ai) == set(range(num_ai))
+        for index in range(num_ai):
+            assert recovered_ai[index] == index * 100, (
+                f"AI index {index}: expected {index * 100}, got {recovered_ai[index]}"
+            )
+
 
 class TestMultiFragmentMESAScale:
     """Test at MESA profile scale (342 BI + 1952 AI)."""
@@ -220,3 +288,51 @@ class TestMultiFragmentMESAScale:
         for frag in responses:
             frag_bytes = frag.to_bytes()
             assert len(frag_bytes) <= 2048, f"Fragment size {len(frag_bytes)} exceeds max 2048"
+
+    def test_mesa_scale_all_points_present(self) -> None:
+        """At MESA scale, every BI and AI point is recovered with correct values.
+
+        This test decodes start/stop blocks across all fragments and asserts:
+        - All 342 BI indices are present with correct even/odd values.
+        - All 1952 AI indices are present with correct values (index * 100).
+        """
+        num_bi = 342
+        num_ai = 1952
+        outstation = _make_outstation(num_bi=num_bi, num_ai=num_ai)
+        responses = _do_integrity_poll(outstation)
+
+        recovered_bi: dict[int, bool] = {}
+        recovered_ai: dict[int, int] = {}
+
+        for frag in responses:
+            for obj in frag.objects:
+                qualifier = obj.header.qualifier
+                assert qualifier in (0x00, 0x01), (
+                    f"group {obj.header.group} block used non start/stop qualifier 0x{qualifier:02X}"
+                )
+                index_width = 1 if qualifier == 0x00 else 2
+                data = obj.data
+                start = int.from_bytes(data[0:index_width], "little")
+                stop = int.from_bytes(data[index_width : 2 * index_width], "little")
+                offset = 2 * index_width
+
+                if obj.header.group == 1:
+                    # g1v2: 1 byte flags per point
+                    for index in range(start, stop + 1):
+                        assert index not in recovered_bi, f"BI index {index} emitted twice"
+                        recovered_bi[index] = bool(data[offset] & 0x80)
+                        offset += 1
+                elif obj.header.group == 30:
+                    # g30v1: 1 byte flags + 4 bytes value per point
+                    for index in range(start, stop + 1):
+                        value = int.from_bytes(data[offset + 1 : offset + 5], "little", signed=True)
+                        assert index not in recovered_ai, f"AI index {index} emitted twice"
+                        recovered_ai[index] = value
+                        offset += 5
+
+        assert set(recovered_bi) == set(range(num_bi))
+        assert set(recovered_ai) == set(range(num_ai))
+        for index in range(num_bi):
+            assert recovered_bi[index] == (index % 2 == 0), f"BI {index} value mismatch"
+        for index in range(num_ai):
+            assert recovered_ai[index] == index * 100, f"AI {index}: expected {index * 100}"

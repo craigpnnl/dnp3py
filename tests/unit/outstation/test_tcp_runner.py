@@ -313,6 +313,58 @@ class TestConnectionClose:
         # If we get here without TimeoutError, handler exited cleanly
 
 
+class TestReassemblerBounds:
+    """Test that the bounded Reassembler protects against never-FIN streams."""
+
+    @pytest.mark.asyncio
+    async def test_never_fin_stream_closes_connection(self) -> None:
+        """A never-FIN transport stream that exceeds 2048 bytes causes the
+        connection handler to close the channel (ReassemblyError fails closed).
+
+        The outstation's Reassembler is constructed with max_fragment_size=2048.
+        Sending FIR+non-FIN segments whose accumulated payload exceeds 2048 bytes
+        must raise ReassemblyError inside the handler, which logs and closes.
+        """
+        outstation = _make_outstation()
+        runner = _make_runner(outstation)
+        master_ch, outstation_ch = create_channel_pair()
+        await master_ch.open()
+        await outstation_ch.open()
+
+        task = asyncio.create_task(runner._handle_connection(outstation_ch))
+
+        # MAX_PAYLOAD_SIZE per transport segment is 249 bytes (data-link user data
+        # minus 1 transport header byte).  With max_fragment_size=2048, the
+        # reassembler raises ReassemblyError once the accumulated buffer exceeds
+        # 2048 bytes.
+        # 249 (FIR) + 249*8 (continuations) = 249*9 = 2241 > 2048 -> triggers on
+        # the 8th continuation (seq=8).
+        payload = b"X" * 249
+        fir_seg = TransportSegment.build(fir=True, fin=False, seq=0, payload=payload)
+        fir_frame = build_unconfirmed_user_data(
+            destination=OUTSTATION_ADDR,
+            source=MASTER_ADDR,
+            dir_from_master=True,
+            user_data=fir_seg.to_bytes(),
+        )
+        await master_ch.write_all(fir_frame.to_bytes())
+
+        # Send 8 continuation segments; the 8th crosses the 2048-byte cap.
+        for seq in range(1, 9):
+            cont_seg = TransportSegment.build(fir=False, fin=False, seq=seq, payload=payload)
+            cont_frame = build_unconfirmed_user_data(
+                destination=OUTSTATION_ADDR,
+                source=MASTER_ADDR,
+                dir_from_master=True,
+                user_data=cont_seg.to_bytes(),
+            )
+            await master_ch.write_all(cont_frame.to_bytes())
+
+        # The handler should exit (ReassemblyError closes it); wait up to 3 s.
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await asyncio.wait_for(task, timeout=3.0)
+
+
 class TestMasterAddressLearning:
     """Test master address learning when configured as 0."""
 

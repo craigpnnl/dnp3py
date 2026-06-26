@@ -317,3 +317,12 @@ class TestLoadProfile:
     def test_nonexistent_file_raises_file_not_found(self) -> None:
         with pytest.raises(FileNotFoundError):
             load_profile(Path("/tmp/nonexistent_profile_abc123.json"))
+
+    def test_malformed_json_raises_json_decode_error(self, tmp_path: Path) -> None:
+        """A file containing invalid JSON raises json.JSONDecodeError."""
+        import json
+
+        bad_file = tmp_path / "bad_profile.json"
+        bad_file.write_text("{not valid json", encoding="utf-8")
+        with pytest.raises(json.JSONDecodeError):
+            load_profile(bad_file)
