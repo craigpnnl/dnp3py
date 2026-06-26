@@ -70,8 +70,9 @@ class TransportHeader:
         Returns:
             8-bit transport header value.
         """
-        # __post_init__ guarantees 0 <= seq <= 63 (== _SEQ_MASK), so no mask needed.
-        value = self.seq
+        # Mask seq on the wire so bits 6-7 are always clean, preserving the
+        # FIR/FIN positions regardless of how seq arrived at this boundary.
+        value = self.seq & _SEQ_MASK
         if self.fir:
             value |= _FIR_BIT
         if self.fin:

@@ -143,6 +143,17 @@ class TestTransportHeaderParsing:
         assert fir_only.fir is True
         assert fir_only.fin is False
 
+    def test_parse_fin_only_swap_guard(self) -> None:
+        """FIN-only swap-guard: 0x80 must parse as FIR=False, FIN=True, SEQ=0.
+
+        Mirrors the FIR-only guard so a FIR/FIN bit-position swap fails
+        parsing in both directions (IEEE 1815-2012 Clause 8).
+        """
+        fin_only = TransportHeader.from_byte(0x80)
+        assert fin_only.fir is False
+        assert fin_only.fin is True
+        assert fin_only.seq == 0
+
     def test_parse_middle_segment(self) -> None:
         """Parse 0x0A -> FIR=0, FIN=0, SEQ=10."""
         header = TransportHeader.from_byte(0x0A)
@@ -334,6 +345,9 @@ class TestMultiFragmentFirFin:
         assert first.to_bytes()[0] == 0x40  # FIR only
         assert middle.to_bytes()[0] == 0x01  # neither flag, seq=1
         assert last.to_bytes()[0] == 0x82  # FIN only, seq=2
+
+        # Full wire-format fixture: header byte + payload bytes for first segment.
+        assert first.to_bytes() == b"\x40" + b"aaa"
 
         # Structural checks
         assert first.is_first and not first.is_final
