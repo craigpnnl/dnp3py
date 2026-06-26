@@ -264,6 +264,28 @@ def _static_block_capacity(max_fragment_size: int, per_point_size: int) -> int:
     return available // per_point_size
 
 
+def _event_block_capacity(max_fragment_size: int, per_event_size: int) -> int:
+    """Maximum events per block for 0x17-qualified (count+index) event encoding.
+
+    Overhead: RESPONSE_HEADER_SIZE + OBJECT_HEADER_SIZE + 1-byte count field.
+    Result is capped at 255 so the 1-byte count field (0x17 qualifier) always
+    suffices for the computed chunk size.
+
+    Args:
+        max_fragment_size: Maximum bytes per response fragment.
+        per_event_size: Serialized bytes per event (index prefix + payload).
+
+    Returns:
+        Event count per block, at least 1.
+    """
+    # 1-byte count field for 0x17 qualifier
+    overhead = RESPONSE_HEADER_SIZE + OBJECT_HEADER_SIZE + 1
+    available = max_fragment_size - overhead
+    if per_event_size <= 0 or available < per_event_size:
+        return 1
+    return min(available // per_event_size, 255)
+
+
 def _chunk_run(run: list[Any], max_points_per_block: int | None) -> list[list[Any]]:
     """Split one contiguous run into sub-runs of at most max_points_per_block.
 
@@ -371,23 +393,6 @@ def _build_start_stop_header(
         range_code=range_code,
     )
     return header, range_data
-
-
-def _build_indexed_header(
-    group: int,
-    variation: int,
-    count: int,
-    max_index: int,
-) -> ObjectHeader:
-    """Build object header with count and index prefix."""
-    if max_index <= MAX_1_BYTE_INDEX:
-        qualifier = 0x17  # 1-byte count, 1-byte index prefix
-    elif max_index <= MAX_2_BYTE_INDEX:
-        qualifier = 0x28  # 2-byte count, 2-byte index prefix
-    else:
-        qualifier = 0x39  # 4-byte count, 4-byte index prefix
-
-    return ObjectHeader(group=group, variation=variation, qualifier=qualifier)
 
 
 @dataclass(frozen=True)
@@ -828,25 +833,30 @@ class Outstation:
         )
 
     def _read_class_events(self, event_class: EventClass) -> list[ObjectBlock]:
-        """Read and clear events for a class."""
+        """Read and clear events for a class.
+
+        Events are chunked so no single ObjectBlock exceeds max_fragment_size.
+        Per-event wire sizes (1-byte index prefix, 0x17 qualifier assumed):
+          g2v1  binary: 1 index + 1 flags            = 2 bytes
+          g32v1 analog: 1 index + 1 flags + 4 value  = 6 bytes
+          g22v1 counter: 1 index + 1 flags + 4 value = 6 bytes
+        """
         objects: list[ObjectBlock] = []
-        buffer = self.database.event_buffer
+        events = self.database.event_buffer.pop_class_events(event_class)
 
-        # Read and clear events
-        events = buffer.pop_class_events(event_class)
-
-        # Group events by type and build blocks
-        # For simplicity, we build one block per event type
         binary_events = [e for e in events if hasattr(e, "value") and isinstance(e.value, bool)]
         analog_events = [e for e in events if hasattr(e, "value") and isinstance(e.value, float)]
         counter_events = [e for e in events if hasattr(e, "value") and isinstance(e.value, int)]
 
-        if binary_events:
-            objects.extend(self._build_binary_event_blocks(binary_events))
-        if analog_events:
-            objects.extend(self._build_analog_event_blocks(analog_events))
-        if counter_events:
-            objects.extend(self._build_counter_event_blocks(counter_events))
+        bi_cap = _event_block_capacity(self.config.max_fragment_size, 2)
+        ai_cap = _event_block_capacity(self.config.max_fragment_size, 6)
+
+        for chunk in _chunk_run(binary_events, bi_cap):
+            objects.extend(self._build_binary_event_blocks(chunk))
+        for chunk in _chunk_run(analog_events, ai_cap):
+            objects.extend(self._build_analog_event_blocks(chunk))
+        for chunk in _chunk_run(counter_events, ai_cap):
+            objects.extend(self._build_counter_event_blocks(chunk))
 
         return objects
 

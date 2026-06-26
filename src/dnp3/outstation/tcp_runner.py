@@ -94,7 +94,10 @@ class OutstationTcpRunner:
                      Typically TcpServerChannel, but can be SimulatorChannel for testing.
         """
         parser = FrameParser()
-        reassembler = Reassembler()
+        # Bound the reassembler so a never-FIN stream cannot exhaust memory.
+        # ReassemblyError propagates to the outer except-Exception handler which
+        # logs and closes the connection (fails closed).
+        reassembler = Reassembler(max_fragment_size=2048)
         segmenter = Segmenter()
         outstation_addr = self.outstation.config.address
         master_addr = self.outstation.config.master_address  # 0 = learn from first frame
@@ -201,8 +204,12 @@ class OutstationTcpRunner:
                                         len(responses),
                                     )
                                     break
-        except (ChannelClosedError, ChannelError, asyncio.CancelledError):
+        except (ChannelClosedError, asyncio.CancelledError):
             pass
+        except ChannelError as exc:
+            # Transport error on an established connection: log so it is
+            # distinguishable from a normal peer-initiated close.
+            logger.warning("Transport channel error: %s", exc)
         except Exception:
             logger.exception("Error handling connection")
         finally:
@@ -238,11 +245,14 @@ class OutstationTcpRunner:
         Returns:
             True if confirm received, False on timeout or error.
         """
-        confirm_reassembler = Reassembler()
-        deadline = asyncio.get_event_loop().time() + timeout
+        # Bound confirm reassembler: an APPLICATION_CONFIRM is tiny (header only),
+        # so 2048 bytes is extremely generous.
+        confirm_reassembler = Reassembler(max_fragment_size=2048)
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
 
-        while asyncio.get_event_loop().time() < deadline:
-            remaining = deadline - asyncio.get_event_loop().time()
+        while loop.time() < deadline:
+            remaining = deadline - loop.time()
             if remaining <= 0:
                 return False
 

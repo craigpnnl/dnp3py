@@ -44,10 +44,10 @@ python_version = "3.11"
 
 [[tool.mypy.overrides]]
 module = "dnp3.outstation.tcp_runner"
-# Pre-existing type errors in tcp_runner.py (Task generic, bytearray/bytes
-# assignments) surfaced when mypy 1.14 checks modules that import this file.
-# Tracked separately as a hardening item outside the MESA module scope.
-ignore_errors = true
+# Pre-existing type errors in tcp_runner.py surfaced by mypy 1.14 strict mode.
+# Tracked as a hardening item outside the MESA module scope (DNP-016).
+# Scoped per error code instead of ignore_errors so any new errors are visible.
+disable_error_code = ["type-arg", "assignment", "arg-type"]
 
 [tool.ruff]
 target-version = "py311"
