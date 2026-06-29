@@ -164,7 +164,7 @@ jobs:
     if: inputs.dry_run == 'true'
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
