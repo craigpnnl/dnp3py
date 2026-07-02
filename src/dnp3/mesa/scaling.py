@@ -41,8 +41,9 @@ _FRACTION_THRESHOLD = 1e-7
 class ScalingError(ValueError):
     """Raised when an engineering value cannot be scaled to a transmission int.
 
-    Covers a zero or non-finite multiplier, a non-finite offset, and a raw
-    quotient outside the signed 32-bit range.
+    Covers a non-finite engineering value (NaN, inf), a zero or non-finite
+    multiplier, a non-finite offset, and a raw quotient outside the signed
+    32-bit range.
     """
 
 
@@ -74,10 +75,13 @@ def engineering_to_transmission(
         The signed 32-bit transmission integer placed on the DNP3 wire.
 
     Raises:
-        ScalingError: If *multiplier* is zero or non-finite, *offset* is
-            non-finite, or the raw quotient falls outside the signed 32-bit
-            range.
+        ScalingError: If *engineering_value* is non-finite (NaN, inf), if
+            *multiplier* is zero or non-finite, if *offset* is non-finite,
+            or if the raw quotient falls outside the signed 32-bit range.
     """
+    if not math.isfinite(engineering_value):
+        msg = f"engineering_value must be finite, got {engineering_value}"
+        raise ScalingError(msg)
     if multiplier == 0.0:
         msg = f"multiplier cannot be zero (engineering_value={engineering_value})"
         raise ScalingError(msg)
