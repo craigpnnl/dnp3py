@@ -6,6 +6,7 @@ from a profile JSON file, and a dataclass to hold all the components.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -19,6 +20,8 @@ from dnp3.outstation import Outstation, OutstationConfig
 from dnp3.outstation.tcp_runner import OutstationTcpRunner
 
 __all__ = ["MesaOutstation", "create_mesa_outstation"]
+
+_log = logging.getLogger(__name__)
 
 
 @dataclass  # mutable: _runner is set on first call to run() after construction
@@ -114,6 +117,12 @@ def _build_associated_indices(
             # The target AI is not a base point in the database (it lives in a
             # curve/schedule sub-group whose multiplexed wiring is a later PR).
             # Skip the plain-mirror association for it rather than failing.
+            _log.debug(
+                "AO%d: assoc_ai target AI%d is not a base database index "
+                "(curve/schedule selector; mirror deferred to PR3)",
+                point.point_index,
+                target_index,
+            )
             continue
 
         # Store the PointType enum value string so the command handler can
