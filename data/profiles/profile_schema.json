@@ -1,0 +1,558 @@
+{
+    "$defs": {
+        "AnalogInputs": {
+            "properties": {
+                "offsets": {
+                    "$ref": "#/$defs/Offsets"
+                },
+                "points": {
+                    "items": {
+                        "$ref": "#/$defs/Point"
+                    },
+                    "title": "Points",
+                    "type": "array"
+                }
+            },
+            "required": [
+                "offsets"
+            ],
+            "title": "AnalogInputs",
+            "type": "object"
+        },
+        "AnalogOutputs": {
+            "properties": {
+                "offsets": {
+                    "$ref": "#/$defs/Offsets"
+                },
+                "points": {
+                    "items": {
+                        "$ref": "#/$defs/Point"
+                    },
+                    "title": "Points",
+                    "type": "array"
+                }
+            },
+            "required": [
+                "offsets"
+            ],
+            "title": "AnalogOutputs",
+            "type": "object"
+        },
+        "BinaryInputs": {
+            "properties": {
+                "offsets": {
+                    "$ref": "#/$defs/Offsets"
+                },
+                "points": {
+                    "items": {
+                        "$ref": "#/$defs/Point"
+                    },
+                    "title": "Points",
+                    "type": "array"
+                }
+            },
+            "required": [
+                "offsets"
+            ],
+            "title": "BinaryInputs",
+            "type": "object"
+        },
+        "BinaryOutputs": {
+            "properties": {
+                "offsets": {
+                    "$ref": "#/$defs/Offsets"
+                },
+                "points": {
+                    "items": {
+                        "$ref": "#/$defs/Point"
+                    },
+                    "title": "Points",
+                    "type": "array"
+                }
+            },
+            "required": [
+                "offsets"
+            ],
+            "title": "BinaryOutputs",
+            "type": "object"
+        },
+        "Curve": {
+            "additionalProperties": false,
+            "properties": {
+                "curve_type": {
+                    "$ref": "#/$defs/CurveType"
+                },
+                "number_of_points": {
+                    "maximum": 100,
+                    "minimum": 0,
+                    "title": "Number Of Points",
+                    "type": "integer"
+                },
+                "x_units": {
+                    "anyOf": [
+                        {
+                            "$ref": "#/$defs/CurveXUnits"
+                        },
+                        {
+                            "minimum": 234,
+                            "type": "integer"
+                        }
+                    ],
+                    "title": "X Units"
+                },
+                "y_units": {
+                    "anyOf": [
+                        {
+                            "$ref": "#/$defs/CurveYUnits"
+                        },
+                        {
+                            "minimum": 99,
+                            "type": "integer"
+                        }
+                    ],
+                    "title": "Y Units"
+                },
+                "points": {
+                    "items": {
+                        "$ref": "#/$defs/CurvePoint"
+                    },
+                    "maxItems": 100,
+                    "title": "Points",
+                    "type": "array"
+                }
+            },
+            "required": [
+                "curve_type",
+                "number_of_points",
+                "x_units",
+                "y_units"
+            ],
+            "title": "Curve",
+            "type": "object"
+        },
+        "CurvePoint": {
+            "additionalProperties": false,
+            "properties": {
+                "x": {
+                    "title": "X",
+                    "type": "integer"
+                },
+                "y": {
+                    "title": "Y",
+                    "type": "integer"
+                }
+            },
+            "required": [
+                "x",
+                "y"
+            ],
+            "title": "CurvePoint",
+            "type": "object"
+        },
+        "CurveType": {
+            "enum": [
+                0,
+                1,
+                2,
+                3,
+                4,
+                5,
+                6,
+                7,
+                8,
+                9,
+                10,
+                11,
+                12,
+                13,
+                14,
+                15,
+                16
+            ],
+            "title": "CurveType",
+            "type": "integer"
+        },
+        "CurveXUnits": {
+            "enum": [
+                0,
+                1,
+                4,
+                23,
+                29,
+                33,
+                38,
+                100,
+                129,
+                133,
+                138,
+                233
+            ],
+            "title": "CurveXUnits",
+            "type": "integer"
+        },
+        "CurveYUnits": {
+            "enum": [
+                0,
+                1,
+                2,
+                3,
+                4,
+                5,
+                6,
+                7,
+                8,
+                9,
+                29,
+                33,
+                38
+            ],
+            "title": "CurveYUnits",
+            "type": "integer"
+        },
+        "Entities": {
+            "properties": {
+                "meters": {
+                    "title": "Meters",
+                    "type": "integer"
+                },
+                "ders": {
+                    "title": "Ders",
+                    "type": "integer"
+                },
+                "inverters": {
+                    "title": "Inverters",
+                    "type": "integer"
+                },
+                "batteries": {
+                    "title": "Batteries",
+                    "type": "integer"
+                }
+            },
+            "required": [
+                "meters",
+                "ders",
+                "inverters",
+                "batteries"
+            ],
+            "title": "Entities",
+            "type": "object"
+        },
+        "Offsets": {
+            "properties": {
+                "scada": {
+                    "title": "Scada",
+                    "type": "integer"
+                },
+                "gap_1": {
+                    "title": "Gap 1",
+                    "type": "integer"
+                },
+                "schedules_v1": {
+                    "title": "Schedules V1",
+                    "type": "integer"
+                },
+                "status_v1": {
+                    "anyOf": [
+                        {
+                            "type": "integer"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ],
+                    "default": null,
+                    "title": "Status V1"
+                },
+                "schedules_v2": {
+                    "title": "Schedules V2",
+                    "type": "integer"
+                },
+                "status_v2": {
+                    "anyOf": [
+                        {
+                            "type": "integer"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ],
+                    "default": null,
+                    "title": "Status V2"
+                },
+                "gap_2": {
+                    "title": "Gap 2",
+                    "type": "integer"
+                },
+                "historical_meters": {
+                    "title": "Historical Meters",
+                    "type": "integer"
+                },
+                "historical_ders": {
+                    "title": "Historical Ders",
+                    "type": "integer"
+                },
+                "historical_inverters": {
+                    "title": "Historical Inverters",
+                    "type": "integer"
+                },
+                "historical_batteries": {
+                    "title": "Historical Batteries",
+                    "type": "integer"
+                },
+                "gap_3": {
+                    "title": "Gap 3",
+                    "type": "integer"
+                },
+                "vendor": {
+                    "title": "Vendor",
+                    "type": "integer"
+                }
+            },
+            "required": [
+                "scada",
+                "gap_1",
+                "schedules_v1",
+                "schedules_v2",
+                "gap_2",
+                "historical_meters",
+                "historical_ders",
+                "historical_inverters",
+                "historical_batteries",
+                "gap_3",
+                "vendor"
+            ],
+            "title": "Offsets",
+            "type": "object"
+        },
+        "Point": {
+            "properties": {
+                "index": {
+                    "title": "Index",
+                    "type": "string"
+                },
+                "description": {
+                    "title": "Description",
+                    "type": "string"
+                },
+                "uid": {
+                    "title": "Uid",
+                    "type": "string"
+                },
+                "purpose": {
+                    "title": "Purpose",
+                    "type": "string"
+                },
+                "associated_index": {
+                    "anyOf": [
+                        {
+                            "type": "string"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ],
+                    "default": null,
+                    "title": "Associated Index"
+                },
+                "value": {
+                    "anyOf": [
+                        {
+                            "type": "integer"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ],
+                    "default": null,
+                    "title": "Value"
+                },
+                "event_class": {
+                    "anyOf": [
+                        {
+                            "type": "integer"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ],
+                    "default": null,
+                    "title": "Event Class"
+                },
+                "minimum": {
+                    "anyOf": [
+                        {
+                            "type": "integer"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ],
+                    "default": null,
+                    "title": "Minimum"
+                },
+                "maximum": {
+                    "anyOf": [
+                        {
+                            "type": "integer"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ],
+                    "default": null,
+                    "title": "Maximum"
+                },
+                "multiplier": {
+                    "anyOf": [
+                        {
+                            "type": "number"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ],
+                    "default": null,
+                    "title": "Multiplier"
+                },
+                "offset": {
+                    "anyOf": [
+                        {
+                            "type": "integer"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ],
+                    "default": null,
+                    "title": "Offset"
+                },
+                "units": {
+                    "anyOf": [
+                        {
+                            "type": "string"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ],
+                    "default": null,
+                    "title": "Units"
+                },
+                "ieee_1815_2": {
+                    "anyOf": [
+                        {
+                            "type": "boolean"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ],
+                    "default": null,
+                    "title": "Ieee 1815 2"
+                },
+                "ieee_1547_1": {
+                    "anyOf": [
+                        {
+                            "type": "boolean"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ],
+                    "default": null,
+                    "title": "Ieee 1547 1"
+                },
+                "supported": {
+                    "anyOf": [
+                        {
+                            "type": "boolean"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ],
+                    "default": null,
+                    "title": "Supported"
+                },
+                "entity_number": {
+                    "anyOf": [
+                        {
+                            "type": "integer"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ],
+                    "default": null,
+                    "title": "Entity Number"
+                },
+                "entity_type": {
+                    "anyOf": [
+                        {
+                            "type": "string"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ],
+                    "default": null,
+                    "title": "Entity Type"
+                },
+                "entity_index_offset": {
+                    "anyOf": [
+                        {
+                            "type": "integer"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ],
+                    "default": null,
+                    "title": "Entity Index Offset"
+                }
+            },
+            "required": [
+                "index",
+                "description",
+                "uid",
+                "purpose"
+            ],
+            "title": "Point",
+            "type": "object"
+        }
+    },
+    "properties": {
+        "entities": {
+            "$ref": "#/$defs/Entities"
+        },
+        "binary_outputs": {
+            "$ref": "#/$defs/BinaryOutputs"
+        },
+        "binary_inputs": {
+            "$ref": "#/$defs/BinaryInputs"
+        },
+        "analog_outputs": {
+            "$ref": "#/$defs/AnalogOutputs"
+        },
+        "analog_inputs": {
+            "$ref": "#/$defs/AnalogInputs"
+        },
+        "curves": {
+            "items": {
+                "$ref": "#/$defs/Curve"
+            },
+            "title": "Curves",
+            "type": "array"
+        }
+    },
+    "required": [
+        "entities",
+        "binary_outputs",
+        "binary_inputs",
+        "analog_outputs",
+        "analog_inputs",
+        "curves"
+    ],
+    "title": "Profile",
+    "type": "object"
+}
