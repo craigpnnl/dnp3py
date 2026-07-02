@@ -48,21 +48,63 @@ class _HasIndex(Protocol):
 _IndexedT = TypeVar("_IndexedT", bound=_HasIndex)
 
 
-def _dedup_by_index(points: Iterable[_IndexedT]) -> list[_IndexedT]:
-    """Keep the first point per ``point_index``, preserving order.
+def _assert_unique_by_index(points: Iterable[_IndexedT], label: str) -> list[_IndexedT]:
+    """Collect *points* into a list, raising if any index appears more than once.
 
-    Multiplexed sub-groups (curves, schedules) overlay the same DNP3 index range,
-    so the same index appears more than once. A DNP3 index is one physical
-    address; the first occurrence is registered and the rest are the multiplexed
-    overlays handled by the selector protocol in a later PR.
+    For BI/BO/AO sections, every point should have a unique DNP3 index. A
+    duplicate means the profile is internally inconsistent, not a known
+    multiplexing pattern; raise rather than silently shadow.
     """
-    seen: set[int] = set()
+    seen: dict[int, int] = {}  # index -> position
     out: list[_IndexedT] = []
-    for point in points:
-        if point.point_index not in seen:
-            seen.add(point.point_index)
-            out.append(point)
+    for pos, point in enumerate(points):
+        idx = point.point_index
+        if idx in seen:
+            msg = (
+                f"{label}: duplicate point_index {idx} at positions "
+                f"{seen[idx]} and {pos}; expected unique indices for this section"
+            )
+            raise ValueError(msg)
+        seen[idx] = pos
+        out.append(point)
     return out
+
+
+def _dedup_ai_points(
+    base_points: Iterable[AiPoint],
+    overlay_points: Iterable[AiPoint],
+) -> list[AiPoint]:
+    """Merge base+equipment and curve/schedule AI points, deduplicating by index.
+
+    Base points take priority. Within each pool, a duplicate index is an
+    unexpected collision and raises with context. Across pools, the curve/schedule
+    overlay intentionally maps multiple logical sets onto the same index range
+    (the four curves in full.json all share indices 329+); only the first
+    registration (base wins; else first overlay) is kept.
+
+    Raising on a within-pool collision surfaces a latent silent-overwrite risk:
+    if two BASE points share an index, or two OVERLAY points for the same
+    sub-group share an index, that is a profile consistency error.
+    """
+    base_list = _assert_unique_by_index(base_points, label="AI base+equipment")
+
+    # Overlay pool: allow cross-sub-group index overlap (multiplexing); raise on
+    # same-sub-group duplicates. Collect all overlay points, deduplicate by
+    # keeping first occurrence (mirrors mesa-tool ProfileIndex semantics).
+    overlay_seen: set[int] = set()
+    overlay_out: list[AiPoint] = []
+    for point in overlay_points:
+        if point.point_index not in overlay_seen:
+            overlay_seen.add(point.point_index)
+            overlay_out.append(point)
+
+    # Merge: base indices win over overlay.
+    base_seen = {p.point_index for p in base_list}
+    result = list(base_list)
+    for point in overlay_out:
+        if point.point_index not in base_seen:
+            result.append(point)
+    return result
 
 
 def _clamp_engineering(point: AiPoint) -> float:
@@ -110,24 +152,36 @@ def build_database(
     def _is_excluded(point_type: PointType, index: int) -> bool:
         return index in excluded_indices.get(point_type, set())
 
-    bi_points = _dedup_by_index(
-        p for p in profile.bi.all_points() if not _is_excluded(PointType.BINARY_INPUT, p.point_index)
+    bi_points = _assert_unique_by_index(
+        (p for p in profile.bi.all_points() if not _is_excluded(PointType.BINARY_INPUT, p.point_index)),
+        label="BI",
     )
-    bo_points = _dedup_by_index(
-        p for p in profile.bo.all_points() if not _is_excluded(PointType.BINARY_OUTPUT, p.point_index)
+    bo_points = _assert_unique_by_index(
+        (p for p in profile.bo.all_points() if not _is_excluded(PointType.BINARY_OUTPUT, p.point_index)),
+        label="BO",
+    )
+    ao_points = _assert_unique_by_index(
+        (p for p in profile.ao.all_points() if not _is_excluded(PointType.ANALOG_OUTPUT, p.point_index)),
+        label="AO",
     )
     # Curves and schedules multiplex several logical point sets onto one DNP3
     # index range (the four curves in full.json all share indices 329+). A DNP3
     # index is a single physical address, so each unique index is registered
-    # once here (the first occurrence). Which multiplexed curve/schedule a read
-    # exposes is the selector protocol wired in a later PR; this cut only needs
-    # every index to exist so no point is dropped. This matches mesa-tool's
-    # ProfileIndex, which keys its AI map by point index.
-    ai_points = _dedup_by_index(
-        p for p in profile.ai.all_points_full() if not _is_excluded(PointType.ANALOG_INPUT, p.point_index)
-    )
-    ao_points = _dedup_by_index(
-        p for p in profile.ao.all_points() if not _is_excluded(PointType.ANALOG_OUTPUT, p.point_index)
+    # once here (base wins; else first overlay). Which multiplexed curve/schedule
+    # a read exposes is the selector protocol wired in a later PR. A collision
+    # within the base+equipment pool is unexpected and raises with context.
+    ai_points = _dedup_ai_points(
+        base_points=(p for p in profile.ai.base_points() if not _is_excluded(PointType.ANALOG_INPUT, p.point_index)),
+        overlay_points=(
+            p
+            for curve_points in (
+                [ai for curve in profile.ai.curves for ai in curve.iter_points()],
+                [ai for sched in profile.ai.schedules_bc for ai in sched.iter_points()],
+                [ai for sched in profile.ai.schedules for ai in sched.iter_points()],
+            )
+            for p in curve_points
+            if not _is_excluded(PointType.ANALOG_INPUT, p.point_index)
+        ),
     )
 
     config = DatabaseConfig(

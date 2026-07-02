@@ -485,6 +485,8 @@ def _as_point_list(value: object, context: str) -> list[dict[str, object]]:
         if not isinstance(item, dict):
             msg = f"{context}: expected a list of objects, got {type(item).__name__}"
             raise ValueError(msg)
+    # mypy cannot narrow list[object] to list[dict[str, object]] even after the
+    # isinstance guard above proves every element is a dict at runtime.
     return items  # type: ignore[return-value]
 
 
