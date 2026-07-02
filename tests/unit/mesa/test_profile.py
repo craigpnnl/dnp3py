@@ -307,6 +307,14 @@ class TestLoaderErrors:
         with pytest.raises(ValueError, match="multiplier cannot be zero"):
             load_profile(path)
 
+    def test_non_dict_json_root_raises(self, tmp_path: Path) -> None:
+        # MEDIUM 7: a non-object JSON root (e.g. a list) must fail with context,
+        # not with an opaque TypeError or AttributeError mid-parse.
+        path = tmp_path / "list_root.json"
+        path.write_text("[1, 2, 3]", encoding="utf-8")
+        with pytest.raises((TypeError, ValueError)):
+            load_profile(path)
+
 
 def _minimal_doc() -> dict:
     """A minimal valid PicsProfile document skeleton for negative tests."""
@@ -388,3 +396,73 @@ class TestGoldenFullProfile:
         # A known verbatim UID with an interior dotted segment survives.
         ctr_uids = {c.iec_61850_uid for c in full.ctr}
         assert "MMTR.SupWh" in ctr_uids
+
+
+# ===========================================================================
+# HIGH 2: Bundled profile smoke-tests (parse without error, sanity counts)
+# ===========================================================================
+
+
+class TestBundledProfileSmoke:
+    """Loads each bundled PicsProfile JSON without error and asserts that the
+    expected non-empty sections carry at least one point. Catches a copied
+    profile that is structurally broken or whose schema drifted from the loader.
+
+    Note: ``demo.json`` uses a different legacy schema (keys ``binary_outputs``,
+    ``analog_inputs``, etc.) and is NOT a PicsProfile document; it will not load
+    via ``load_profile`` and is excluded from this suite. Its presence in
+    ``data/profiles/`` is as a reference artifact for the old format.
+    """
+
+    def test_mandatory_1815_loads(self) -> None:
+        profile = load_profile(BUNDLED_PROFILES / "mandatory_1815.json")
+        assert isinstance(profile, PicsProfile)
+        # mandatory_1815 carries substantial BI, AI, AO coverage.
+        assert len(profile.bo.points) > 0, "mandatory_1815: expected non-empty BO"
+        assert len(profile.bi.points) > 0, "mandatory_1815: expected non-empty BI"
+        assert len(profile.ao.points) > 0, "mandatory_1815: expected non-empty AO"
+        assert len(profile.ai.points) > 0, "mandatory_1815: expected non-empty AI"
+        assert len(profile.ctr) > 0, "mandatory_1815: expected non-empty CTR"
+
+    def test_mandatory_1815_exact_base_counts(self) -> None:
+        profile = load_profile(BUNDLED_PROFILES / "mandatory_1815.json")
+        assert len(profile.bo.points) == 10
+        assert len(profile.bi.points) == 59
+        assert len(profile.ao.points) == 28
+        assert len(profile.ai.points) == 106
+        assert len(profile.ctr) == 4
+
+    def test_mandatory_1547_loads(self) -> None:
+        profile = load_profile(BUNDLED_PROFILES / "mandatory_1547.json")
+        assert isinstance(profile, PicsProfile)
+        assert len(profile.bo.points) > 0, "mandatory_1547: expected non-empty BO"
+        assert len(profile.bi.points) > 0, "mandatory_1547: expected non-empty BI"
+        assert len(profile.ao.points) > 0, "mandatory_1547: expected non-empty AO"
+        assert len(profile.ai.points) > 0, "mandatory_1547: expected non-empty AI"
+        assert len(profile.ctr) > 0, "mandatory_1547: expected non-empty CTR"
+
+    def test_mandatory_1547_exact_base_counts(self) -> None:
+        profile = load_profile(BUNDLED_PROFILES / "mandatory_1547.json")
+        assert len(profile.bo.points) == 7
+        assert len(profile.bi.points) == 20
+        assert len(profile.ao.points) == 28
+        assert len(profile.ai.points) == 78
+        assert len(profile.ctr) == 4
+
+    def test_minimal_1547_loads(self) -> None:
+        profile = load_profile(BUNDLED_PROFILES / "minimal_1547.json")
+        assert isinstance(profile, PicsProfile)
+        assert len(profile.bo.points) > 0, "minimal_1547: expected non-empty BO"
+        assert len(profile.bi.points) > 0, "minimal_1547: expected non-empty BI"
+        assert len(profile.ao.points) > 0, "minimal_1547: expected non-empty AO"
+        assert len(profile.ai.points) > 0, "minimal_1547: expected non-empty AI"
+        # minimal_1547 has no CTR points; assert the section parses (empty, not erroring).
+        assert isinstance(profile.ctr, tuple)
+
+    def test_minimal_1547_exact_base_counts(self) -> None:
+        profile = load_profile(BUNDLED_PROFILES / "minimal_1547.json")
+        assert len(profile.bo.points) == 7
+        assert len(profile.bi.points) == 19
+        assert len(profile.ao.points) == 21
+        assert len(profile.ai.points) == 78
+        assert len(profile.ctr) == 0
