@@ -103,6 +103,21 @@ class TestRoundVsTruncateBoundary:
 
 
 class TestGuards:
+    def test_nan_engineering_value_raises_scaling_error(self) -> None:
+        # NaN comparisons are all False, so without an explicit guard NaN would
+        # slip past the range check and reach math.trunc, which raises a bare
+        # ValueError rather than ScalingError. The guard must fire first.
+        with pytest.raises(ScalingError, match="engineering_value"):
+            engineering_to_transmission(math.nan, multiplier=1.0, offset=0.0)
+
+    def test_inf_engineering_value_raises_scaling_error(self) -> None:
+        with pytest.raises(ScalingError, match="engineering_value"):
+            engineering_to_transmission(math.inf, multiplier=1.0, offset=0.0)
+
+    def test_neg_inf_engineering_value_raises_scaling_error(self) -> None:
+        with pytest.raises(ScalingError, match="engineering_value"):
+            engineering_to_transmission(-math.inf, multiplier=1.0, offset=0.0)
+
     def test_zero_multiplier_raises(self) -> None:
         with pytest.raises(ScalingError, match="multiplier"):
             engineering_to_transmission(10.0, multiplier=0.0, offset=0.0)
@@ -141,3 +156,27 @@ class TestInverse:
             eng = transmission_to_engineering(original, multiplier, offset)
             back = engineering_to_transmission(eng, multiplier, offset)
             assert back == original, f"round trip failed for {original}"
+
+
+class TestAdditionalPrecisionCases:
+    """MEDIUM 5: exact threshold boundary, domain-specific precision, and the
+    negative-multiplier path through the clamping arithmetic in database_builder."""
+
+    def test_exact_1e7_threshold_boundary(self) -> None:
+        # A fractional part of exactly 1e-7 is NOT above the threshold, so the
+        # implementation truncates toward zero rather than rounding.
+        # Construct raw = N + 1e-7 exactly via a carefully chosen input.
+        # Use raw = 1000.0000001 = 1000 + 1e-7 exactly (representable in float64).
+        # (1000.0000001 - 0) / 1.0 = 1000.0000001; fract = 1e-7, not > threshold -> truncate.
+        raw_target = 1000.0 + 1e-7
+        result = engineering_to_transmission(raw_target, multiplier=1.0, offset=0.0)
+        assert result == 1000
+
+    def test_frequency_precision_60_05_hz(self) -> None:
+        # A named real-world case: 60.05 Hz with multiplier 0.01 -> transmission 6005.
+        # This exercises the standard utility-frequency accuracy expected by the protocol.
+        assert engineering_to_transmission(60.05, multiplier=0.01, offset=0.0) == 6005
+
+    def test_frequency_precision_59_95_hz(self) -> None:
+        # Companion under-frequency case: 59.95 Hz -> 5995.
+        assert engineering_to_transmission(59.95, multiplier=0.01, offset=0.0) == 5995
