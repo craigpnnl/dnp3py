@@ -17,8 +17,28 @@ import pytest
 from dnp3.core.flags import AnalogQuality, BinaryQuality
 from dnp3.database import Database
 from dnp3.mesa.ao_store import AnalogOutputStore
-from dnp3.mesa.database_builder import build_database
-from dnp3.mesa.profile import PicsProfile, PointType, load_profile
+from dnp3.mesa.database_builder import _assert_unique_by_index, _dedup_ai_points, build_database
+from dnp3.mesa.profile import AiPoint, EventClass, PicsProfile, PointType, load_profile
+
+
+def _make_ai(point_index: int, value: float = 1.0) -> AiPoint:
+    """Minimal AiPoint fixture for dedup unit tests."""
+    return AiPoint(
+        point_index=point_index,
+        name=f"AI{point_index}",
+        event_class=EventClass.CLASS1,
+        minimum=0,
+        maximum=10000,
+        multiplier=1.0,
+        offset=0.0,
+        units="V",
+        iec_61850_uid=f"X.Y.{point_index}",
+        value=value,
+        purpose="test",
+        mandatory_1815=False,
+        mandatory_1547=False,
+    )
+
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures"
 TEST_PROFILE = FIXTURE_DIR / "test_profile.json"
@@ -182,3 +202,96 @@ class TestClampBeforeScale:
             point = database.get_analog_input(index)
             assert point is not None
             assert not (isinstance(point.value, float) and math.isnan(point.value))
+
+
+class TestDedupValueSurvival:
+    """MEDIUM 4a: first point's value survives when a duplicate index appears in
+    the overlay pool; the first registration is the one that lands in the DB."""
+
+    def test_first_point_value_survives_overlay_duplicate(self) -> None:
+        # Two overlay points share index 329; the first value (42.0) must survive.
+        first = _make_ai(329, value=42.0)
+        second = _make_ai(329, value=99.0)
+        result = _dedup_ai_points(base_points=[], overlay_points=[first, second])
+        assert len(result) == 1
+        assert result[0].value == 42.0
+
+    def test_base_point_value_wins_over_overlay_at_same_index(self) -> None:
+        # A base point at index 329 and an overlay point at index 329: base wins.
+        base = _make_ai(329, value=10.0)
+        overlay = _make_ai(329, value=20.0)
+        result = _dedup_ai_points(base_points=[base], overlay_points=[overlay])
+        assert len(result) == 1
+        assert result[0].value == 10.0
+
+    def test_distinct_indices_all_survive(self) -> None:
+        points = [_make_ai(i, value=float(i)) for i in (329, 330, 331)]
+        result = _dedup_ai_points(base_points=[], overlay_points=points)
+        assert len(result) == 3
+        assert [p.point_index for p in result] == [329, 330, 331]
+
+
+class TestDedupSafetyGuard:
+    """MEDIUM 4b: a base-vs-base collision raises; silent shadowing is forbidden."""
+
+    def test_duplicate_base_index_raises(self) -> None:
+        # Two BASE points with the same index is a profile error, not multiplexing.
+        a = _make_ai(100, value=1.0)
+        b = _make_ai(100, value=2.0)
+        with pytest.raises(ValueError, match="duplicate point_index"):
+            _dedup_ai_points(base_points=[a, b], overlay_points=[])
+
+    def test_assert_unique_raises_on_duplicate_bi(self) -> None:
+        # _assert_unique_by_index used for BI/BO/AO: any duplicate raises.
+        from dnp3.mesa.profile import BiPoint
+
+        def _make_bi(idx: int) -> BiPoint:
+            return BiPoint(
+                point_index=idx,
+                name=f"BI{idx}",
+                event_class=EventClass.CLASS1,
+                state_0="off",
+                state_1="on",
+                iec_61850_uid="X.Y",
+                purpose="test",
+                mandatory_1815=False,
+                mandatory_1547=False,
+            )
+
+        with pytest.raises(ValueError, match="duplicate point_index"):
+            _assert_unique_by_index([_make_bi(5), _make_bi(5)], label="BI")
+
+
+class TestNegativeMultiplierClamp:
+    """MEDIUM 5c/5d: negative multiplier inverts engineering bounds; the sorted
+    clamp handles it, and an out-of-range value clamps to the boundary int."""
+
+    def test_negative_multiplier_clamp_preserves_in_range(self, profile: PicsProfile) -> None:
+        # The fixture has no negative-multiplier point, so build a synthetic
+        # profile with one and assert the transmission int is correct.
+        #
+        # Synthetic: value=5.0, mult=-1.0, offset=0.0, min=-100, max=100.
+        # eng_a = min * mult + offset = -100 * -1 + 0 = 100
+        # eng_b = max * mult + offset = 100 * -1 + 0 = -100
+        # low, high = -100, 100 (sorted)
+        # clamp(5.0, -100, 100) = 5.0 (in range)
+        # transmission = (5.0 - 0) / -1.0 = -5
+        neg_mult_point = _make_ai(9999, value=5.0)
+        # Override fields via dataclass replace (frozen: use replace pattern).
+        import dataclasses
+
+        neg_mult_point = dataclasses.replace(neg_mult_point, multiplier=-1.0, minimum=-100, maximum=100)
+        from dnp3.mesa.database_builder import _scaled_transmission
+
+        assert _scaled_transmission(neg_mult_point) == -5
+
+    def test_out_of_range_value_clamps_to_boundary_transmission(self) -> None:
+        # value=200.0 but eng_max for (mult=-1.0, offset=0, max=100) is 100.
+        # clamp(200.0, -100, 100) = 100.0
+        # transmission = (100.0 - 0) / -1.0 = -100
+        import dataclasses
+
+        point = dataclasses.replace(_make_ai(9998, value=200.0), multiplier=-1.0, minimum=-100, maximum=100)
+        from dnp3.mesa.database_builder import _scaled_transmission
+
+        assert _scaled_transmission(point) == -100
