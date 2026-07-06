@@ -381,7 +381,10 @@ class Database:
             index: Point index.
             value: New value.
             quality: New quality (defaults to ONLINE).
-            timestamp: Update timestamp.
+            timestamp: Update timestamp. When None, defaults to the current
+                wall-clock time so the enqueued event carries the change time,
+                not the poll time. g22v5 requires a valid 48-bit timestamp for
+                settlement-grade energy accounting.
 
         Returns:
             True if an event was generated (exceeds deadband).
@@ -390,6 +393,10 @@ class Database:
             KeyError: If point does not exist.
             ValueError: If value is out of range.
         """
+        # Default to now() so the event timestamp reflects the change time.
+        # Callers that supply an explicit timestamp (e.g. from an external
+        # time source) keep that value unchanged.
+        event_ts = timestamp if timestamp is not None else DNP3Timestamp.now()
         point = self.counters[index]
         if point.update(value, quality, timestamp):
             self.event_buffer.add_counter_event(
@@ -397,7 +404,7 @@ class Database:
                 index=index,
                 value=point.value,
                 quality=point.quality,
-                timestamp=timestamp,
+                timestamp=event_ts,
                 event_type=EventType.COUNTER,
             )
             return True
@@ -416,7 +423,8 @@ class Database:
             index: Point index.
             amount: Amount to increment.
             quality: New quality.
-            timestamp: Update timestamp.
+            timestamp: Update timestamp. When None, defaults to the current
+                wall-clock time so the enqueued event carries the change time.
 
         Returns:
             True if an event was generated.
@@ -424,6 +432,7 @@ class Database:
         Raises:
             KeyError: If point does not exist.
         """
+        event_ts = timestamp if timestamp is not None else DNP3Timestamp.now()
         point = self.counters[index]
         if point.increment(amount, quality, timestamp):
             self.event_buffer.add_counter_event(
@@ -431,7 +440,7 @@ class Database:
                 index=index,
                 value=point.value,
                 quality=point.quality,
-                timestamp=timestamp,
+                timestamp=event_ts,
                 event_type=EventType.COUNTER,
             )
             return True
@@ -448,7 +457,8 @@ class Database:
         Args:
             counter_index: Index of counter to freeze.
             frozen_index: Index of frozen counter (defaults to same as counter).
-            timestamp: Freeze timestamp.
+            timestamp: Freeze timestamp. When None, defaults to the current
+                wall-clock time so the enqueued event carries the freeze time.
 
         Returns:
             True if an event was generated.
@@ -459,6 +469,7 @@ class Database:
         if frozen_index is None:
             frozen_index = counter_index
 
+        event_ts = timestamp if timestamp is not None else DNP3Timestamp.now()
         counter = self.counters[counter_index]
         frozen = self.frozen_counters[frozen_index]
 
@@ -468,7 +479,7 @@ class Database:
                 index=frozen_index,
                 value=frozen.value,
                 quality=frozen.quality,
-                timestamp=timestamp,
+                timestamp=event_ts,
                 event_type=EventType.FROZEN_COUNTER,
             )
             return True
