@@ -2119,3 +2119,127 @@ class TestEventChunking:
         assert set(recovered) == set(range(num_events)), f"Missing indices: {set(range(num_events)) - set(recovered)}"
         for i in range(num_events):
             assert recovered[i] is True, f"Event index {i}: STATE bit not set (value=True expected)"
+
+
+# ---------------------------------------------------------------------------
+# DNP-024: single-source-of-truth invariant for counter wire encoding
+# ---------------------------------------------------------------------------
+
+
+class TestCounterWireEncodingSingleSource:
+    """Outstation counter block bytes equal the object-class to_bytes() output.
+
+    These tests lock the invariant introduced by DNP-024: the outstation's
+    counter block builders must produce byte-identical output to what the
+    corresponding object classes produce directly.  Any future divergence
+    (inline byte-building re-introduced, endianness changed, flag bit
+    mis-cast) will cause these tests to fail before the wire output drifts.
+    """
+
+    def _extract_object_data(self, responses: list, group: int, variation: int) -> bytes:
+        """Return the raw data bytes from the first matching object block."""
+        for frag in responses:
+            for obj in frag.objects:
+                if obj.header.group == group and obj.header.variation == variation:
+                    return obj.data
+        msg = f"No g{group}v{variation} block found in responses"
+        raise AssertionError(msg)
+
+    def test_counter32_block_matches_object_to_bytes(self) -> None:
+        """g20v1 block data equals Counter32.to_bytes() for each point.
+
+        One counter updated to value 54321 (update sets ONLINE quality).
+        The static block data is: 2-byte range (start=0, stop=0) followed by
+        the per-object bytes.  Extract the object bytes after the range header
+        and compare to Counter32(...).to_bytes() using the same quality the
+        database recorded.
+        """
+        from dnp3.core.flags import CounterQuality
+        from dnp3.objects.counter import Counter32
+
+        db = Database()
+        db.add_counter(0)
+        db.update_counter(0, value=54321)  # update_counter sets ONLINE quality
+        outstation = Outstation(database=db)
+
+        request = build_integrity_poll()
+        responses = outstation.process_request(request.to_bytes())
+
+        block_data = self._extract_object_data(responses, group=20, variation=1)
+        # block_data layout (qualifier 0x00, 1-byte start/stop):
+        #   data[0] = start index (0), data[1] = stop index (0),
+        #   data[2:] = per-object bytes (5 bytes for g20v1).
+        object_bytes = block_data[2:]
+
+        expected = Counter32(quality=CounterQuality.ONLINE, value=54321).to_bytes()
+        assert object_bytes == expected, (
+            f"g20v1 wire bytes {object_bytes.hex()} != Counter32.to_bytes() {expected.hex()}"
+        )
+
+    def test_frozen_counter32_block_matches_object_to_bytes(self) -> None:
+        """g21v1 block data equals FrozenCounter32.to_bytes() for each point."""
+        from dnp3.core.flags import CounterQuality
+        from dnp3.objects.counter import FrozenCounter32
+
+        db = Database()
+        db.add_counter(0)
+        db.update_counter(0, value=67890)
+        # add_frozen_counter accepts an explicit quality; use ONLINE to match the
+        # ONLINE quality that Counter32 points carry after update_counter.
+        db.add_frozen_counter(0, value=67890, quality=CounterQuality.ONLINE)
+        outstation = Outstation(database=db)
+
+        request = build_integrity_poll()
+        responses = outstation.process_request(request.to_bytes())
+
+        block_data = self._extract_object_data(responses, group=21, variation=1)
+        object_bytes = block_data[2:]
+
+        expected = FrozenCounter32(quality=CounterQuality.ONLINE, value=67890).to_bytes()
+        assert object_bytes == expected, (
+            f"g21v1 wire bytes {object_bytes.hex()} != FrozenCounter32.to_bytes() {expected.hex()}"
+        )
+
+    def test_counter_event32time_block_matches_object_to_bytes(self) -> None:
+        """g22v5 event bytes equal CounterEvent32Time.to_bytes() for each event.
+
+        The event block uses qualifier 0x17 (1-byte count + 1-byte index
+        prefix).  Extract the per-event bytes after the count and index fields
+        and compare to CounterEvent32Time(...).to_bytes() using the same
+        timestamp captured from the emitted block.
+        """
+        import struct
+
+        from dnp3.core.flags import CounterQuality
+        from dnp3.core.timestamp import DNP3Timestamp
+        from dnp3.database.point import CounterConfig
+        from dnp3.objects.counter import CounterEvent32Time
+
+        db = Database()
+        db.add_counter(0, CounterConfig(event_class=EventClass.CLASS_1, deadband=0))
+        db.update_counter(0, value=9999)
+
+        outstation = Outstation(database=db)
+        request = build_class_poll(class_1=True, class_2=False, class_3=False)
+        responses = outstation.process_request(request.to_bytes())
+
+        block_data = self._extract_object_data(responses, group=22, variation=5)
+        # qualifier 0x17: data[0]=count, then per-event: index(1) + obj(11) = 12 bytes.
+        count = block_data[0]
+        assert count == 1, f"Expected 1 counter event, got {count}"
+
+        index = block_data[1]
+        assert index == 0
+
+        # Per-event object bytes: flags(1) + value(4 LE) + timestamp(6 LE ms).
+        event_bytes = block_data[2:13]  # 11 bytes
+        flags = event_bytes[0]
+        value = struct.unpack_from("<I", event_bytes, 1)[0]
+        ts_ms = int.from_bytes(event_bytes[5:11], "little")
+
+        quality = CounterQuality(flags)
+        timestamp = DNP3Timestamp(milliseconds=ts_ms)
+        expected = CounterEvent32Time(quality=quality, value=value, timestamp=timestamp).to_bytes()
+        assert event_bytes == expected, (
+            f"g22v5 event bytes {event_bytes.hex()} != CounterEvent32Time.to_bytes() {expected.hex()}"
+        )

@@ -29,6 +29,7 @@ from dnp3.core.enums import CommandStatus, ControlCode, FunctionCode
 from dnp3.core.flags import IIN, BinaryQuality
 from dnp3.core.timestamp import DNP3Timestamp
 from dnp3.database import AnalogEvent, BinaryEvent, CounterEvent, Database, EventClass
+from dnp3.objects.counter import Counter32, CounterEvent32Time, FrozenCounter32
 from dnp3.outstation.config import OutstationConfig
 from dnp3.outstation.handler import CommandHandler, DefaultCommandHandler
 from dnp3.outstation.state import (
@@ -205,12 +206,6 @@ def _serialize_analog_input_32(value: float, quality: int) -> bytes:
     # 1 byte flags + 4 bytes value (little-endian signed)
     int_value = int(value)
     return bytes([quality]) + int_value.to_bytes(4, byteorder="little", signed=True)
-
-
-def _serialize_counter_32(value: int, quality: int) -> bytes:
-    """Serialize a counter point to g20v1 format."""
-    # 1 byte flags + 4 bytes value (little-endian unsigned)
-    return bytes([quality]) + value.to_bytes(4, byteorder="little", signed=False)
 
 
 def _contiguous_runs(points: list[Any]) -> list[list[Any]]:
@@ -816,7 +811,7 @@ class Outstation:
             group=GV_COUNTER_32[0],
             variation=GV_COUNTER_32[1],
             points=points,
-            serialize=lambda p: _serialize_counter_32(p.value, int(p.quality)),
+            serialize=lambda p: Counter32(quality=p.quality, value=p.value).to_bytes(),
             max_points_per_block=_static_block_capacity(self.config.max_fragment_size, 5),
         )
 
@@ -831,7 +826,7 @@ class Outstation:
             group=GV_FROZEN_COUNTER_32[0],
             variation=GV_FROZEN_COUNTER_32[1],
             points=points,
-            serialize=lambda p: _serialize_counter_32(p.value, int(p.quality)),
+            serialize=lambda p: FrozenCounter32(quality=p.quality, value=p.value).to_bytes(),
             max_points_per_block=_static_block_capacity(self.config.max_fragment_size, 5),
         )
 
@@ -962,11 +957,8 @@ class Outstation:
                 data.append(event.index & 0xFF)
             else:
                 data.extend(event.index.to_bytes(2, "little"))
-            # g22v5 format: 1 byte flags + 4 bytes value + 6 bytes timestamp
             ts = event.timestamp if event.timestamp is not None else DNP3Timestamp.now()
-            data.append(int(event.quality))
-            data.extend(event.value.to_bytes(4, "little", signed=False))
-            data.extend(ts.to_bytes())
+            data.extend(CounterEvent32Time(quality=event.quality, value=event.value, timestamp=ts).to_bytes())
 
         header = ObjectHeader(
             group=GV_COUNTER_EVENT[0],
