@@ -415,6 +415,39 @@ class TestCtrFullJsonCensus:
             assert full_database.get_frozen_counter(idx) is not None, f"FrozenCTR{idx} missing"
 
 
+class TestCtrDuplicateIndexRejection:
+    """build_database raises ValueError on duplicate CTR point_index values.
+
+    CTR points route through _assert_unique_by_index before registration;
+    a duplicate index would silently shadow the first point in the database,
+    so the guard raises with context instead.
+    """
+
+    def _make_ctr(self, point_index: int) -> object:
+        from dnp3.mesa.profile import CtrPoint, EventClass
+
+        return CtrPoint(
+            point_index=point_index,
+            name=f"CTR{point_index}",
+            counter_event_class=EventClass.NONE,
+            frozen_counter_exists=False,
+            frozen_counter_event_class=EventClass.NONE,
+            iec_61850_uid=f"MMTR.X.{point_index}",
+            purpose="Metering",
+            mandatory_1815=False,
+            mandatory_1547=False,
+        )
+
+    def test_duplicate_ctr_index_raises_value_error(self, profile: PicsProfile) -> None:
+        import dataclasses
+
+        # Build a profile with two CTR points sharing index 0.
+        dup_point = self._make_ctr(0)
+        patched = dataclasses.replace(profile, ctr=(dup_point, dup_point))
+        with pytest.raises(ValueError, match="duplicate point_index"):
+            build_database(patched)
+
+
 class TestNegativeMultiplierClamp:
     """MEDIUM 5c/5d: negative multiplier inverts engineering bounds; the sorted
     clamp handles it, and an out-of-range value clamps to the boundary int."""
