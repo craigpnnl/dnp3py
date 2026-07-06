@@ -943,10 +943,13 @@ class Outstation:
     def _build_counter_event_blocks(self, events: list[Any]) -> list[ObjectBlock]:
         """Build object blocks for counter events.
 
-        Emits g22v5: 32-bit counter event with 48-bit timestamp (11 bytes per
-        object: 1 flag + 4 value + 6 timestamp). The timestamp is taken from
-        the event if present; otherwise the current wall-clock time is used so
-        the master always receives a valid 48-bit timestamp for energy settlement.
+        Emits g22v5: 32-bit counter event with 48-bit timestamp. Per-event wire
+        size including the 1-byte index prefix is 12 bytes (1 index + 1 flag +
+        4 value + 6 timestamp), matching the ctr_cap capacity calculation in
+        _read_class_events. The timestamp is taken from the event (always set
+        at change time by database.update_counter/increment_counter); the
+        DNP3Timestamp.now() fallback is a defensive last resort that should
+        never fire under normal operation.
         """
         if not events:
             return []
