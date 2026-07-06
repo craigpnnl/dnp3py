@@ -23,8 +23,9 @@ def _packaged_profile_path(filename: str) -> Path:
 
     Uses importlib.resources (not a __file__-relative path) so the lookup
     works whether dnp3py is running from a source checkout or installed
-    from a wheel; see pyproject.toml's force-include mapping for
-    data/profiles/ into the installed package.
+    from a wheel; the data lives at src/dnp3/mesa/data/profiles/, inside
+    the package, so hatchling's default wheel packaging ships it and an
+    editable install sees it too.
     """
     resource = files("dnp3.mesa") / "data" / "profiles" / filename
     return Path(str(resource))
