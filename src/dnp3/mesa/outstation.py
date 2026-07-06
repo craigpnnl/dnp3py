@@ -82,10 +82,15 @@ def _build_associated_indices(
     *is* in the database but its associated AI is not, that is a stale profile
     reference and a ``ValueError`` is raised.
 
-    Note: this reads the plain AO -> AI association only. The multiplexed
-    curve/schedule selector association is a later-PR concern; a selector AO
-    whose target AI lives in a curve/schedule sub-group is skipped when its
-    target is not a base AI in the database.
+    Note: this reads the plain AO -> AI association only. A curve/schedule
+    selector AO (for example AO245 -> AI329, the curve_type header point) or an
+    AO targeting a curve/schedule array point (for example AO249 -> AI333)
+    resolves through this same path: build_database registers every curve and
+    schedule AI point at its absolute index (the base-only-registration trap),
+    so the target lookup below finds it like any other AI. Selector-driven
+    array MULTIPLEXING (which curve's x/y arrays a read exposes after a
+    selector write) is the part still deferred to a later PR; the mirror
+    itself is not.
 
     Args:
         profile: Fully loaded profile.
@@ -114,12 +119,14 @@ def _build_associated_indices(
             raise ValueError(msg) from exc
 
         if point_type is PointType.ANALOG_INPUT and database.get_analog_input(target_index) is None:
-            # The target AI is not a base point in the database (it lives in a
-            # curve/schedule sub-group whose multiplexed wiring is a later PR).
-            # Skip the plain-mirror association for it rather than failing.
+            # The target AI genuinely does not exist in this database, e.g. an
+            # entity-override exclusion left the target out, or the profile
+            # has a stale reference to a non-existent point outside any
+            # section build_database registers. Skip the plain-mirror
+            # association for it rather than failing.
             _log.debug(
-                "AO%d: assoc_ai target AI%d is not a base database index "
-                "(curve/schedule selector; mirror deferred to PR3)",
+                "AO%d: assoc_ai target AI%d is not present in the database "
+                "(excluded by entity override or a stale profile reference)",
                 point.point_index,
                 target_index,
             )

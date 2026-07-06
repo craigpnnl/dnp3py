@@ -122,6 +122,12 @@ class TestAnalogInputTransmissionScaling:
         assert point is not None
         assert point.value == 100
 
+    def test_curve_y_value_scaled(self, database: Database) -> None:
+        # curve y[0] value 50.0, multiplier 1, offset 0 -> raw = 50
+        point = database.get_analog_input(433)
+        assert point is not None
+        assert point.value == 50
+
 
 class TestCurvePointRegistration:
     """Every curve AI point registers at its absolute index (base-only trap)."""

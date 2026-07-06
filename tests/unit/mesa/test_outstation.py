@@ -10,6 +10,7 @@ import pytest
 from dnp3.database import AnalogInputConfig, Database, DatabaseConfig
 from dnp3.mesa.ao_store import AnalogOutputStore
 from dnp3.mesa.command_handler import MesaCommandHandler
+from dnp3.mesa.database_builder import build_database
 from dnp3.mesa.entities import EntityType
 from dnp3.mesa.outstation import MesaOutstation, _build_associated_indices, create_mesa_outstation
 from dnp3.mesa.profile import PicsProfile, PointType, load_profile
@@ -93,6 +94,19 @@ class TestCreateMesaOutstation:
         assert ai_point is not None
         assert ai_point.value == 42.0
 
+    def test_curve_ao249_mirrors_to_curve_ai333(self, mesa: MesaOutstation) -> None:
+        # AO249 has assoc_ai "AI333"; AI333 is a curve x_values point, not a
+        # base AI. This proves the association mirror resolves for an AI whose
+        # only registration path is the curve/schedule overlay (the base-only
+        # registration trap DNP-022 PR1 closed): before that fix, AI333 would
+        # not exist in the database and this mirror would have been silently
+        # skipped by _build_associated_indices.
+        result = mesa.handler.direct_operate_analog_output(index=249, value=150.0)
+        assert result.status.name == "SUCCESS"
+        ai_point = mesa.database.get_analog_input(333)
+        assert ai_point is not None
+        assert ai_point.value == 150.0
+
     # -- Config --
 
     def test_default_host_port(self, mesa: MesaOutstation) -> None:
@@ -140,12 +154,26 @@ class TestBuildAssociatedIndices:
         assert 20000 not in result
 
     def test_missing_base_ai_target_skipped(self, profile: PicsProfile) -> None:
-        # AO0 -> AI0; when AI0 is absent from the DB, the plain-mirror
-        # association is skipped (its target may live in a curve sub-group in
-        # the real profile). It must not raise.
+        # AO0 -> AI0; when a synthetic DB omits AI0 (e.g. an entity-override
+        # exclusion, or a genuinely stale profile reference), the plain-mirror
+        # association is skipped rather than raising.
         db = self._make_db_with_ai(5100)
         result = _build_associated_indices(profile, db)
         assert 0 not in result
+
+    def test_curve_selector_resolves_against_real_database(self, profile: PicsProfile) -> None:
+        # AO249 -> AI333 (a curve x_values point). Using the REAL database
+        # built by build_database (not a synthetic subset) proves the two PR1
+        # pieces compose correctly: build_database registers every curve AI
+        # point at its absolute index, so the plain-mirror association for an
+        # AO whose target lives in a curve sub-group resolves rather than
+        # being skipped as "not yet wired" (the base-only-registration trap).
+        database, _ = build_database(profile)
+        result = _build_associated_indices(profile, database)
+        assert 249 in result
+        point_type_str, target_index = result[249]
+        assert point_type_str == PointType.ANALOG_INPUT.value
+        assert target_index == 333
 
     def test_malformed_assoc_ai_raises(self, profile: PicsProfile, tmp_path: Path) -> None:
         bad_data = json.loads(TEST_PROFILE.read_text())
