@@ -432,6 +432,82 @@ class TestFrozenCounterOperations:
             db.add_frozen_counter(index=1)
 
 
+class TestCounterEventTimestamp:
+    """Counter events enqueued by update_counter/increment_counter/freeze_counter
+    must carry the change timestamp, not be deferred to poll time.
+
+    g22v5 requires that the 48-bit timestamp reflects when the value changed,
+    not when the master polled. The database layer must stamp the event at
+    enqueue time so the serializer can emit the correct time verbatim.
+    """
+
+    def test_update_counter_explicit_timestamp_preserved(self) -> None:
+        """An explicit past timestamp supplied to update_counter appears on the
+        enqueued CounterEvent verbatim (change time, not call time)."""
+        past_ts = DNP3Timestamp(milliseconds=1_000_000)
+        db = Database()
+        db.add_counter(index=0, config=CounterConfig(event_class=EventClass.CLASS_1))
+        db.update_counter(index=0, value=42, timestamp=past_ts)
+
+        events = db.event_buffer.get_class_events(EventClass.CLASS_1)
+        assert len(events) == 1
+        assert isinstance(events[0], CounterEvent)
+        assert events[0].timestamp == past_ts, (
+            f"Expected event timestamp {past_ts.milliseconds} ms, got {events[0].timestamp}"
+        )
+
+    def test_update_counter_no_timestamp_sets_event_timestamp_at_creation(self) -> None:
+        """update_counter with no explicit timestamp still sets a non-None timestamp
+        on the enqueued event (defaults to now() at change time, not deferred)."""
+        before_ms = DNP3Timestamp.now().milliseconds
+        db = Database()
+        db.add_counter(index=0, config=CounterConfig(event_class=EventClass.CLASS_1))
+        db.update_counter(index=0, value=100)
+        after_ms = DNP3Timestamp.now().milliseconds
+
+        events = db.event_buffer.get_class_events(EventClass.CLASS_1)
+        assert len(events) == 1
+        ev = events[0]
+        assert isinstance(ev, CounterEvent)
+        assert ev.timestamp is not None, "CounterEvent.timestamp must be set at enqueue time, not deferred"
+        assert before_ms <= ev.timestamp.milliseconds <= after_ms, (
+            f"Event timestamp {ev.timestamp.milliseconds} ms is not between call bounds [{before_ms}, {after_ms}]"
+        )
+
+    def test_increment_counter_no_timestamp_sets_event_timestamp(self) -> None:
+        """increment_counter with no explicit timestamp sets a non-None timestamp."""
+        before_ms = DNP3Timestamp.now().milliseconds
+        db = Database()
+        db.add_counter(index=0, config=CounterConfig(event_class=EventClass.CLASS_1))
+        db.increment_counter(index=0, amount=10)
+        after_ms = DNP3Timestamp.now().milliseconds
+
+        events = db.event_buffer.get_class_events(EventClass.CLASS_1)
+        assert len(events) == 1
+        ev = events[0]
+        assert isinstance(ev, CounterEvent)
+        assert ev.timestamp is not None
+        assert before_ms <= ev.timestamp.milliseconds <= after_ms
+
+    def test_freeze_counter_no_timestamp_sets_event_timestamp(self) -> None:
+        """freeze_counter with no explicit timestamp sets a non-None timestamp
+        on the enqueued frozen-counter event."""
+        before_ms = DNP3Timestamp.now().milliseconds
+        db = Database()
+        db.add_counter(index=0, value=500, quality=CounterQuality.ONLINE)
+        db.add_frozen_counter(index=0, config=CounterConfig(event_class=EventClass.CLASS_1))
+        db.freeze_counter(counter_index=0)
+        after_ms = DNP3Timestamp.now().milliseconds
+
+        events = db.event_buffer.get_class_events(EventClass.CLASS_1)
+        assert len(events) == 1
+        ev = events[0]
+        assert isinstance(ev, CounterEvent)
+        assert ev.event_type == EventType.FROZEN_COUNTER
+        assert ev.timestamp is not None
+        assert before_ms <= ev.timestamp.milliseconds <= after_ms
+
+
 class TestEventClassAccess:
     """Tests for event class data access."""
 
