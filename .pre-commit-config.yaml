@@ -7,8 +7,8 @@ repos:
       - id: check-yaml
       - id: check-toml
       - id: check-added-large-files
-        exclude: ^data/profiles/(full|demo)\.json$
-        # full.json (~2.8 MB) and demo.json (~1.4 MB) are first-class 1815.2 point-map inputs, not build artifacts. The exclude stays tight to these two known-large files so any other oversized file still trips the 500 KB gate.
+        exclude: ^data/profiles/full\.json$
+        # full.json (~2.8 MB) is the only bundled profile over the 500 KB limit. The exclude is tight to this one file so any other oversized file still trips the gate.
       - id: check-merge-conflict
       - id: debug-statements
 

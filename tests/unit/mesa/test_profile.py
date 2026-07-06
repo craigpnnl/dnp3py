@@ -404,14 +404,10 @@ class TestGoldenFullProfile:
 
 
 class TestBundledProfileSmoke:
-    """Loads each bundled PicsProfile JSON without error and asserts that the
-    expected non-empty sections carry at least one point. Catches a copied
-    profile that is structurally broken or whose schema drifted from the loader.
-
-    Note: ``demo.json`` uses a different legacy schema (keys ``binary_outputs``,
-    ``analog_inputs``, etc.) and is NOT a PicsProfile document; it will not load
-    via ``load_profile`` and is excluded from this suite. Its presence in
-    ``data/profiles/`` is as a reference artifact for the old format.
+    """Loads each of the 4 bundled PicsProfile JSONs (full, mandatory_1815,
+    mandatory_1547, minimal_1547) without error and asserts that the expected
+    non-empty sections carry at least one point. Catches a copied profile that
+    is structurally broken or whose schema drifted from the loader.
     """
 
     def test_mandatory_1815_loads(self) -> None:
