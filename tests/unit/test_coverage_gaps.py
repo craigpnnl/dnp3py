@@ -1755,6 +1755,83 @@ class TestCounterEventG22v5:
             )
 
 
+class TestMixedEventClassPoll:
+    """A single class poll with both binary input and counter events must
+    emit g2 (binary) AND g22v5 (counter) objects, each with correct values.
+
+    This tests the isinstance classification fix: before the fix,
+    isinstance(event.value, int) returned True for bool (BinaryEvent) and
+    int (CounterEvent) alike, so binary events could be double-classified as
+    counter events. The fix uses concrete type checks (isinstance(e, BinaryEvent)
+    vs isinstance(e, CounterEvent)) so each event goes to exactly one block.
+    """
+
+    def _extract_groups(self, responses: list) -> set[int]:
+        """Return the set of DNP3 object group numbers present in the responses."""
+        return {obj.header.group for frag in responses for obj in frag.objects}
+
+    def _parse_g22v5_value_at_index(self, responses: list, target_idx: int) -> int | None:
+        """Return the g22v5 counter event value for target_idx, or None if absent."""
+        import struct
+
+        for frag in responses:
+            for obj in frag.objects:
+                if obj.header.group != 22 or obj.header.variation != 5:
+                    continue
+                data = obj.data
+                count = data[0]
+                offset = 1
+                for _ in range(count):
+                    idx = data[offset]
+                    value = struct.unpack_from("<I", data, offset + 2)[0]
+                    if idx == target_idx:
+                        return value
+                    offset += 12
+        return None
+
+    def test_mixed_poll_emits_both_binary_and_counter_events(self) -> None:
+        """One class poll with binary + counter points yields both g2 and g22v5.
+
+        Arrangement: binary input at index 0 (CLASS_1), counter at index 0
+        (CLASS_1). Generating one binary event (toggle False -> True) and one
+        counter event (value 777) then issuing a CLASS_1 poll must produce
+        a g2 block AND a g22v5 block in the same response set, with no
+        cross-contamination (counter value correct, binary and counter each
+        appear exactly once by group).
+        """
+        db = Database()
+        db.add_binary_input(0, BinaryInputConfig(event_class=EventClass.CLASS_1))
+        db.add_counter(0, CounterConfig(event_class=EventClass.CLASS_1, deadband=0))
+
+        # Generate one binary event (False -> True toggle).
+        db.update_binary_input(index=0, value=True)
+
+        # Generate one counter event.
+        db.update_counter(index=0, value=777)
+
+        outstation = Outstation(database=db)
+        master = Master()
+
+        request = master.build_class_poll(class_1=True, class_2=False, class_3=False)
+        responses = outstation.process_request(request.to_bytes())
+
+        groups = self._extract_groups(responses)
+        assert 2 in groups, (
+            "No g2 binary event block found in CLASS_1 poll response; "
+            "binary events must not be swallowed by counter classification"
+        )
+        assert 22 in groups, (
+            "No g22 counter event block found in CLASS_1 poll response; "
+            "counter events must be emitted alongside binary events"
+        )
+
+        ctr_value = self._parse_g22v5_value_at_index(responses, target_idx=0)
+        assert ctr_value == 777, (
+            f"Counter event value at index 0: expected 777, got {ctr_value}; "
+            "counter event must carry the correct value without cross-classification"
+        )
+
+
 class TestCounterObjectEdgeCases:
     """Test counter object edge cases."""
 
