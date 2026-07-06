@@ -2327,14 +2327,28 @@ class TestBinaryAnalogWireEncodingSingleSource:
         """g30v1 block data equals AnalogInput32.to_bytes() for each point.
 
         Uses a negative value to exercise the signed 4-byte little-endian
-        encoding path.
+        encoding path, and a multi-bit quality flags byte (ONLINE |
+        LOCAL_FORCED = 0x11) so the flags-byte assertion is not trivially
+        satisfied by an all-zero or single-bit value.
+
+        This test carries TWO independent assertions:
+        1. Delegation: the outstation bytes equal AnalogInput32(...).to_bytes()
+           (proves the outstation delegates to the object class).
+        2. Literal wire pin: the outstation bytes equal a hardcoded byte
+           string built WITHOUT calling AnalogInput32 at all (proves the
+           object class's own encoding hasn't silently drifted from the
+           IEEE 1815-2012 g30v1 wire format: 1 byte flags + 4 byte signed
+           little-endian value). A future byte-order or signedness
+           regression in AnalogInput32.to_bytes() would fail assertion 2
+           even though assertion 1 would still pass.
         """
         from dnp3.core.flags import AnalogQuality
         from dnp3.objects.analog_input import AnalogInput32
 
+        quality = AnalogQuality.ONLINE | AnalogQuality.LOCAL_FORCED  # 0x01 | 0x10 = 0x11
         db = Database()
         db.add_analog_input(0)
-        db.update_analog_input(0, value=-12345)  # update sets ONLINE quality
+        db.update_analog_input(0, value=-12345, quality=quality)
         outstation = Outstation(database=db)
 
         request = build_integrity_poll()
@@ -2343,9 +2357,17 @@ class TestBinaryAnalogWireEncodingSingleSource:
         block_data = self._extract_object_data(responses, group=30, variation=1)
         object_bytes = block_data[2:]
 
-        expected = AnalogInput32(quality=AnalogQuality.ONLINE, value=-12345).to_bytes()
+        # Assertion 1: delegation to the object class.
+        expected = AnalogInput32(quality=quality, value=-12345).to_bytes()
         assert object_bytes == expected, (
             f"g30v1 wire bytes {object_bytes.hex()} != AnalogInput32.to_bytes() {expected.hex()}"
+        )
+
+        # Assertion 2: independent literal-bytes pin (built without AnalogInput32).
+        # g30v1 = 1 byte flags (0x11) + 4 byte little-endian signed value.
+        literal_expected = bytes([0x11]) + (-12345).to_bytes(4, "little", signed=True)
+        assert object_bytes == literal_expected, (
+            f"g30v1 wire bytes {object_bytes.hex()} != literal pin {literal_expected.hex()}"
         )
 
     def test_binary_input_event_matches_object_to_bytes(self) -> None:
