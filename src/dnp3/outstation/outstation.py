@@ -27,7 +27,8 @@ from dnp3.application.qualifiers import (
 )
 from dnp3.core.enums import CommandStatus, ControlCode, FunctionCode
 from dnp3.core.flags import IIN, BinaryQuality
-from dnp3.database import Database, EventClass
+from dnp3.core.timestamp import DNP3Timestamp
+from dnp3.database import AnalogEvent, BinaryEvent, CounterEvent, Database, EventClass
 from dnp3.outstation.config import OutstationConfig
 from dnp3.outstation.handler import CommandHandler, DefaultCommandHandler
 from dnp3.outstation.state import (
@@ -52,7 +53,9 @@ GV_BINARY_OUTPUT_EVENT = (11, 1)  # g11v1 - Binary Output Event without time
 GV_ANALOG_INPUT_EVENT = (32, 1)  # g32v1 - 32-bit Analog Event without time
 
 # Counter event variations
-GV_COUNTER_EVENT = (22, 1)  # g22v1 - 32-bit Counter Event without time
+# g22v5: 32-bit counter event WITH 48-bit timestamp, required for MESA/DER
+# settlement-grade energy accounting (Vance domain guidance).
+GV_COUNTER_EVENT = (22, 5)  # g22v5 - 32-bit Counter Event with time
 
 # CROB group/variation
 GV_CROB = (12, 1)  # g12v1 - Control Relay Output Block
@@ -837,25 +840,29 @@ class Outstation:
 
         Events are chunked so no single ObjectBlock exceeds max_fragment_size.
         Per-event wire sizes (1-byte index prefix, 0x17 qualifier assumed):
-          g2v1  binary: 1 index + 1 flags            = 2 bytes
-          g32v1 analog: 1 index + 1 flags + 4 value  = 6 bytes
-          g22v1 counter: 1 index + 1 flags + 4 value = 6 bytes
+          g2v1  binary:  1 index + 1 flags                      = 2 bytes
+          g32v1 analog:  1 index + 1 flags + 4 value            = 6 bytes
+          g22v5 counter: 1 index + 1 flags + 4 value + 6 time   = 12 bytes
         """
         objects: list[ObjectBlock] = []
         events = self.database.event_buffer.pop_class_events(event_class)
 
-        binary_events = [e for e in events if hasattr(e, "value") and isinstance(e.value, bool)]
-        analog_events = [e for e in events if hasattr(e, "value") and isinstance(e.value, float)]
-        counter_events = [e for e in events if hasattr(e, "value") and isinstance(e.value, int)]
+        # Use concrete event types for discrimination; bool is a subclass of int
+        # so value-type checks are not sufficient to separate binary from counter events.
+        binary_events = [e for e in events if isinstance(e, BinaryEvent)]
+        analog_events = [e for e in events if isinstance(e, AnalogEvent)]
+        counter_events = [e for e in events if isinstance(e, CounterEvent)]
 
         bi_cap = _event_block_capacity(self.config.max_fragment_size, 2)
         ai_cap = _event_block_capacity(self.config.max_fragment_size, 6)
+        # g22v5: 1 index + 1 flags + 4 value + 6 timestamp = 12 bytes per event
+        ctr_cap = _event_block_capacity(self.config.max_fragment_size, 12)
 
         for chunk in _chunk_run(binary_events, bi_cap):
             objects.extend(self._build_binary_event_blocks(chunk))
         for chunk in _chunk_run(analog_events, ai_cap):
             objects.extend(self._build_analog_event_blocks(chunk))
-        for chunk in _chunk_run(counter_events, ai_cap):
+        for chunk in _chunk_run(counter_events, ctr_cap):
             objects.extend(self._build_counter_event_blocks(chunk))
 
         return objects
@@ -934,7 +941,13 @@ class Outstation:
         return [ObjectBlock(header=header, data=count_data + bytes(data))]
 
     def _build_counter_event_blocks(self, events: list[Any]) -> list[ObjectBlock]:
-        """Build object blocks for counter events."""
+        """Build object blocks for counter events.
+
+        Emits g22v5: 32-bit counter event with 48-bit timestamp (11 bytes per
+        object: 1 flag + 4 value + 6 timestamp). The timestamp is taken from
+        the event if present; otherwise the current wall-clock time is used so
+        the master always receives a valid 48-bit timestamp for energy settlement.
+        """
         if not events:
             return []
 
@@ -946,9 +959,11 @@ class Outstation:
                 data.append(event.index & 0xFF)
             else:
                 data.extend(event.index.to_bytes(2, "little"))
-            # g22v1 format: 1 byte flags + 4 bytes value
+            # g22v5 format: 1 byte flags + 4 bytes value + 6 bytes timestamp
+            ts = event.timestamp if event.timestamp is not None else DNP3Timestamp.now()
             data.append(int(event.quality))
             data.extend(event.value.to_bytes(4, "little", signed=False))
+            data.extend(ts.to_bytes())
 
         header = ObjectHeader(
             group=GV_COUNTER_EVENT[0],
