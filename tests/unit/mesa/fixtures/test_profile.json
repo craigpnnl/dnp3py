@@ -1,32 +1,82 @@
 {
-    "entities": {"meters": 1, "ders": 0, "inverters": 0, "batteries": 1},
-    "binary_outputs": {
-        "offsets": {"scada": 0, "historical_meters": 5000, "historical_batteries": 20000},
+    "Key": {
+        "config": {"bo": {"start": 0}, "bi": {"start": 0}, "ao": {"start": 0}, "ai": {"start": 0}, "ctr": {"start": 0}},
+        "functions": {"bo": {"start": 0}, "bi": {"start": 0}, "ao": {"start": 0}, "ai": {"start": 0}, "ctr": {"start": 0}},
+        "curves": {"bo": {"start": 0}, "bi": {"start": 0}, "ao": {"start": 240}, "ai": {"start": 320}, "ctr": {"start": 0}},
+        "system_meter": {"bo": {"start": 0}, "bi": {"start": 0}, "ao": {"start": 0}, "ai": {"start": 0}, "ctr": {"start": 0}},
+        "extensions": {"bo": {"start": 0}, "bi": {"start": 0}, "ao": {"start": 0}, "ai": {"start": 0}, "ctr": {"start": 0}},
+        "experimental": {"bo": {"start": 0}, "bi": {"start": 0}, "ao": {"start": 0}, "ai": {"start": 0}, "ctr": {"start": 0}},
+        "vendor": {"bo": {"start": 0}, "bi": {"start": 0}, "ao": {"start": 0}, "ai": {"start": 0}, "ctr": {"start": 0}},
+        "discovery": {"bo": {"start": 0}, "bi": {"start": 0}, "ao": {"start": 0}, "ai": {"start": 0}, "ctr": {"start": 0}},
+        "schedules_bc": {"bo": {"start": 0}, "bi": {"start": 0}, "ao": {"start": 0}, "ai": {"start": 0}, "ctr": {"start": 0}},
+        "schedules": {"bo": {"start": 0}, "bi": {"start": 0}, "ao": {"start": 0}, "ai": {"start": 0}, "ctr": {"start": 0}},
+        "max_points": 30000,
+        "meter": {"bo": {"count": 0, "start": 0, "points_per": 0}, "bi": {"count": 1, "start": 5000, "points_per": 1}, "ao": {"count": 0, "start": 0, "points_per": 0}, "ai": {"count": 1, "start": 5100, "points_per": 1}, "ctr": {"count": 0, "start": 0, "points_per": 0}},
+        "der": {"bo": {"count": 0, "start": 0, "points_per": 0}, "bi": {"count": 1, "start": 6000, "points_per": 1}, "ao": {"count": 0, "start": 0, "points_per": 0}, "ai": {"count": 0, "start": 0, "points_per": 0}, "ctr": {"count": 0, "start": 0, "points_per": 0}},
+        "inverter": {"bo": {"count": 0, "start": 0, "points_per": 0}, "bi": {"count": 0, "start": 0, "points_per": 0}, "ao": {"count": 0, "start": 0, "points_per": 0}, "ai": {"count": 0, "start": 0, "points_per": 0}, "ctr": {"count": 0, "start": 0, "points_per": 0}},
+        "battery": {"bo": {"count": 0, "start": 0, "points_per": 0}, "bi": {"count": 0, "start": 0, "points_per": 0}, "ao": {"count": 1, "start": 20000, "points_per": 1}, "ai": {"count": 0, "start": 0, "points_per": 0}, "ctr": {"count": 0, "start": 0, "points_per": 0}}
+    },
+    "BO": {
         "points": [
-            {"index": "BO0", "description": "System Set Lockout State", "uid": "DSTO.DEROpSt.disconnected_and_blocked", "purpose": "State", "associated_index": "BI11", "value": 1, "ieee_1815_2": true, "supported": true},
-            {"index": "BO1", "description": "Unsupported point", "uid": "TEST.unsupported", "purpose": "Test", "value": 0, "supported": false}
+            {"point_index": 0, "name": "System Set Lockout State", "state_0": "Not Locked Out", "state_1": "Lock Out", "iec_61850_uid": "DSTO.DEROpSt.disconnected_and_blocked", "assoc_bi": "BI11", "purpose": "State", "mandatory_1815": true, "mandatory_1547": false}
         ]
     },
-    "binary_inputs": {
-        "offsets": {"scada": 0, "historical_meters": 5000, "historical_batteries": 20000},
+    "BI": {
         "points": [
-            {"index": "BI0", "description": "DER Available", "uid": "DGEN.OpTmh.winTms", "purpose": "Monitoring", "value": 1, "supported": true},
-            {"index": "BI5000", "description": "Meter 1 Online", "uid": "MMTR.Online", "purpose": "Monitoring", "value": 1, "supported": true, "entity_number": 1, "entity_type": "Meter", "entity_index_offset": 0}
+            {"point_index": 0, "name": "DER Available", "event_class": "Class1", "state_0": "Normal", "state_1": "Available", "iec_61850_uid": "DGEN.OpTmh.winTms", "assoc_bo": null, "purpose": "Monitoring", "mandatory_1815": true, "mandatory_1547": true}
+        ],
+        "meters": [
+            {"meter_online": {"point_index": 5000, "name": "Meter 1 Online", "event_class": "Class2", "state_0": "Offline", "state_1": "Online", "iec_61850_uid": "MMTR.Online", "assoc_bo": null, "purpose": "Monitoring", "mandatory_1815": false, "mandatory_1547": false}}
+        ],
+        "ders": [
+            {"der_alarm": {"point_index": 6000, "name": "DER 1 Alarm", "event_class": "Class1", "state_0": "Normal", "state_1": "Alarm", "iec_61850_uid": "DGEN.Alm", "assoc_bo": null, "purpose": "Alarm", "mandatory_1815": false, "mandatory_1547": false}}
+        ],
+        "inverters": [],
+        "batteries": []
+    },
+    "AO": {
+        "points": [
+            {"point_index": 0, "name": "Active Power Setpoint", "minimum": 0, "maximum": 1000, "multiplier": 0.1, "offset": 0.0, "units": "percent", "iec_61850_uid": "DWMX.WMaxPct", "assoc_ai": "AI0", "purpose": "Limit", "mandatory_1815": true, "mandatory_1547": false},
+            {"point_index": 249, "name": "Curve Point 1 X-Value", "minimum": 0, "maximum": 2147483647, "multiplier": 1.0, "offset": 0.0, "units": "varies", "iec_61850_uid": "DCGC.CrvPt1X", "assoc_ai": "AI333", "purpose": "Curve", "mandatory_1815": false, "mandatory_1547": false}
+        ],
+        "meters": [],
+        "inverters": [],
+        "batteries": [
+            {"charge_rate": {"point_index": 20000, "name": "Battery Charge Rate", "minimum": 0, "maximum": 100, "multiplier": 1.0, "offset": 0.0, "units": "percent", "iec_61850_uid": "DBAT.ChgRte", "assoc_ai": null, "purpose": "Storage", "mandatory_1815": false, "mandatory_1547": false}}
         ]
     },
-    "analog_outputs": {
-        "offsets": {"scada": 0, "historical_meters": 5000, "historical_batteries": 20000},
+    "AI": {
         "points": [
-            {"index": "AO0", "description": "Active Power Setpoint", "uid": "DWMX.WMaxPct", "purpose": "Limit", "associated_index": "AI0", "value": 100, "minimum": 0, "maximum": 100, "multiplier": 0.1, "offset": 0, "units": "percent", "supported": true},
-            {"index": "AO20000", "description": "Battery Charge Rate", "uid": "DBAT.ChgRte", "purpose": "Storage", "value": 50, "minimum": 0, "maximum": 100, "multiplier": 1.0, "offset": 0, "units": "percent", "supported": true, "entity_number": 1, "entity_type": "Battery", "entity_index_offset": 0},
-            {"index": "AO249", "description": "Curve Point 1 X-Value", "uid": "DCGC.CrvPt1X", "purpose": "Curve", "value": 0, "units": "varies", "supported": true}
-        ]
+            {"point_index": 0, "name": "Active Power", "event_class": "Class1", "minimum": 0, "maximum": 10000, "multiplier": 0.1, "offset": 5.0, "units": "watts", "iec_61850_uid": "DWMX.WMaxPct.val", "value": 125.0, "assoc_ao": null, "purpose": "Monitoring", "mandatory_1815": true, "mandatory_1547": false},
+            {"point_index": 1, "name": "Power Factor", "event_class": "Class2", "minimum": -1000, "maximum": 1000, "multiplier": 0.001, "offset": 0.0, "units": "pf", "iec_61850_uid": "DGSMn.PF", "value": -0.95, "assoc_ao": null, "purpose": "Monitoring", "mandatory_1815": true, "mandatory_1547": false}
+        ],
+        "meters": [
+            {"voltage": {"point_index": 5100, "name": "Meter 1 Voltage", "event_class": "Class2", "minimum": 0, "maximum": 3000, "multiplier": 0.1, "offset": 0.0, "units": "volts", "iec_61850_uid": "MMTR.Vol", "value": 120.0, "assoc_ao": null, "purpose": "Monitoring", "mandatory_1815": false, "mandatory_1547": false}}
+        ],
+        "ders": [],
+        "inverters": [],
+        "batteries": [],
+        "curves": [
+            {
+                "curve_type": {"point_index": 329, "name": "Curve Type", "event_class": "Class2", "minimum": 0, "maximum": 20, "multiplier": 1.0, "offset": 0.0, "units": "Enum", "iec_61850_uid": "DGSMn.ModTyp", "value": 2.0, "assoc_ao": "AO245", "purpose": "Curve", "mandatory_1815": true, "mandatory_1547": false},
+                "number_of_points": {"point_index": 330, "name": "Number Of Points", "event_class": "Class2", "minimum": 0, "maximum": 100, "multiplier": 1.0, "offset": 0.0, "units": "count", "iec_61850_uid": "DGSMn.NumPt", "value": 2.0, "assoc_ao": null, "purpose": "Curve", "mandatory_1815": true, "mandatory_1547": false},
+                "x_units": {"point_index": 331, "name": "X Units", "event_class": "Class2", "minimum": 0, "maximum": 100, "multiplier": 1.0, "offset": 0.0, "units": "Enum", "iec_61850_uid": "DGSMn.XUnit", "value": 1.0, "assoc_ao": null, "purpose": "Curve", "mandatory_1815": true, "mandatory_1547": false},
+                "y_units": {"point_index": 332, "name": "Y Units", "event_class": "Class2", "minimum": 0, "maximum": 100, "multiplier": 1.0, "offset": 0.0, "units": "Enum", "iec_61850_uid": "DGSMn.YUnit", "value": 1.0, "assoc_ao": null, "purpose": "Curve", "mandatory_1815": true, "mandatory_1547": false},
+                "x_values": [
+                    {"point_index": 333, "name": "Curve Point 1 X", "event_class": "Class2", "minimum": 0, "maximum": 2147483647, "multiplier": 1.0, "offset": 0.0, "units": "Varies", "iec_61850_uid": "FMARn.PairArr.CrvPts.1.xVal", "value": 100.0, "assoc_ao": "AO249", "purpose": "Curve", "mandatory_1815": true, "mandatory_1547": false},
+                    {"point_index": 334, "name": "Curve Point 2 X", "event_class": "Class2", "minimum": 0, "maximum": 2147483647, "multiplier": 1.0, "offset": 0.0, "units": "Varies", "iec_61850_uid": "FMARn.PairArr.CrvPts.2.xVal", "value": 200.0, "assoc_ao": "AO250", "purpose": "Curve", "mandatory_1815": true, "mandatory_1547": false}
+                ],
+                "y_values": [
+                    {"point_index": 433, "name": "Curve Point 1 Y", "event_class": "Class2", "minimum": 0, "maximum": 2147483647, "multiplier": 1.0, "offset": 0.0, "units": "Varies", "iec_61850_uid": "FMARn.PairArr.CrvPts.1.yVal", "value": 50.0, "assoc_ao": "AO349", "purpose": "Curve", "mandatory_1815": true, "mandatory_1547": false},
+                    {"point_index": 434, "name": "Curve Point 2 Y", "event_class": "Class2", "minimum": 0, "maximum": 2147483647, "multiplier": 1.0, "offset": 0.0, "units": "Varies", "iec_61850_uid": "FMARn.PairArr.CrvPts.2.yVal", "value": 75.0, "assoc_ao": "AO350", "purpose": "Curve", "mandatory_1815": true, "mandatory_1547": false}
+                ]
+            }
+        ],
+        "schedules_bc": [],
+        "schedules": []
     },
-    "analog_inputs": {
-        "offsets": {"scada": 0, "historical_meters": 5000, "historical_batteries": 20000},
-        "points": [
-            {"index": "AI0", "description": "Active Power", "uid": "DWMX.WMaxPct.val", "purpose": "Monitoring", "value": 0, "minimum": 0, "maximum": 1000, "multiplier": 0.1, "offset": 0, "units": "watts", "supported": true, "event_class": 1},
-            {"index": "AI5000", "description": "Meter 1 Voltage", "uid": "MMTR.Vol", "purpose": "Monitoring", "value": 120, "minimum": 0, "maximum": 300, "multiplier": 0.1, "offset": 0, "units": "volts", "supported": true, "entity_number": 1, "entity_type": "Meter", "entity_index_offset": 0, "event_class": 2}
-        ]
-    }
+    "CTR": [
+        {"point_index": 0, "name": "System Active Energy Delivered", "counter_event_class": "None", "frozen_counter_exists": true, "frozen_counter_event_class": "Class3", "iec_61850_uid": "MMTR.SupWh", "purpose": "Metering", "mandatory_1815": false, "mandatory_1547": false},
+        {"point_index": 1, "name": "System Active Energy Received", "counter_event_class": "Class1", "frozen_counter_exists": false, "frozen_counter_event_class": "None", "iec_61850_uid": "MMTR.DmdWh", "purpose": "Metering", "mandatory_1815": false, "mandatory_1547": false}
+    ]
 }

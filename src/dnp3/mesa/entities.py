@@ -1,24 +1,24 @@
 """MESA entity model.
 
-Groups profile points into logical entities (meters, DERs, inverters,
-batteries) based on ``entity_type`` and ``entity_number`` annotations
-in the profile JSON.
+Groups profile equipment points into logical entities (meters, DERs, inverters,
+batteries). Under the PICS profile format each equipment instance is an explicit
+struct in the ``BI``/``AO``/``AI`` sections (``BinaryInputs.equipment`` etc.), so
+an entity is the union of one instance's points across the sections, addressed by
+its 1-based instance number.
+
+Note: the full CLI entity-override reinterpretation onto ``KeySheet`` counts is a
+later-PR concern. This module provides the minimal equipment-instance grouping
+and count-based exclusion needed for the outstation to build against the new
+model.
 """
 
 from __future__ import annotations
 
-import logging
 from collections import defaultdict
 from dataclasses import dataclass, field
 from enum import Enum
 
-from dnp3.mesa.profile import PointType, Profile
-
-_log = logging.getLogger(__name__)
-
-# ---------------------------------------------------------------------------
-# EntityType enum
-# ---------------------------------------------------------------------------
+from dnp3.mesa.profile import EquipmentGroup, PicsProfile, PointType
 
 __all__ = [
     "Entity",
@@ -26,8 +26,6 @@ __all__ = [
     "build_entities",
     "compute_excluded_indices",
 ]
-
-_PROFILE_STRING_MAP: dict[str, EntityType] = {}
 
 
 class EntityType(Enum):
@@ -52,27 +50,20 @@ class EntityType(Enum):
             raise ValueError(msg) from None
 
 
-_PROFILE_STRING_MAP.update(
-    {
-        "Meter": EntityType.METER,
-        "DER_Unit": EntityType.DER,
-        "Inverter": EntityType.INVERTER,
-        "Battery": EntityType.BATTERY,
-    }
-)
-
-# Mapping from profile.entities keys to profile-string entity types
-_ENTITIES_KEY_TO_PROFILE_STRING: dict[str, str] = {
-    "meters": "Meter",
-    "ders": "DER_Unit",
-    "inverters": "Inverter",
-    "batteries": "Battery",
+_PROFILE_STRING_MAP: dict[str, EntityType] = {
+    "Meter": EntityType.METER,
+    "DER_Unit": EntityType.DER,
+    "Inverter": EntityType.INVERTER,
+    "Battery": EntityType.BATTERY,
 }
 
-
-# ---------------------------------------------------------------------------
-# Entity dataclass
-# ---------------------------------------------------------------------------
+# Map the profile equipment-group key (plural) to its EntityType.
+_GROUP_KIND_TO_TYPE: dict[str, EntityType] = {
+    "meters": EntityType.METER,
+    "ders": EntityType.DER,
+    "inverters": EntityType.INVERTER,
+    "batteries": EntityType.BATTERY,
+}
 
 
 @dataclass
@@ -84,146 +75,95 @@ class Entity:
     point_indices: dict[PointType, list[int]] = field(default_factory=dict)
 
 
-# ---------------------------------------------------------------------------
-# Exclusion computation
-# ---------------------------------------------------------------------------
+def _iter_instances(
+    profile: PicsProfile,
+) -> list[tuple[str, int, PointType, EquipmentGroup]]:
+    """Return (group_kind, instance_number, section_point_type, group) tuples.
 
-
-def _resolve_max_counts(
-    profile: Profile,
-    overrides: dict[str, int] | None,
-) -> dict[str, int]:
-    """Return a per-entity-type max-allowed-count map.
-
-    Merges ``overrides`` (highest priority) with ``profile.entities``
-    (fallback).  The returned keys are profile-string entity-type names
-    (e.g. ``"Meter"``, ``"Battery"``).
+    Instances are numbered per (kind, section) in profile order, 1-based. The
+    same instance number across sections denotes the same physical entity.
     """
-    counts_source: dict[str, int] = overrides if overrides is not None else profile.entities
-    max_counts: dict[str, int] = {}
-    for key, profile_string in _ENTITIES_KEY_TO_PROFILE_STRING.items():
-        if key in counts_source:
-            max_counts[profile_string] = counts_source[key]
-        elif key in profile.entities:
-            max_counts[profile_string] = profile.entities[key]
-    return max_counts
+    out: list[tuple[str, int, PointType, EquipmentGroup]] = []
+    for section_pt, groups in (
+        (PointType.BINARY_INPUT, profile.bi.equipment),
+        (PointType.ANALOG_OUTPUT, profile.ao.equipment),
+        (PointType.ANALOG_INPUT, profile.ai.equipment),
+    ):
+        per_kind_counter: dict[str, int] = defaultdict(int)
+        for group in groups:
+            per_kind_counter[group.kind] += 1
+            out.append((group.kind, per_kind_counter[group.kind], section_pt, group))
+    return out
+
+
+def _allowed_count(kind: str, overrides: dict[str, int] | None) -> int | None:
+    """Return the max allowed instance count for *kind*, or None (unlimited)."""
+    if overrides is None:
+        return None
+    return overrides.get(kind)
 
 
 def compute_excluded_indices(
-    profile: Profile,
+    profile: PicsProfile,
     overrides: dict[str, int] | None = None,
 ) -> dict[PointType, set[int]]:
-    """Compute point indices that should be excluded based on entity overrides.
-
-    Determines which ``(entity_type, entity_number)`` combinations exceed
-    the allowed counts (from *overrides*, falling back to
-    ``profile.entities``), then collects all point indices belonging to
-    those excluded entities.
+    """Compute point indices excluded because their equipment instance is over
+    the allowed count.
 
     Args:
-        profile: A loaded :class:`Profile`.
-        overrides: Optional dict mapping entity-count keys (``"meters"``,
-            ``"ders"``, ``"inverters"``, ``"batteries"``) to maximum counts.
-            When provided these replace the counts from ``profile.entities``.
+        profile: A loaded :class:`PicsProfile`.
+        overrides: Optional dict mapping group keys (``"meters"``, ``"ders"``,
+            ``"inverters"``, ``"batteries"``) to a maximum instance count. An
+            instance whose 1-based number exceeds the count is excluded.
 
     Returns:
-        A dict mapping :class:`PointType` to a set of point indices that
-        should be excluded from the database.  Returns an empty dict when
-        no points need to be excluded.
+        A dict mapping :class:`PointType` to the set of excluded indices. Empty
+        when *overrides* is None.
     """
     if overrides is None:
         return {}
 
-    max_counts = _resolve_max_counts(profile, overrides)
-
-    sections = [
-        profile.binary_outputs,
-        profile.binary_inputs,
-        profile.analog_outputs,
-        profile.analog_inputs,
-    ]
-
     excluded: dict[PointType, set[int]] = {}
-
-    for section in sections:
-        for point in section.points:
-            if point.entity_type is not None and point.entity_number is not None:
-                allowed = max_counts.get(point.entity_type, 0)
-                if point.entity_number > allowed:
-                    excluded.setdefault(point.point_type, set()).add(point.index)
-
+    for kind, instance_number, section_pt, group in _iter_instances(profile):
+        allowed = _allowed_count(kind, overrides)
+        if allowed is not None and instance_number > allowed:
+            for point in group.points:
+                excluded.setdefault(section_pt, set()).add(point.point_index)
     return excluded
 
 
-# ---------------------------------------------------------------------------
-# Builder
-# ---------------------------------------------------------------------------
-
-
 def build_entities(
-    profile: Profile,
+    profile: PicsProfile,
     overrides: dict[str, int] | None = None,
 ) -> list[Entity]:
-    """Build entity objects from a loaded MESA profile.
+    """Build entity objects from a loaded PICS profile.
 
     Args:
-        profile: A loaded :class:`Profile`.
-        overrides: Optional dict mapping entity-count keys (``"meters"``,
-            ``"ders"``, ``"inverters"``, ``"batteries"``) to maximum counts.
-            When provided these replace the counts from ``profile.entities``.
+        profile: A loaded :class:`PicsProfile`.
+        overrides: Optional dict mapping group keys to a maximum instance count.
 
     Returns:
-        Sorted list of :class:`Entity` instances.
+        Sorted list of :class:`Entity` instances (by type value then number).
     """
-    max_counts = _resolve_max_counts(profile, overrides)
-
-    # Group points by (entity_type_string, entity_number)
-    grouped: dict[tuple[str, int], dict[PointType, list[int]]] = defaultdict(
+    grouped: dict[tuple[EntityType, int], dict[PointType, list[int]]] = defaultdict(
         lambda: defaultdict(list),
     )
 
-    sections = [
-        profile.binary_outputs,
-        profile.binary_inputs,
-        profile.analog_outputs,
-        profile.analog_inputs,
-    ]
-
-    for section in sections:
-        for point in section.points:
-            if point.entity_type is not None and point.entity_number is not None:
-                key = (point.entity_type, point.entity_number)
-                grouped[key][point.point_type].append(point.index)
-
-    # Build entities, filtering by allowed counts
-    entities: list[Entity] = []
-    for (etype_str, enum_num), indices_map in grouped.items():
-        allowed = max_counts.get(etype_str, 0)
-        if enum_num > allowed:
+    for kind, instance_number, section_pt, group in _iter_instances(profile):
+        allowed = _allowed_count(kind, overrides)
+        if allowed is not None and instance_number > allowed:
             continue
+        entity_type = _GROUP_KIND_TO_TYPE[kind]
+        indices = grouped[(entity_type, instance_number)][section_pt]
+        indices.extend(point.point_index for point in group.points)
 
-        try:
-            entity_type = EntityType.from_profile_string(etype_str)
-        except ValueError:  # pragma: no cover
-            # Unknown entity_type: the count-gate above (enum_num > allowed)
-            # already filters these out in normal operation because
-            # max_counts only contains recognised type strings. This branch
-            # is a defensive guard for future code paths where the ordering
-            # might change; log and skip rather than raise.
-            _log.warning(
-                "Unrecognized entity_type %r: all %d points for entity #%d will be excluded",
-                etype_str,
-                sum(len(v) for v in indices_map.values()),
-                enum_num,
-            )
-            continue
-        entities.append(
-            Entity(
-                entity_type=entity_type,
-                entity_number=enum_num,
-                point_indices=dict(indices_map),
-            ),
+    entities = [
+        Entity(
+            entity_type=etype,
+            entity_number=number,
+            point_indices=dict(indices_map),
         )
-
+        for (etype, number), indices_map in grouped.items()
+    ]
     entities.sort(key=lambda e: (e.entity_type.value, e.entity_number))
     return entities

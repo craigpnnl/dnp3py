@@ -20,7 +20,7 @@ from dnp3.datalink.parser import FrameParser
 from dnp3.mesa.outstation import MesaOutstation, create_mesa_outstation
 from dnp3.transport.segment import TransportSegment
 
-PROFILE_PATH = Path(__file__).parent.parent.parent / "data" / "template" / "profile.json"
+PROFILE_PATH = Path(__file__).parents[2] / "data" / "profiles" / "full.json"
 
 MASTER_ADDR = 3
 OUTSTATION_ADDR = 1
