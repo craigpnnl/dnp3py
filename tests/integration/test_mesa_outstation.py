@@ -264,3 +264,44 @@ class TestCounterWireEmission:
         fc_map = _decode_static_counter_blocks(integrity_responses, group=21)
         for idx in self.EXPECTED_CTR_INDICES:
             assert fc_map[idx] == 0, f"Frozen counter index {idx}: expected value 0, got {fc_map[idx]}"
+
+    def test_counter_nonzero_value_round_trips(self, profile: PicsProfile) -> None:
+        """update_counter(value=12345) is reflected in the g20v1 static response.
+
+        Verifies the full path: database mutation -> outstation static serve ->
+        integrity poll wire bytes -> decoded value == 12345 at the expected index.
+        """
+        database, _ = build_database(profile)
+        # Update index 0 to a well-known non-zero value.
+        database.update_counter(index=0, value=12345)
+        outstation = Outstation(database=database)
+        request = build_integrity_poll()
+        responses = outstation.process_request(request.to_bytes())
+
+        ctr_map = _decode_static_counter_blocks(responses, group=20)
+        assert ctr_map.get(0) == 12345, f"Counter index 0: expected 12345 after update_counter, got {ctr_map.get(0)}"
+        # All other indices remain 0 (no spurious mutation).
+        for idx in self.EXPECTED_CTR_INDICES - {0}:
+            assert ctr_map[idx] == 0, f"Counter index {idx}: expected 0 (no mutation), got {ctr_map[idx]}"
+
+    def test_frozen_counter_nonzero_value_round_trips(self, profile: PicsProfile) -> None:
+        """freeze_counter after update_counter(value=67890) appears in g21v1 response.
+
+        Verifies the full path: counter update -> freeze -> outstation static
+        serve -> integrity poll wire bytes -> decoded frozen value == 67890 at
+        the expected index.
+        """
+        database, _ = build_database(profile)
+        # full.json CTR points all have frozen_counter_exists=True so index 0 has
+        # both a counter and a frozen counter in the database.
+        database.update_counter(index=0, value=67890)
+        database.freeze_counter(counter_index=0)
+        outstation = Outstation(database=database)
+        request = build_integrity_poll()
+        responses = outstation.process_request(request.to_bytes())
+
+        fc_map = _decode_static_counter_blocks(responses, group=21)
+        assert fc_map.get(0) == 67890, f"Frozen counter index 0: expected 67890 after freeze, got {fc_map.get(0)}"
+        # All other frozen counter indices remain 0.
+        for idx in self.EXPECTED_CTR_INDICES - {0}:
+            assert fc_map[idx] == 0, f"Frozen counter index {idx}: expected 0 (not frozen), got {fc_map[idx]}"
