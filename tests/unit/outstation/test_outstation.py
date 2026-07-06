@@ -2126,6 +2126,23 @@ class TestEventChunking:
 # ---------------------------------------------------------------------------
 
 
+def _extract_object_data(responses: list, group: int, variation: int) -> bytes:
+    """Return the raw data bytes from the first matching object block.
+
+    Shared by TestCounterWireEncodingSingleSource (DNP-024) and
+    TestBinaryAnalogWireEncodingSingleSource (DNP-025): both classes assert
+    outstation wire bytes against the object classes' own to_bytes() output,
+    and both need to pull the raw per-object bytes out of the response
+    fragments the same way.
+    """
+    for frag in responses:
+        for obj in frag.objects:
+            if obj.header.group == group and obj.header.variation == variation:
+                return obj.data
+    msg = f"No g{group}v{variation} block found in responses"
+    raise AssertionError(msg)
+
+
 class TestCounterWireEncodingSingleSource:
     """Outstation counter block bytes equal the object-class to_bytes() output.
 
@@ -2135,15 +2152,6 @@ class TestCounterWireEncodingSingleSource:
     (inline byte-building re-introduced, endianness changed, flag bit
     mis-cast) will cause these tests to fail before the wire output drifts.
     """
-
-    def _extract_object_data(self, responses: list, group: int, variation: int) -> bytes:
-        """Return the raw data bytes from the first matching object block."""
-        for frag in responses:
-            for obj in frag.objects:
-                if obj.header.group == group and obj.header.variation == variation:
-                    return obj.data
-        msg = f"No g{group}v{variation} block found in responses"
-        raise AssertionError(msg)
 
     def test_counter32_block_matches_object_to_bytes(self) -> None:
         """g20v1 block data equals Counter32.to_bytes() for each point.
@@ -2165,7 +2173,7 @@ class TestCounterWireEncodingSingleSource:
         request = build_integrity_poll()
         responses = outstation.process_request(request.to_bytes())
 
-        block_data = self._extract_object_data(responses, group=20, variation=1)
+        block_data = _extract_object_data(responses, group=20, variation=1)
         # block_data layout (qualifier 0x00, 1-byte start/stop):
         #   data[0] = start index (0), data[1] = stop index (0),
         #   data[2:] = per-object bytes (5 bytes for g20v1).
@@ -2192,7 +2200,7 @@ class TestCounterWireEncodingSingleSource:
         request = build_integrity_poll()
         responses = outstation.process_request(request.to_bytes())
 
-        block_data = self._extract_object_data(responses, group=21, variation=1)
+        block_data = _extract_object_data(responses, group=21, variation=1)
         object_bytes = block_data[2:]
 
         expected = FrozenCounter32(quality=CounterQuality.ONLINE, value=67890).to_bytes()
@@ -2223,7 +2231,7 @@ class TestCounterWireEncodingSingleSource:
         request = build_class_poll(class_1=True, class_2=False, class_3=False)
         responses = outstation.process_request(request.to_bytes())
 
-        block_data = self._extract_object_data(responses, group=22, variation=5)
+        block_data = _extract_object_data(responses, group=22, variation=5)
         # qualifier 0x17: data[0]=count, then per-event: index(1) + obj(11) = 12 bytes.
         count = block_data[0]
         assert count == 1, f"Expected 1 counter event, got {count}"
@@ -2256,15 +2264,6 @@ class TestBinaryAnalogWireEncodingSingleSource:
     drifts.
     """
 
-    def _extract_object_data(self, responses: list, group: int, variation: int) -> bytes:
-        """Return the raw data bytes from the first matching object block."""
-        for frag in responses:
-            for obj in frag.objects:
-                if obj.header.group == group and obj.header.variation == variation:
-                    return obj.data
-        msg = f"No g{group}v{variation} block found in responses"
-        raise AssertionError(msg)
-
     def test_binary_input_flags_block_matches_object_to_bytes(self) -> None:
         """g1v2 block data equals BinaryInputFlags.to_bytes() for each point.
 
@@ -2286,7 +2285,7 @@ class TestBinaryAnalogWireEncodingSingleSource:
         request = build_integrity_poll()
         responses = outstation.process_request(request.to_bytes())
 
-        block_data = self._extract_object_data(responses, group=1, variation=2)
+        block_data = _extract_object_data(responses, group=1, variation=2)
         # block_data layout (qualifier 0x00, 1-byte start/stop):
         #   data[0] = start index (0), data[1] = stop index (0),
         #   data[2:] = per-object bytes (1 byte for g1v2).
@@ -2314,7 +2313,7 @@ class TestBinaryAnalogWireEncodingSingleSource:
         request = build_integrity_poll()
         responses = outstation.process_request(request.to_bytes())
 
-        block_data = self._extract_object_data(responses, group=10, variation=2)
+        block_data = _extract_object_data(responses, group=10, variation=2)
         object_bytes = block_data[2:]
 
         expected = BinaryOutputFlags(quality=BinaryQuality.ONLINE, state=False).to_bytes()
@@ -2354,7 +2353,7 @@ class TestBinaryAnalogWireEncodingSingleSource:
         request = build_integrity_poll()
         responses = outstation.process_request(request.to_bytes())
 
-        block_data = self._extract_object_data(responses, group=30, variation=1)
+        block_data = _extract_object_data(responses, group=30, variation=1)
         object_bytes = block_data[2:]
 
         # Assertion 1: delegation to the object class.
@@ -2389,7 +2388,7 @@ class TestBinaryAnalogWireEncodingSingleSource:
         request = build_class_poll(class_1=True, class_2=False, class_3=False)
         responses = outstation.process_request(request.to_bytes())
 
-        block_data = self._extract_object_data(responses, group=2, variation=1)
+        block_data = _extract_object_data(responses, group=2, variation=1)
         # qualifier 0x17: data[0]=count, data[1]=index, data[2]=flags (1 byte).
         count = block_data[0]
         assert count == 1, f"Expected 1 binary input event, got {count}"
@@ -2426,7 +2425,7 @@ class TestBinaryAnalogWireEncodingSingleSource:
         request = build_class_poll(class_1=True, class_2=False, class_3=False)
         responses = outstation.process_request(request.to_bytes())
 
-        block_data = self._extract_object_data(responses, group=32, variation=1)
+        block_data = _extract_object_data(responses, group=32, variation=1)
         # qualifier 0x17: data[0]=count, then per-event: index(1) + obj(5) = 6 bytes.
         count = block_data[0]
         assert count == 1, f"Expected 1 analog input event, got {count}"
