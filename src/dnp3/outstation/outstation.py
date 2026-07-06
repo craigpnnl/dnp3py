@@ -26,9 +26,12 @@ from dnp3.application.qualifiers import (
     StartStopRange,
 )
 from dnp3.core.enums import CommandStatus, ControlCode, FunctionCode
-from dnp3.core.flags import IIN, BinaryQuality
+from dnp3.core.flags import IIN
 from dnp3.core.timestamp import DNP3Timestamp
 from dnp3.database import AnalogEvent, BinaryEvent, CounterEvent, Database, EventClass
+from dnp3.objects.analog_input import AnalogInput32, AnalogInputEvent32
+from dnp3.objects.binary_input import BinaryInputEvent, BinaryInputFlags
+from dnp3.objects.binary_output import BinaryOutputFlags
 from dnp3.objects.counter import Counter32, CounterEvent32Time, FrozenCounter32
 from dnp3.outstation.config import OutstationConfig
 from dnp3.outstation.handler import CommandHandler, DefaultCommandHandler
@@ -183,29 +186,6 @@ def _split_response_objects(
         )
 
     return fragments
-
-
-def _serialize_binary_input(value: bool, quality: BinaryQuality) -> bytes:
-    """Serialize a binary input point to g1v2 format."""
-    flags = int(quality)
-    if value:
-        flags |= BinaryQuality.STATE
-    return bytes([flags])
-
-
-def _serialize_binary_output(value: bool, quality: BinaryQuality) -> bytes:
-    """Serialize a binary output point to g10v2 format."""
-    flags = int(quality)
-    if value:
-        flags |= BinaryQuality.STATE
-    return bytes([flags])
-
-
-def _serialize_analog_input_32(value: float, quality: int) -> bytes:
-    """Serialize an analog input point to g30v1 format."""
-    # 1 byte flags + 4 bytes value (little-endian signed)
-    int_value = int(value)
-    return bytes([quality]) + int_value.to_bytes(4, byteorder="little", signed=True)
 
 
 def _contiguous_runs(points: list[Any]) -> list[list[Any]]:
@@ -766,7 +746,7 @@ class Outstation:
             group=GV_BINARY_INPUT_FLAGS[0],
             variation=GV_BINARY_INPUT_FLAGS[1],
             points=points,
-            serialize=lambda p: _serialize_binary_input(p.value, p.quality),
+            serialize=lambda p: BinaryInputFlags(quality=p.quality, state=p.value).to_bytes(),
             max_points_per_block=_static_block_capacity(self.config.max_fragment_size, 1),
         )
 
@@ -781,7 +761,7 @@ class Outstation:
             group=GV_BINARY_OUTPUT_FLAGS[0],
             variation=GV_BINARY_OUTPUT_FLAGS[1],
             points=points,
-            serialize=lambda p: _serialize_binary_output(p.value, p.quality),
+            serialize=lambda p: BinaryOutputFlags(quality=p.quality, state=p.value).to_bytes(),
             max_points_per_block=_static_block_capacity(self.config.max_fragment_size, 1),
         )
 
@@ -796,7 +776,7 @@ class Outstation:
             group=GV_ANALOG_INPUT_32[0],
             variation=GV_ANALOG_INPUT_32[1],
             points=points,
-            serialize=lambda p: _serialize_analog_input_32(p.value, int(p.quality)),
+            serialize=lambda p: AnalogInput32(quality=p.quality, value=int(p.value)).to_bytes(),
             max_points_per_block=_static_block_capacity(self.config.max_fragment_size, 5),
         )
 
@@ -897,11 +877,8 @@ class Outstation:
                 data.append(event.index & 0xFF)
             else:
                 data.extend(event.index.to_bytes(2, "little"))
-            # g2v1 format: 1 byte flags
-            flags = int(event.quality)
-            if event.value:
-                flags |= 0x80  # STATE bit
-            data.append(flags)
+            # g2v1 format: 1 byte flags (delegated to BinaryInputEvent.to_bytes())
+            data.extend(BinaryInputEvent(quality=event.quality, state=event.value).to_bytes())
 
         header = ObjectHeader(
             group=GV_BINARY_INPUT_EVENT[0],
@@ -923,10 +900,8 @@ class Outstation:
                 data.append(event.index & 0xFF)
             else:
                 data.extend(event.index.to_bytes(2, "little"))
-            # g32v1 format: 1 byte flags + 4 bytes value
-            data.append(int(event.quality))
-            int_value = int(event.value)
-            data.extend(int_value.to_bytes(4, "little", signed=True))
+            # g32v1 format: 1 byte flags + 4 bytes signed value (delegated to AnalogInputEvent32.to_bytes())
+            data.extend(AnalogInputEvent32(quality=event.quality, value=int(event.value)).to_bytes())
 
         header = ObjectHeader(
             group=GV_ANALOG_INPUT_EVENT[0],
