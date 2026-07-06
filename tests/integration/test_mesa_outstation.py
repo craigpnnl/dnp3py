@@ -62,6 +62,54 @@ class TestDatabasePointCounts:
         assert database.frozen_counter_count == 8
 
 
+class TestScheduleAndCurveRegistration:
+    """Schedule AI points register at their absolute indices with scaled
+    values, same as curves (the base-only-registration trap covers both
+    functional sub-groups equally). Indices and values below are read
+    verbatim from data/profiles/full.json."""
+
+    def test_schedule_bc_header_and_array_points_present(self, mesa_outstation: MesaOutstation) -> None:
+        # schedules_bc[0]: identity=2002 (header), values[0]=2013 (array).
+        for index in (2002, 2013):
+            assert mesa_outstation.database.get_analog_input(index) is not None, f"AI{index} missing"
+
+    def test_schedule_header_and_array_points_present(self, mesa_outstation: MesaOutstation) -> None:
+        # schedules[0]: identity=3001 (header), values[0]=3015 (array).
+        for index in (3001, 3015):
+            assert mesa_outstation.database.get_analog_input(index) is not None, f"AI{index} missing"
+
+    def test_schedule_bc_identity_scaled_value(self, mesa_outstation: MesaOutstation) -> None:
+        # schedules_bc[0].identity: value 1.0, multiplier 1.0, offset 0.0 -> raw 1.
+        point = mesa_outstation.database.get_analog_input(2002)
+        assert point is not None
+        assert point.value == 1
+
+    def test_schedule_identity_scaled_value(self, mesa_outstation: MesaOutstation) -> None:
+        # schedules[0].identity: value 1.0, multiplier 1.0, offset 0.0 -> raw 1.
+        point = mesa_outstation.database.get_analog_input(3001)
+        assert point is not None
+        assert point.value == 1
+
+    def test_curve_selector_ao245_mirrors_to_curve_type_ai329(self) -> None:
+        # AO245 -> AI329 is the curve-edit selector cited in the DNP-022 plan
+        # (Section 5.4): AI329 is the curve_type header point shared by all 4
+        # curves (multiplexed onto one DNP3 index). The plain AO->AI mirror
+        # must resolve for it: before PR1's full curve registration, AI329
+        # would not exist in the database and this write would be a silent
+        # no-op skip rather than a mirrored write.
+        #
+        # A fresh outstation is built here (not the module-scoped
+        # ``mesa_outstation`` fixture) because this test mutates state via a
+        # command write and must not leak that mutation into other tests
+        # sharing the fixture.
+        mesa = create_mesa_outstation(PROFILE_PATH)
+        result = mesa.handler.direct_operate_analog_output(index=245, value=5)
+        assert result.status == CommandStatus.SUCCESS
+        ai_point = mesa.database.get_analog_input(329)
+        assert ai_point is not None
+        assert ai_point.value == 5
+
+
 class TestOutstationFactory:
     def test_create(self, mesa_outstation: MesaOutstation) -> None:
         assert isinstance(mesa_outstation, MesaOutstation)
