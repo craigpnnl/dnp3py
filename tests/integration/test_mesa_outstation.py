@@ -21,7 +21,7 @@ from dnp3.mesa.outstation import MesaOutstation, create_mesa_outstation
 from dnp3.mesa.profile import PicsProfile, PointType, load_profile
 from dnp3.outstation.outstation import Outstation
 
-PROFILE_PATH = Path(__file__).parents[2] / "data" / "profiles" / "full.json"
+PROFILE_PATH = Path(__file__).parents[2] / "src" / "dnp3" / "mesa" / "data" / "profiles" / "full.json"
 
 
 @pytest.fixture(scope="module")
@@ -66,7 +66,7 @@ class TestScheduleAndCurveRegistration:
     """Schedule AI points register at their absolute indices with scaled
     values, same as curves (the base-only-registration trap covers both
     functional sub-groups equally). Indices and values below are read
-    verbatim from data/profiles/full.json."""
+    verbatim from src/dnp3/mesa/data/profiles/full.json."""
 
     def test_schedule_bc_header_and_array_points_present(self, mesa_outstation: MesaOutstation) -> None:
         # schedules_bc[0]: identity=2002 (header), values[0]=2013 (array).

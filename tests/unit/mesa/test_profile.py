@@ -31,7 +31,7 @@ FIXTURE_DIR = Path(__file__).parent / "fixtures"
 TEST_PROFILE = FIXTURE_DIR / "test_profile.json"
 
 # Bundled full profile: the golden-parse census target.
-BUNDLED_PROFILES = Path(__file__).parents[3] / "data" / "profiles"
+BUNDLED_PROFILES = Path(__file__).parents[3] / "src" / "dnp3" / "mesa" / "data" / "profiles"
 FULL_PROFILE = BUNDLED_PROFILES / "full.json"
 
 
