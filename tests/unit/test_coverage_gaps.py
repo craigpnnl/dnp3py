@@ -1623,6 +1623,215 @@ class TestEventClassReading:
         assert len(responses) > 0
 
 
+class TestCounterEventG22v5:
+    """Counter events are emitted as g22v5 (32-bit with 48-bit timestamp).
+
+    Vance domain guidance: DER energy counters require timestamped events for
+    settlement-grade accounting. The outstation must emit g22v5, not g22v1.
+    Each emitted counter event must carry a plausible non-zero timestamp.
+    """
+
+    def _parse_g22v5_events(self, responses: list) -> list[dict]:
+        """Extract g22v5 counter event records from response fragments.
+
+        Wire layout per event (qualifier 0x17, 1-byte count + 1-byte index prefix):
+          data[0]        = count (number of events)
+          For each event:
+            index(1)  + flags(1) + value(4 LE unsigned) + timestamp(6 LE ms)
+        Returns list of dicts with keys: index, flags, value, timestamp_ms.
+        """
+        import struct
+
+        records = []
+        for frag in responses:
+            for obj in frag.objects:
+                if obj.header.group != 22 or obj.header.variation != 5:
+                    continue
+                data = obj.data
+                count = data[0]
+                offset = 1
+                for _ in range(count):
+                    idx = data[offset]
+                    flags = data[offset + 1]
+                    value = struct.unpack_from("<I", data, offset + 2)[0]
+                    ts_ms = int.from_bytes(data[offset + 6 : offset + 12], "little")
+                    records.append({"index": idx, "flags": flags, "value": value, "timestamp_ms": ts_ms})
+                    offset += 12
+        return records
+
+    def test_counter_event_uses_g22v5_variation(self) -> None:
+        """Counter event response uses group 22 variation 5, not variation 1."""
+        db = Database()
+        db.add_counter(0, CounterConfig(event_class=EventClass.CLASS_3, deadband=0))
+        db.update_counter(0, value=0)
+        db.update_counter(0, value=42)  # Generate one CLASS_3 event
+
+        outstation = Outstation(database=db)
+        master = Master()
+
+        request = master.build_class_poll(class_1=False, class_2=False, class_3=True)
+        responses = outstation.process_request(request.to_bytes())
+
+        found_g22 = False
+        for frag in responses:
+            for obj in frag.objects:
+                if obj.header.group == 22:
+                    assert obj.header.variation == 5, (
+                        f"Counter event must use variation 5 (g22v5 with timestamp), "
+                        f"got variation {obj.header.variation}"
+                    )
+                    found_g22 = True
+        assert found_g22, "No g22 counter event object found in CLASS_3 poll response"
+
+    def test_counter_event_timestamp_is_nonzero(self) -> None:
+        """g22v5 counter event carries a non-zero 48-bit timestamp."""
+        db = Database()
+        db.add_counter(0, CounterConfig(event_class=EventClass.CLASS_3, deadband=0))
+        db.update_counter(0, value=0)
+        db.update_counter(0, value=100)
+
+        outstation = Outstation(database=db)
+        master = Master()
+
+        request = master.build_class_poll(class_1=False, class_2=False, class_3=True)
+        responses = outstation.process_request(request.to_bytes())
+
+        events = self._parse_g22v5_events(responses)
+        assert events, "No g22v5 events parsed from CLASS_3 poll response"
+        for ev in events:
+            assert ev["timestamp_ms"] > 0, (
+                f"Counter event index {ev['index']}: timestamp is 0; g22v5 must carry a real 48-bit timestamp"
+            )
+
+    def test_counter_event_value_matches_update(self) -> None:
+        """g22v5 event value matches the counter value that triggered the event.
+
+        Using deadband=1 ensures that the single update from initial value 0 to
+        9876 (change=9876 >= 1) generates exactly one event carrying value 9876.
+        """
+        db = Database()
+        # last_event_value starts at 0 (CounterPoint default); change=9876 >= 1.
+        db.add_counter(0, CounterConfig(event_class=EventClass.CLASS_3, deadband=1))
+        db.update_counter(0, value=9876)  # One event: value 9876
+
+        outstation = Outstation(database=db)
+        master = Master()
+
+        request = master.build_class_poll(class_1=False, class_2=False, class_3=True)
+        responses = outstation.process_request(request.to_bytes())
+
+        events = self._parse_g22v5_events(responses)
+        assert events, "No g22v5 events found"
+        # Exactly one event for index 0 with value 9876.
+        idx0_events = [e for e in events if e["index"] == 0]
+        assert len(idx0_events) == 1, f"Expected 1 event for counter 0, got {len(idx0_events)}"
+        assert idx0_events[0]["value"] == 9876, (
+            f"g22v5 counter event value: expected 9876, got {idx0_events[0]['value']}"
+        )
+
+    def test_counter_event_timestamp_is_plausible(self) -> None:
+        """g22v5 timestamp is in a plausible millisecond range (post-2000)."""
+        db = Database()
+        db.add_counter(0, CounterConfig(event_class=EventClass.CLASS_3, deadband=0))
+        db.update_counter(0, value=0)
+        db.update_counter(0, value=1)
+
+        outstation = Outstation(database=db)
+        master = Master()
+
+        request = master.build_class_poll(class_1=False, class_2=False, class_3=True)
+        responses = outstation.process_request(request.to_bytes())
+
+        events = self._parse_g22v5_events(responses)
+        assert events
+
+        # DNP3 timestamp: ms since 1970-01-01. Year 2000 = 946684800000 ms.
+        # Any test machine's wall clock should be well above this floor.
+        min_ms_year_2000 = 946_684_800_000
+        for ev in events:
+            assert ev["timestamp_ms"] >= min_ms_year_2000, (
+                f"Counter event timestamp {ev['timestamp_ms']} ms is before year 2000; "
+                "check DNP3Timestamp.now() returns a real wall-clock value"
+            )
+
+
+class TestMixedEventClassPoll:
+    """A single class poll with both binary input and counter events must
+    emit g2 (binary) AND g22v5 (counter) objects, each with correct values.
+
+    This tests the isinstance classification fix: before the fix,
+    isinstance(event.value, int) returned True for bool (BinaryEvent) and
+    int (CounterEvent) alike, so binary events could be double-classified as
+    counter events. The fix uses concrete type checks (isinstance(e, BinaryEvent)
+    vs isinstance(e, CounterEvent)) so each event goes to exactly one block.
+    """
+
+    def _extract_groups(self, responses: list) -> set[int]:
+        """Return the set of DNP3 object group numbers present in the responses."""
+        return {obj.header.group for frag in responses for obj in frag.objects}
+
+    def _parse_g22v5_value_at_index(self, responses: list, target_idx: int) -> int | None:
+        """Return the g22v5 counter event value for target_idx, or None if absent."""
+        import struct
+
+        for frag in responses:
+            for obj in frag.objects:
+                if obj.header.group != 22 or obj.header.variation != 5:
+                    continue
+                data = obj.data
+                count = data[0]
+                offset = 1
+                for _ in range(count):
+                    idx = data[offset]
+                    value = struct.unpack_from("<I", data, offset + 2)[0]
+                    if idx == target_idx:
+                        return value
+                    offset += 12
+        return None
+
+    def test_mixed_poll_emits_both_binary_and_counter_events(self) -> None:
+        """One class poll with binary + counter points yields both g2 and g22v5.
+
+        Arrangement: binary input at index 0 (CLASS_1), counter at index 0
+        (CLASS_1). Generating one binary event (toggle False -> True) and one
+        counter event (value 777) then issuing a CLASS_1 poll must produce
+        a g2 block AND a g22v5 block in the same response set, with no
+        cross-contamination (counter value correct, binary and counter each
+        appear exactly once by group).
+        """
+        db = Database()
+        db.add_binary_input(0, BinaryInputConfig(event_class=EventClass.CLASS_1))
+        db.add_counter(0, CounterConfig(event_class=EventClass.CLASS_1, deadband=0))
+
+        # Generate one binary event (False -> True toggle).
+        db.update_binary_input(index=0, value=True)
+
+        # Generate one counter event.
+        db.update_counter(index=0, value=777)
+
+        outstation = Outstation(database=db)
+        master = Master()
+
+        request = master.build_class_poll(class_1=True, class_2=False, class_3=False)
+        responses = outstation.process_request(request.to_bytes())
+
+        groups = self._extract_groups(responses)
+        assert 2 in groups, (
+            "No g2 binary event block found in CLASS_1 poll response; "
+            "binary events must not be swallowed by counter classification"
+        )
+        assert 22 in groups, (
+            "No g22 counter event block found in CLASS_1 poll response; "
+            "counter events must be emitted alongside binary events"
+        )
+
+        ctr_value = self._parse_g22v5_value_at_index(responses, target_idx=0)
+        assert ctr_value == 777, (
+            f"Counter event value at index 0: expected 777, got {ctr_value}; "
+            "counter event must carry the correct value without cross-classification"
+        )
+
+
 class TestCounterObjectEdgeCases:
     """Test counter object edge cases."""
 

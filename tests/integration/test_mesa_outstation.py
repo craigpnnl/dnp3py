@@ -7,15 +7,19 @@ mesa-tool schema or point-map change breaks loudly.
 
 from __future__ import annotations
 
+import struct
+import typing
 from pathlib import Path
 
 import pytest
 
+from dnp3.application.builder import build_integrity_poll
 from dnp3.core.enums import CommandStatus, ControlCode
 from dnp3.mesa.database_builder import build_database
 from dnp3.mesa.entities import EntityType, build_entities
 from dnp3.mesa.outstation import MesaOutstation, create_mesa_outstation
 from dnp3.mesa.profile import PicsProfile, PointType, load_profile
+from dnp3.outstation.outstation import Outstation
 
 PROFILE_PATH = Path(__file__).parents[2] / "data" / "profiles" / "full.json"
 
@@ -53,6 +57,9 @@ class TestDatabasePointCounts:
         assert database.binary_output_count == 66
         assert database.analog_input_count == 1527
         assert len(ao_store) == 1197
+        # All 8 CTR points are registered; all 8 have frozen_counter_exists=True.
+        assert database.counter_count == 8
+        assert database.frozen_counter_count == 8
 
 
 class TestOutstationFactory:
@@ -152,3 +159,149 @@ class TestBOCommandHandling:
         bo_point = mesa.database.get_binary_output(0)
         assert bo_point is not None
         assert bo_point.value is False
+
+
+def _decode_static_counter_blocks(responses: list, group: int) -> dict[int, int]:
+    """Decode static counter or frozen-counter objects from a list of response fragments.
+
+    For static blocks the ObjectBlock.data layout is:
+      [start_bytes] [stop_bytes] [5 bytes per point: 1 flag + 4 value LE unsigned]
+
+    The qualifier code determines the range-field width:
+      0x00: 1-byte start + 1-byte stop (indices 0-255)
+      0x01: 2-byte start + 2-byte stop (indices 0-65535)
+      0x02: 4-byte start + 4-byte stop (wider, not used here)
+
+    Returns a dict mapping {index: value}.
+    """
+    result: dict[int, int] = {}
+    for frag in responses:
+        for obj in frag.objects:
+            if obj.header.group != group:
+                continue
+            qualifier = obj.header.qualifier
+            data = obj.data
+            if qualifier == 0x00:
+                # 1-byte start/stop
+                start = data[0]
+                stop = data[1]
+                payload = data[2:]
+            elif qualifier == 0x01:
+                # 2-byte start/stop (little-endian)
+                start = struct.unpack_from("<H", data, 0)[0]
+                stop = struct.unpack_from("<H", data, 2)[0]
+                payload = data[4:]
+            else:
+                continue  # unsupported qualifier for this helper
+            n_points = stop - start + 1
+            assert len(payload) == n_points * 5, (
+                f"group {group} block start={start} stop={stop}: expected "
+                f"{n_points * 5} payload bytes, got {len(payload)}"
+            )
+            for i in range(n_points):
+                _flags = payload[i * 5]
+                value = struct.unpack_from("<I", payload, i * 5 + 1)[0]
+                result[start + i] = value
+    return result
+
+
+class TestCounterWireEmission:
+    """Verify that counters and frozen counters are served on the wire.
+
+    Tests the full path: build_database(profile) -> Outstation(database=db) ->
+    process_request(integrity poll) -> assert g20v1 counter and g21v1 frozen
+    counter objects present with correct indices and initial zero values.
+
+    full.json has 8 CTR points: indices 0, 1, 2, 3, 5000, 5001, 5002, 5003.
+    All 8 have frozen_counter_exists=True. Initial values are 0 (PicsProfile
+    carries no initial counter reading).
+    """
+
+    EXPECTED_CTR_INDICES: typing.ClassVar[frozenset[int]] = frozenset({0, 1, 2, 3, 5000, 5001, 5002, 5003})
+
+    @pytest.fixture()
+    def integrity_responses(self, profile: PicsProfile) -> list:
+        database, _ = build_database(profile)
+        outstation = Outstation(database=database)
+        request = build_integrity_poll()
+        return outstation.process_request(request.to_bytes())
+
+    def test_integrity_poll_produces_response(self, integrity_responses: list) -> None:
+        assert len(integrity_responses) > 0
+
+    def test_counter_group_present(self, integrity_responses: list) -> None:
+        """g20v1 counter objects are present in the integrity poll response."""
+        ctr_map = _decode_static_counter_blocks(integrity_responses, group=20)
+        assert ctr_map, "No g20v1 counter objects found in integrity poll response"
+
+    def test_counter_indices_match_profile(self, integrity_responses: list) -> None:
+        """All 8 CTR point indices from the profile appear in the g20v1 response."""
+        ctr_map = _decode_static_counter_blocks(integrity_responses, group=20)
+        assert set(ctr_map.keys()) == self.EXPECTED_CTR_INDICES, (
+            f"Counter indices mismatch: got {set(ctr_map.keys())}, expected {self.EXPECTED_CTR_INDICES}"
+        )
+
+    def test_counter_initial_values_zero(self, integrity_responses: list) -> None:
+        """All counter initial values are 0 (no initial reading in PicsProfile)."""
+        ctr_map = _decode_static_counter_blocks(integrity_responses, group=20)
+        for idx in self.EXPECTED_CTR_INDICES:
+            assert ctr_map[idx] == 0, f"Counter index {idx}: expected value 0, got {ctr_map[idx]}"
+
+    def test_frozen_counter_group_present(self, integrity_responses: list) -> None:
+        """g21v1 frozen counter objects are present in the integrity poll response."""
+        fc_map = _decode_static_counter_blocks(integrity_responses, group=21)
+        assert fc_map, "No g21v1 frozen counter objects found in integrity poll response"
+
+    def test_frozen_counter_indices_match_profile(self, integrity_responses: list) -> None:
+        """All 8 CTR points with frozen_counter_exists=True appear in g21v1 response."""
+        fc_map = _decode_static_counter_blocks(integrity_responses, group=21)
+        assert set(fc_map.keys()) == self.EXPECTED_CTR_INDICES, (
+            f"Frozen counter indices mismatch: got {set(fc_map.keys())}, expected {self.EXPECTED_CTR_INDICES}"
+        )
+
+    def test_frozen_counter_initial_values_zero(self, integrity_responses: list) -> None:
+        """All frozen counter initial values are 0."""
+        fc_map = _decode_static_counter_blocks(integrity_responses, group=21)
+        for idx in self.EXPECTED_CTR_INDICES:
+            assert fc_map[idx] == 0, f"Frozen counter index {idx}: expected value 0, got {fc_map[idx]}"
+
+    def test_counter_nonzero_value_round_trips(self, profile: PicsProfile) -> None:
+        """update_counter(value=12345) is reflected in the g20v1 static response.
+
+        Verifies the full path: database mutation -> outstation static serve ->
+        integrity poll wire bytes -> decoded value == 12345 at the expected index.
+        """
+        database, _ = build_database(profile)
+        # Update index 0 to a well-known non-zero value.
+        database.update_counter(index=0, value=12345)
+        outstation = Outstation(database=database)
+        request = build_integrity_poll()
+        responses = outstation.process_request(request.to_bytes())
+
+        ctr_map = _decode_static_counter_blocks(responses, group=20)
+        assert ctr_map.get(0) == 12345, f"Counter index 0: expected 12345 after update_counter, got {ctr_map.get(0)}"
+        # All other indices remain 0 (no spurious mutation).
+        for idx in self.EXPECTED_CTR_INDICES - {0}:
+            assert ctr_map[idx] == 0, f"Counter index {idx}: expected 0 (no mutation), got {ctr_map[idx]}"
+
+    def test_frozen_counter_nonzero_value_round_trips(self, profile: PicsProfile) -> None:
+        """freeze_counter after update_counter(value=67890) appears in g21v1 response.
+
+        Verifies the full path: counter update -> freeze -> outstation static
+        serve -> integrity poll wire bytes -> decoded frozen value == 67890 at
+        the expected index.
+        """
+        database, _ = build_database(profile)
+        # full.json CTR points all have frozen_counter_exists=True so index 0 has
+        # both a counter and a frozen counter in the database.
+        database.update_counter(index=0, value=67890)
+        database.freeze_counter(counter_index=0)
+        outstation = Outstation(database=database)
+        request = build_integrity_poll()
+        responses = outstation.process_request(request.to_bytes())
+
+        fc_map = _decode_static_counter_blocks(responses, group=21)
+        assert fc_map.get(0) == 67890, f"Frozen counter index 0: expected 67890 after freeze, got {fc_map.get(0)}"
+        # All other frozen counter indices remain 0.
+        for idx in self.EXPECTED_CTR_INDICES - {0}:
+            assert fc_map[idx] == 0, f"Frozen counter index {idx}: expected 0 (not frozen), got {fc_map[idx]}"

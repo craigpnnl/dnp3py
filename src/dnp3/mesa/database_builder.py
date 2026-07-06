@@ -1,8 +1,8 @@
 """Build a dnp3py Database and AnalogOutputStore from a PICS profile.
 
 Iterates the point sections in a :class:`PicsProfile` and populates a
-:class:`Database` (for BI, BO, AI) and an :class:`AnalogOutputStore` (for AO).
-All points are set to ONLINE quality on creation.
+:class:`Database` (for BI, BO, AI, CTR) and an :class:`AnalogOutputStore`
+(for AO). All points are set to ONLINE quality on creation.
 
 The load-bearing step is AI scaling: ``AiPoint.value`` is in engineering units,
 but the DNP3 wire and the database carry the transmission integer. Each AI value
@@ -11,8 +11,15 @@ point's declared range first) before it reaches ``add_analog_input``. Every AI
 point across base, equipment, curves, and schedules is registered so no point is
 silently dropped.
 
-CTR database registration (counter objects) is wired in a later PR; the model
-already carries the CTR points so they are not lost here.
+CTR wiring: every :class:`CtrPoint` in :attr:`PicsProfile.ctr` is registered as
+a 32-bit running counter (group 20, variation 1) via ``add_counter``. When
+``frozen_counter_exists`` is true, an additional 32-bit frozen counter (group 21,
+variation 1) is registered at the same index via ``add_frozen_counter``. Counter
+values are unsigned 32-bit integers; DER energy counters (Wh/VAh) overflow 16
+bits so the 32-bit variants are required (Vance domain guidance). Initial counter
+value is 0 (PicsProfile carries no initial counter reading). Event class is
+derived from the point's ``counter_event_class`` / ``frozen_counter_event_class``
+string via :meth:`~dnp3.mesa.profile.EventClass.to_dnp3_class`.
 """
 
 from __future__ import annotations
@@ -20,13 +27,17 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import Protocol, TypeVar
 
-from dnp3.core.flags import AnalogQuality, BinaryQuality
+from dnp3.core.flags import AnalogQuality, BinaryQuality, CounterQuality
 from dnp3.database import (
     AnalogInputConfig,
     BinaryInputConfig,
     BinaryOutputConfig,
+    CounterConfig,
     Database,
     DatabaseConfig,
+)
+from dnp3.database import (
+    EventClass as DbEventClass,
 )
 from dnp3.mesa.ao_store import AnalogOutputStore, AnalogOutputValue
 from dnp3.mesa.profile import AiPoint, PicsProfile, PointType
@@ -182,10 +193,21 @@ def build_database(
         ),
     )
 
+    # CTR: collect all counter points from the profile. The excluded_indices
+    # mechanism is available for COUNTER type if needed in a later PR (CLI
+    # entity overrides); for now no CTR exclusions are applied.
+    ctr_points = _assert_unique_by_index(profile.ctr, label="CTR")
+    frozen_ctr_count = sum(1 for p in ctr_points if p.frozen_counter_exists)
+
     config = DatabaseConfig(
         max_binary_inputs=len(bi_points) + _HEADROOM,
         max_binary_outputs=len(bo_points) + _HEADROOM,
         max_analog_inputs=len(ai_points) + _HEADROOM,
+        max_counters=len(ctr_points) + _HEADROOM,
+        # max_frozen_counters is intentionally smaller than max_counters: only
+        # CtrPoints with frozen_counter_exists=True register a frozen counter,
+        # so the ceiling is the frozen subset, not all CTR points.
+        max_frozen_counters=frozen_ctr_count + _HEADROOM,
     )
     database = Database(config=config)
 
@@ -234,5 +256,32 @@ def build_database(
                 description=ao.name,
             ),
         )
+
+    # --- Counters (32-bit running counter, group 20 variation 1) ----------
+    # PicsProfile CTR points carry no initial value; counters start at 0.
+    # Vance: use 32-bit variants only (DER energy Wh/VAh overflow 16 bits).
+    # event_class is derived from the profile EventClass enum via to_dnp3_class,
+    # which maps Class1 -> 1, Class2 -> 2, Class3 -> 3, None -> 0, matching the
+    # database EventClass IntEnum (NONE=0, CLASS_1=1, CLASS_2=2, CLASS_3=3).
+    for ctr in ctr_points:
+        counter_event_class = DbEventClass(ctr.counter_event_class.to_dnp3_class())
+        database.add_counter(
+            index=ctr.point_index,
+            config=CounterConfig(event_class=counter_event_class),
+            value=0,
+            quality=CounterQuality.ONLINE,
+        )
+        # frozen_counter_event_class is always present in the JSON schema but is
+        # only meaningful when frozen_counter_exists is True. Guard explicitly so
+        # a profile that sets frozen_counter_exists=False with a non-None event
+        # class does not silently register an unwanted frozen counter.
+        if ctr.frozen_counter_exists:
+            frozen_event_class = DbEventClass(ctr.frozen_counter_event_class.to_dnp3_class())
+            database.add_frozen_counter(
+                index=ctr.point_index,
+                config=CounterConfig(event_class=frozen_event_class),
+                value=0,
+                quality=CounterQuality.ONLINE,
+            )
 
     return database, ao_store
