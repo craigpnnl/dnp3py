@@ -2126,6 +2126,23 @@ class TestEventChunking:
 # ---------------------------------------------------------------------------
 
 
+def _extract_object_data(responses: list, group: int, variation: int) -> bytes:
+    """Return the raw data bytes from the first matching object block.
+
+    Shared by TestCounterWireEncodingSingleSource (DNP-024) and
+    TestBinaryAnalogWireEncodingSingleSource (DNP-025): both classes assert
+    outstation wire bytes against the object classes' own to_bytes() output,
+    and both need to pull the raw per-object bytes out of the response
+    fragments the same way.
+    """
+    for frag in responses:
+        for obj in frag.objects:
+            if obj.header.group == group and obj.header.variation == variation:
+                return obj.data
+    msg = f"No g{group}v{variation} block found in responses"
+    raise AssertionError(msg)
+
+
 class TestCounterWireEncodingSingleSource:
     """Outstation counter block bytes equal the object-class to_bytes() output.
 
@@ -2135,15 +2152,6 @@ class TestCounterWireEncodingSingleSource:
     (inline byte-building re-introduced, endianness changed, flag bit
     mis-cast) will cause these tests to fail before the wire output drifts.
     """
-
-    def _extract_object_data(self, responses: list, group: int, variation: int) -> bytes:
-        """Return the raw data bytes from the first matching object block."""
-        for frag in responses:
-            for obj in frag.objects:
-                if obj.header.group == group and obj.header.variation == variation:
-                    return obj.data
-        msg = f"No g{group}v{variation} block found in responses"
-        raise AssertionError(msg)
 
     def test_counter32_block_matches_object_to_bytes(self) -> None:
         """g20v1 block data equals Counter32.to_bytes() for each point.
@@ -2165,7 +2173,7 @@ class TestCounterWireEncodingSingleSource:
         request = build_integrity_poll()
         responses = outstation.process_request(request.to_bytes())
 
-        block_data = self._extract_object_data(responses, group=20, variation=1)
+        block_data = _extract_object_data(responses, group=20, variation=1)
         # block_data layout (qualifier 0x00, 1-byte start/stop):
         #   data[0] = start index (0), data[1] = stop index (0),
         #   data[2:] = per-object bytes (5 bytes for g20v1).
@@ -2192,7 +2200,7 @@ class TestCounterWireEncodingSingleSource:
         request = build_integrity_poll()
         responses = outstation.process_request(request.to_bytes())
 
-        block_data = self._extract_object_data(responses, group=21, variation=1)
+        block_data = _extract_object_data(responses, group=21, variation=1)
         object_bytes = block_data[2:]
 
         expected = FrozenCounter32(quality=CounterQuality.ONLINE, value=67890).to_bytes()
@@ -2223,7 +2231,7 @@ class TestCounterWireEncodingSingleSource:
         request = build_class_poll(class_1=True, class_2=False, class_3=False)
         responses = outstation.process_request(request.to_bytes())
 
-        block_data = self._extract_object_data(responses, group=22, variation=5)
+        block_data = _extract_object_data(responses, group=22, variation=5)
         # qualifier 0x17: data[0]=count, then per-event: index(1) + obj(11) = 12 bytes.
         count = block_data[0]
         assert count == 1, f"Expected 1 counter event, got {count}"
@@ -2243,3 +2251,195 @@ class TestCounterWireEncodingSingleSource:
         assert event_bytes == expected, (
             f"g22v5 event bytes {event_bytes.hex()} != CounterEvent32Time.to_bytes() {expected.hex()}"
         )
+
+
+class TestBinaryAnalogWireEncodingSingleSource:
+    """Outstation binary/analog block bytes equal the object-class to_bytes() output.
+
+    These tests lock the invariant introduced by DNP-025: the outstation's
+    binary and analog block builders must produce byte-identical output to
+    what the corresponding object classes produce directly. Any future
+    divergence (inline byte-building re-introduced, the STATE bit mis-cast,
+    endianness changed) will cause these tests to fail before the wire output
+    drifts.
+    """
+
+    def test_binary_input_flags_block_matches_object_to_bytes(self) -> None:
+        """g1v2 block data equals BinaryInputFlags.to_bytes() for each point.
+
+        One binary input updated to True (update sets ONLINE quality, which
+        also exercises the STATE bit alongside a non-zero quality nibble).
+        The static block data is: 2-byte range (start=0, stop=0) followed by
+        the per-object bytes. Extract the object bytes after the range
+        header and compare to BinaryInputFlags(...).to_bytes() using the same
+        quality the database recorded.
+        """
+        from dnp3.core.flags import BinaryQuality
+        from dnp3.objects.binary_input import BinaryInputFlags
+
+        db = Database()
+        db.add_binary_input(0)
+        db.update_binary_input(0, value=True)  # update_binary_input sets ONLINE quality
+        outstation = Outstation(database=db)
+
+        request = build_integrity_poll()
+        responses = outstation.process_request(request.to_bytes())
+
+        block_data = _extract_object_data(responses, group=1, variation=2)
+        # block_data layout (qualifier 0x00, 1-byte start/stop):
+        #   data[0] = start index (0), data[1] = stop index (0),
+        #   data[2:] = per-object bytes (1 byte for g1v2).
+        object_bytes = block_data[2:]
+
+        expected = BinaryInputFlags(quality=BinaryQuality.ONLINE, state=True).to_bytes()
+        assert object_bytes == expected, (
+            f"g1v2 wire bytes {object_bytes.hex()} != BinaryInputFlags.to_bytes() {expected.hex()}"
+        )
+        # Explicit STATE-bit check: BinaryQuality.STATE and the literal 0x80
+        # used by the pre-refactor event path must agree.
+        assert object_bytes[0] & 0x80 == 0x80, "STATE bit not set for True value"
+        assert BinaryQuality.STATE == 0x80
+
+    def test_binary_output_flags_block_matches_object_to_bytes(self) -> None:
+        """g10v2 block data equals BinaryOutputFlags.to_bytes() for each point."""
+        from dnp3.core.flags import BinaryQuality
+        from dnp3.objects.binary_output import BinaryOutputFlags
+
+        db = Database()
+        db.add_binary_output(0)
+        db.update_binary_output(0, value=False)  # update sets ONLINE quality, state stays off
+        outstation = Outstation(database=db)
+
+        request = build_integrity_poll()
+        responses = outstation.process_request(request.to_bytes())
+
+        block_data = _extract_object_data(responses, group=10, variation=2)
+        object_bytes = block_data[2:]
+
+        expected = BinaryOutputFlags(quality=BinaryQuality.ONLINE, state=False).to_bytes()
+        assert object_bytes == expected, (
+            f"g10v2 wire bytes {object_bytes.hex()} != BinaryOutputFlags.to_bytes() {expected.hex()}"
+        )
+        assert object_bytes[0] & 0x80 == 0x00, "STATE bit must be clear for False value"
+
+    def test_analog_input32_block_matches_object_to_bytes(self) -> None:
+        """g30v1 block data equals AnalogInput32.to_bytes() for each point.
+
+        Uses a negative value to exercise the signed 4-byte little-endian
+        encoding path, and a multi-bit quality flags byte (ONLINE |
+        LOCAL_FORCED = 0x11) so the flags-byte assertion is not trivially
+        satisfied by an all-zero or single-bit value.
+
+        This test carries TWO independent assertions:
+        1. Delegation: the outstation bytes equal AnalogInput32(...).to_bytes()
+           (proves the outstation delegates to the object class).
+        2. Literal wire pin: the outstation bytes equal a hardcoded byte
+           string built WITHOUT calling AnalogInput32 at all (proves the
+           object class's own encoding hasn't silently drifted from the
+           IEEE 1815-2012 g30v1 wire format: 1 byte flags + 4 byte signed
+           little-endian value). A future byte-order or signedness
+           regression in AnalogInput32.to_bytes() would fail assertion 2
+           even though assertion 1 would still pass.
+        """
+        from dnp3.core.flags import AnalogQuality
+        from dnp3.objects.analog_input import AnalogInput32
+
+        quality = AnalogQuality.ONLINE | AnalogQuality.LOCAL_FORCED  # 0x01 | 0x10 = 0x11
+        db = Database()
+        db.add_analog_input(0)
+        db.update_analog_input(0, value=-12345, quality=quality)
+        outstation = Outstation(database=db)
+
+        request = build_integrity_poll()
+        responses = outstation.process_request(request.to_bytes())
+
+        block_data = _extract_object_data(responses, group=30, variation=1)
+        object_bytes = block_data[2:]
+
+        # Assertion 1: delegation to the object class.
+        expected = AnalogInput32(quality=quality, value=-12345).to_bytes()
+        assert object_bytes == expected, (
+            f"g30v1 wire bytes {object_bytes.hex()} != AnalogInput32.to_bytes() {expected.hex()}"
+        )
+
+        # Assertion 2: independent literal-bytes pin (built without AnalogInput32).
+        # g30v1 = 1 byte flags (0x11) + 4 byte little-endian signed value.
+        literal_expected = bytes([0x11]) + (-12345).to_bytes(4, "little", signed=True)
+        assert object_bytes == literal_expected, (
+            f"g30v1 wire bytes {object_bytes.hex()} != literal pin {literal_expected.hex()}"
+        )
+
+    def test_binary_input_event_matches_object_to_bytes(self) -> None:
+        """g2v1 event bytes equal BinaryInputEvent.to_bytes() for each event.
+
+        The event block uses qualifier 0x17 (1-byte count + 1-byte index
+        prefix). Extract the per-event byte after the count and index fields
+        and compare to BinaryInputEvent(...).to_bytes() using the same
+        quality/state the database recorded.
+        """
+        from dnp3.core.flags import BinaryQuality
+        from dnp3.objects.binary_input import BinaryInputEvent
+
+        db = Database()
+        db.add_binary_input(0, BinaryInputConfig(event_class=EventClass.CLASS_1))
+        db.update_binary_input(0, value=True)
+
+        outstation = Outstation(database=db)
+        request = build_class_poll(class_1=True, class_2=False, class_3=False)
+        responses = outstation.process_request(request.to_bytes())
+
+        block_data = _extract_object_data(responses, group=2, variation=1)
+        # qualifier 0x17: data[0]=count, data[1]=index, data[2]=flags (1 byte).
+        count = block_data[0]
+        assert count == 1, f"Expected 1 binary input event, got {count}"
+
+        index = block_data[1]
+        assert index == 0
+
+        event_bytes = block_data[2:3]  # 1 byte
+        flags = event_bytes[0]
+        quality = BinaryQuality(flags & 0x7F)
+        state = bool(flags & 0x80)
+
+        expected = BinaryInputEvent(quality=quality, state=state).to_bytes()
+        assert event_bytes == expected, (
+            f"g2v1 event bytes {event_bytes.hex()} != BinaryInputEvent.to_bytes() {expected.hex()}"
+        )
+        assert state is True, "STATE bit must reflect the True value written"
+
+    def test_analog_input_event32_matches_object_to_bytes(self) -> None:
+        """g32v1 event bytes equal AnalogInputEvent32.to_bytes() for each event.
+
+        Uses a negative value to exercise the signed 4-byte little-endian
+        encoding path on the event side as well as the static side.
+        """
+        from dnp3.core.flags import AnalogQuality
+        from dnp3.database.point import AnalogInputConfig
+        from dnp3.objects.analog_input import AnalogInputEvent32
+
+        db = Database()
+        db.add_analog_input(0, AnalogInputConfig(event_class=EventClass.CLASS_1, deadband=0))
+        db.update_analog_input(0, value=-54321)
+
+        outstation = Outstation(database=db)
+        request = build_class_poll(class_1=True, class_2=False, class_3=False)
+        responses = outstation.process_request(request.to_bytes())
+
+        block_data = _extract_object_data(responses, group=32, variation=1)
+        # qualifier 0x17: data[0]=count, then per-event: index(1) + obj(5) = 6 bytes.
+        count = block_data[0]
+        assert count == 1, f"Expected 1 analog input event, got {count}"
+
+        index = block_data[1]
+        assert index == 0
+
+        event_bytes = block_data[2:7]  # 5 bytes
+        flags = event_bytes[0]
+        value = int.from_bytes(event_bytes[1:5], "little", signed=True)
+
+        quality = AnalogQuality(flags)
+        expected = AnalogInputEvent32(quality=quality, value=value).to_bytes()
+        assert event_bytes == expected, (
+            f"g32v1 event bytes {event_bytes.hex()} != AnalogInputEvent32.to_bytes() {expected.hex()}"
+        )
+        assert value == -54321
