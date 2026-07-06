@@ -262,6 +262,159 @@ class TestDedupSafetyGuard:
             _assert_unique_by_index([_make_bi(5), _make_bi(5)], label="BI")
 
 
+class TestCtrRegistration:
+    """CTR points must register as 32-bit counters; frozen_counter_exists honored.
+
+    Wire-level assertions (data-invariants Rule 1): assert point_index,
+    group/variation via CounterPoint.MAX_VALUE (32-bit = 2^32-1), quality
+    ONLINE, event-class assignment, and frozen counter presence.
+    """
+
+    def test_counter_count_from_fixture(self, database: Database) -> None:
+        # Fixture has 2 CTR points: CTR0 and CTR1.
+        assert database.counter_count == 2
+
+    def test_frozen_counter_count_from_fixture(self, database: Database) -> None:
+        # CTR0 has frozen_counter_exists=True; CTR1 has False.
+        assert database.frozen_counter_count == 1
+
+    def test_ctr0_counter_registered_at_correct_index(self, database: Database) -> None:
+        point = database.get_counter(0)
+        assert point is not None
+        assert point.index == 0
+
+    def test_ctr1_counter_registered_at_correct_index(self, database: Database) -> None:
+        point = database.get_counter(1)
+        assert point is not None
+        assert point.index == 1
+
+    def test_counter_initial_value_is_zero(self, database: Database) -> None:
+        # CTR points carry no initial value in PicsProfile; counters start at 0.
+        point = database.get_counter(0)
+        assert point is not None
+        assert point.value == 0
+
+    def test_counter_is_32bit_unsigned(self, database: Database) -> None:
+        # The 32-bit variant is required (Vance domain guidance).
+        # CounterPoint.MAX_VALUE is 2^32 - 1 for the 32-bit variant.
+        point = database.get_counter(0)
+        assert point is not None
+        assert point.MAX_VALUE == 2**32 - 1
+
+    def test_counter_quality_online(self, database: Database) -> None:
+        from dnp3.core.flags import CounterQuality
+
+        point = database.get_counter(0)
+        assert point is not None
+        assert point.quality == CounterQuality.ONLINE
+
+    def test_ctr0_frozen_counter_registered(self, database: Database) -> None:
+        # CTR0 has frozen_counter_exists=True -> add_frozen_counter at same index.
+        point = database.get_frozen_counter(0)
+        assert point is not None
+        assert point.index == 0
+
+    def test_ctr1_no_frozen_counter(self, database: Database) -> None:
+        # CTR1 has frozen_counter_exists=False -> no frozen counter at index 1.
+        assert database.get_frozen_counter(1) is None
+
+    def test_frozen_counter_is_32bit_unsigned(self, database: Database) -> None:
+        point = database.get_frozen_counter(0)
+        assert point is not None
+        assert point.MAX_VALUE == 2**32 - 1
+
+    def test_frozen_counter_initial_value_is_zero(self, database: Database) -> None:
+        point = database.get_frozen_counter(0)
+        assert point is not None
+        assert point.value == 0
+
+    def test_frozen_counter_quality_online(self, database: Database) -> None:
+        from dnp3.core.flags import CounterQuality
+
+        point = database.get_frozen_counter(0)
+        assert point is not None
+        assert point.quality == CounterQuality.ONLINE
+
+    def test_ctr0_counter_event_class_none(self, database: Database) -> None:
+        # Fixture CTR0: counter_event_class="None" -> EventClass.NONE (0).
+        from dnp3.database.point import EventClass as DbEventClass
+
+        point = database.get_counter(0)
+        assert point is not None
+        assert point.config.event_class == DbEventClass.NONE
+
+    def test_ctr0_frozen_event_class_3(self, database: Database) -> None:
+        # Fixture CTR0: frozen_counter_event_class="Class3" -> DbEventClass.CLASS_3.
+        from dnp3.database.point import EventClass as DbEventClass
+
+        point = database.get_frozen_counter(0)
+        assert point is not None
+        assert point.config.event_class == DbEventClass.CLASS_3
+
+    def test_ctr1_counter_event_class_1(self, database: Database) -> None:
+        # Fixture CTR1: counter_event_class="Class1" -> DbEventClass.CLASS_1.
+        from dnp3.database.point import EventClass as DbEventClass
+
+        point = database.get_counter(1)
+        assert point is not None
+        assert point.config.event_class == DbEventClass.CLASS_1
+
+    def test_missing_counter_index_returns_none(self, database: Database) -> None:
+        assert database.get_counter(9999) is None
+
+    def test_missing_frozen_counter_index_returns_none(self, database: Database) -> None:
+        assert database.get_frozen_counter(9999) is None
+
+
+class TestCtrFullJsonCensus:
+    """All 8 CTR points in full.json must register; none are silently dropped."""
+
+    @pytest.fixture()
+    def full_profile(self) -> PicsProfile:
+        # parents[3] from tests/unit/mesa/test_database_builder.py is the repo root.
+        full_path = Path(__file__).parents[3] / "data" / "profiles" / "full.json"
+        return load_profile(full_path)
+
+    @pytest.fixture()
+    def full_database(self, full_profile: PicsProfile) -> Database:
+        db, _ = build_database(full_profile)
+        return db
+
+    def test_all_8_counters_registered(self, full_database: Database) -> None:
+        assert full_database.counter_count == 8
+
+    def test_all_8_counters_have_frozen_counterpart(self, full_database: Database) -> None:
+        # All 8 full.json CTR points have frozen_counter_exists=True.
+        assert full_database.frozen_counter_count == 8
+
+    def test_counter_indices_match_full_json(self, full_database: Database) -> None:
+        # full.json CTR point_index values: 0,1,2,3,5000,5001,5002,5003.
+        expected = {0, 1, 2, 3, 5000, 5001, 5002, 5003}
+        registered = {p.index for p in full_database.get_all_counters()}
+        assert registered == expected
+
+    def test_frozen_counter_indices_match_full_json(self, full_database: Database) -> None:
+        expected = {0, 1, 2, 3, 5000, 5001, 5002, 5003}
+        registered = {p.index for p in full_database.get_all_frozen_counters()}
+        assert registered == expected
+
+    def test_all_counters_start_at_zero(self, full_database: Database) -> None:
+        for counter in full_database.get_all_counters():
+            assert counter.value == 0, f"CTR{counter.index} initial value is not 0"
+
+    def test_all_counters_are_online(self, full_database: Database) -> None:
+        from dnp3.core.flags import CounterQuality
+
+        for counter in full_database.get_all_counters():
+            assert counter.quality == CounterQuality.ONLINE
+
+    def test_high_index_counters_registered(self, full_database: Database) -> None:
+        # CTR points at 5000-5003 must land at their absolute sparse indices.
+        for idx in (5000, 5001, 5002, 5003):
+            assert full_database.get_counter(idx) is not None, f"CTR{idx} missing"
+            assert full_database.get_frozen_counter(idx) is not None, f"FrozenCTR{idx} missing"
+
+
 class TestNegativeMultiplierClamp:
     """MEDIUM 5c/5d: negative multiplier inverts engineering bounds; the sorted
     clamp handles it, and an out-of-range value clamps to the boundary int."""
