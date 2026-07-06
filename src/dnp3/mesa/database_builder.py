@@ -196,7 +196,7 @@ def build_database(
     # CTR: collect all counter points from the profile. The excluded_indices
     # mechanism is available for COUNTER type if needed in a later PR (CLI
     # entity overrides); for now no CTR exclusions are applied.
-    ctr_points = list(profile.ctr)
+    ctr_points = _assert_unique_by_index(profile.ctr, label="CTR")
     frozen_ctr_count = sum(1 for p in ctr_points if p.frozen_counter_exists)
 
     config = DatabaseConfig(
@@ -204,6 +204,9 @@ def build_database(
         max_binary_outputs=len(bo_points) + _HEADROOM,
         max_analog_inputs=len(ai_points) + _HEADROOM,
         max_counters=len(ctr_points) + _HEADROOM,
+        # max_frozen_counters is intentionally smaller than max_counters: only
+        # CtrPoints with frozen_counter_exists=True register a frozen counter,
+        # so the ceiling is the frozen subset, not all CTR points.
         max_frozen_counters=frozen_ctr_count + _HEADROOM,
     )
     database = Database(config=config)
@@ -268,6 +271,10 @@ def build_database(
             value=0,
             quality=CounterQuality.ONLINE,
         )
+        # frozen_counter_event_class is always present in the JSON schema but is
+        # only meaningful when frozen_counter_exists is True. Guard explicitly so
+        # a profile that sets frozen_counter_exists=False with a non-None event
+        # class does not silently register an unwanted frozen counter.
         if ctr.frozen_counter_exists:
             frozen_event_class = DbEventClass(ctr.frozen_counter_event_class.to_dnp3_class())
             database.add_frozen_counter(
