@@ -76,15 +76,13 @@ def _dedup_ai_points(
 ) -> list[AiPoint]:
     """Merge base+equipment and curve/schedule AI points, deduplicating by index.
 
-    Base points take priority. Within each pool, a duplicate index is an
-    unexpected collision and raises with context. Across pools, the curve/schedule
-    overlay intentionally maps multiple logical sets onto the same index range
-    (the four curves in full.json all share indices 329+); only the first
-    registration (base wins; else first overlay) is kept.
-
-    Raising on a within-pool collision surfaces a latent silent-overwrite risk:
-    if two BASE points share an index, or two OVERLAY points for the same
-    sub-group share an index, that is a profile consistency error.
+    Base points take priority. Within each pool, a duplicate index is handled
+    as follows: base-pool duplicates raise via _assert_unique_by_index (a base
+    profile collision is a hard consistency error). Overlay-pool duplicates are
+    silently collapsed by keeping the first occurrence (first-wins), because the
+    curve/schedule multiplexing intentionally maps multiple logical sets onto the
+    same index range (for example, the four curves in full.json all share indices
+    329+). Across pools, a base index always wins over an overlay index.
     """
     base_list = _assert_unique_by_index(base_points, label="AI base+equipment")
 
