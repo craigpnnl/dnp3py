@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **BREAKING:** Replaced the MESA mesa profile format with mesa-tool's
+- **BREAKING:** Replaced the MESA profile format with mesa-tool's
   PicsProfile schema. `data/template/profile.json`, `load_profile`, and the
   internal `Profile`/`ProfileSection`/`ProfilePoint` model changed shape to a
   direct Python twin of `PicsProfile` (uppercase `Key`/`BO`/`BI`/`AO`/`AI`/`CTR`
