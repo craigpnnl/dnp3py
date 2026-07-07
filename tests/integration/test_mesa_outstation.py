@@ -90,6 +90,30 @@ class TestScheduleAndCurveRegistration:
         assert point is not None
         assert point.value == 1
 
+    def test_schedule_bc_array_point_scaled_value(self, mesa_outstation: MesaOutstation) -> None:
+        # schedules_bc[0].values[0] (AI2013): engineering 1.0, multiplier 1.0,
+        # offset 0.0 -> transmission = round((1.0 - 0.0) / 1.0) = 1. Every one
+        # of the four schedules_bc instances shares this multiplexed index and
+        # the same engineering value in full.json; first-wins dedup registers
+        # schedules_bc[0]. Verified by scanning the whole profile: no
+        # schedules_bc point (header or array) carries a non-identity
+        # multiplier/offset, so 1.0/0.0 is the only scaling this profile
+        # exercises for this sub-group.
+        point = mesa_outstation.database.get_analog_input(2013)
+        assert point is not None
+        assert point.value == 1
+
+    def test_schedule_array_point_scaled_value(self, mesa_outstation: MesaOutstation) -> None:
+        # schedules[0].values[...] (AI3019): engineering 9.0, multiplier 1.0,
+        # offset 0.0 -> transmission = round((9.0 - 0.0) / 1.0) = 9. Chosen
+        # over AI3015 (values[0], engineering 1.0, identical to the ubiquitous
+        # "1" seen elsewhere in this profile's schedule points) so a
+        # wrong-index or wrong-field read of the array would not silently
+        # coincide with the expected value.
+        point = mesa_outstation.database.get_analog_input(3019)
+        assert point is not None
+        assert point.value == 9
+
     def test_curve_selector_ao245_mirrors_to_curve_type_ai329(self) -> None:
         # AO245 -> AI329 is the curve-edit selector cited in the DNP-022 plan
         # (Section 5.4): AI329 is the curve_type header point shared by all 4
