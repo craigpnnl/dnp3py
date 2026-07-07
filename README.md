@@ -90,49 +90,67 @@ asyncio.run(main())
 
 ## MESA IEEE 1815.2 Outstation
 
-The `dnp3.mesa` module is a DER-oriented outstation built on the IEEE 1815.2
-profile. It supports meters, DERs (distributed energy resources), inverters, and
-batteries. You describe the device by loading a JSON profile; the module builds
-the DNP3 database and command handler automatically.
+The `dnp3.mesa` module is a DER-oriented outstation built on mesa-tool's
+PicsProfile format, the same profile shape mesa-tool's Rust conformance
+control station uses. It supports meters, DERs (distributed energy
+resources), inverters, and batteries, plus counters, curves, and schedules.
+You describe the device by loading a PicsProfile JSON file; the module builds
+the DNP3 database and command handler automatically, scaling analog values
+from engineering units to DNP3 transmission integers on load.
 
-Profiles are authored as JSON today. Spreadsheet (xlsx) ingestion is a planned
-future capability, not yet available.
+Four bundled profiles ship inside the package
+(`full`, `mandatory_1815`, `mandatory_1547`, `minimal_1547`); `full` is the
+default. Profiles are authored as JSON; there is no spreadsheet ingestion
+path.
 
 ### Quick start (CLI)
 
 ```
-usage: python -m dnp3.mesa [-h] --profile PROFILE [--host HOST] [--port PORT]
-                           [--address ADDRESS]
+usage: python -m dnp3.mesa [-h] [--profile PROFILE]
+                           [--profile-name {full,mandatory_1815,mandatory_1547,minimal_1547}]
+                           [--host HOST] [--port PORT] [--address ADDRESS]
                            [--master-address MASTER_ADDRESS] [--meters METERS]
                            [--ders DERS] [--inverters INVERTERS]
                            [--batteries BATTERIES]
 
 options:
-  --profile PROFILE           Path to profile.json (required)
+  --profile PROFILE           Path to a PicsProfile JSON file (default: bundled full.json)
+  --profile-name {full,mandatory_1815,mandatory_1547,minimal_1547}
+                              Select a bundled profile by name instead of --profile
+                              (mutually exclusive with --profile)
   --host HOST                 Listen address (default: 0.0.0.0)
   --port PORT                 Listen port (default: 20000)
   --address ADDRESS           DNP3 outstation address (default: 1)
   --master-address MASTER_ADDRESS
                               Expected master address (default: 0)
-  --meters METERS             Number of meters (overrides profile entities)
-  --ders DERS                 Number of DERs (overrides profile entities)
-  --inverters INVERTERS       Number of inverters (overrides profile entities)
-  --batteries BATTERIES       Number of batteries (overrides profile entities)
+  --meters METERS             Number of meter instances to include
+  --ders DERS                 Number of DER instances to include
+  --inverters INVERTERS       Number of inverter instances to include
+  --batteries BATTERIES       Number of battery instances to include
 ```
 
-Run a simulator from the bundled profile template:
+Run the simulator against the bundled full profile (the default, so
+`--profile`/`--profile-name` can be omitted):
 
 ```bash
-python -m dnp3.mesa --profile data/template/profile.json
+python -m dnp3.mesa
 ```
 
-The `--meters`, `--ders`, `--inverters`, and `--batteries` flags override the
-entity counts declared in the profile. Use them to slice a large shared profile
-down to the device being simulated without editing the file:
+Run against a conformance subset, or a custom profile:
 
 ```bash
-# Simulate only a meter (suppress DERs, inverters, batteries)
-python -m dnp3.mesa --profile my_profile.json --meters 1 --ders 0 --inverters 0 --batteries 0
+python -m dnp3.mesa --profile-name minimal_1547
+python -m dnp3.mesa --profile my_device_profile.json
+```
+
+The `--meters`, `--ders`, `--inverters`, and `--batteries` flags include only
+the first N instances of that equipment type, letting a single shared
+profile serve devices with different hardware configurations without editing
+the file:
+
+```bash
+# Include only the first meter; exclude DERs, inverters, and batteries.
+python -m dnp3.mesa --profile-name full --meters 1 --ders 0 --inverters 0 --batteries 0
 ```
 
 ### Programmatic API
@@ -144,7 +162,7 @@ from dnp3.mesa.outstation import create_mesa_outstation
 
 async def main():
     outstation = create_mesa_outstation(
-        profile_path=Path("my_profile.json"),
+        profile_path=Path("my_device_profile.json"),
         host="0.0.0.0",
         port=20000,
         address=1,
@@ -160,8 +178,9 @@ asyncio.run(main())
 `await outstation.run()` to start the TCP server; call `await outstation.stop()`
 to shut it down cleanly.
 
-For a full description of the JSON profile schema, see
-[docs/mesa-outstation.md](docs/mesa-outstation.md).
+For a full description of the PicsProfile format, the bundled profiles, the
+engineering-to-transmission scaling contract, and CTR/curve/schedule
+handling, see [docs/mesa-outstation.md](docs/mesa-outstation.md).
 
 ## Supported Features
 
@@ -230,9 +249,8 @@ dnp3py/
 │   ├── outstation/     # Outstation implementation
 │   ├── master/         # Master implementation
 │   ├── mesa/           # MESA IEEE 1815.2 DER outstation
+│   │   └── data/profiles/  # Bundled PicsProfile JSON files (full.json default)
 │   └── transport_io/   # TCP/simulator channels
-├── data/
-│   └── template/       # MESA profile template (profile.json)
 └── tests/
     ├── unit/           # Unit tests
     └── integration/    # Integration tests

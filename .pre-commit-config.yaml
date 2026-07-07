@@ -7,7 +7,7 @@ repos:
       - id: check-yaml
       - id: check-toml
       - id: check-added-large-files
-        exclude: ^data/profiles/full\.json$
+        exclude: ^src/dnp3/mesa/data/profiles/full\.json$
         # full.json (~2.8 MB) is the only bundled profile over the 500 KB limit. The exclude is tight to this one file so any other oversized file still trips the gate.
       - id: check-merge-conflict
       - id: debug-statements

@@ -378,7 +378,7 @@ class TestCtrFullJsonCensus:
     @pytest.fixture()
     def full_profile(self) -> PicsProfile:
         # parents[3] from tests/unit/mesa/test_database_builder.py is the repo root.
-        full_path = Path(__file__).parents[3] / "data" / "profiles" / "full.json"
+        full_path = Path(__file__).parents[3] / "src" / "dnp3" / "mesa" / "data" / "profiles" / "full.json"
         return load_profile(full_path)
 
     @pytest.fixture()

@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **BREAKING:** Replaced the MESA mesa profile format with mesa-tool's
+  PicsProfile schema. `data/template/profile.json`, `load_profile`, and the
+  internal `Profile`/`ProfileSection`/`ProfilePoint` model changed shape to a
+  direct Python twin of `PicsProfile` (uppercase `Key`/`BO`/`BI`/`AO`/`AI`/`CTR`
+  sections, named-struct equipment groups, engineering-unit analog values
+  scaled to DNP3 transmission integers on load). Profiles in the old format no
+  longer load. See ADR-002 (supersedes ADR-001).
+
+### Added
+
+- Bundled the four mesa-tool PicsProfile conformance profiles
+  (`full`, `mandatory_1815`, `mandatory_1547`, `minimal_1547`) under
+  `src/dnp3/mesa/data/profiles/`. `full.json` is the CLI default. A
+  PicsProfile JSON schema for load-time and CI validation is deferred to a
+  follow-up card; the hand-rolled boundary loader in `profile.py` is the
+  format's authority for now.
+- CTR (counter) and curve support in the mesa outstation: counter points
+  register into the existing DNP3 counter database, and curve/schedule AI
+  points register at their absolute indices with scaled values. Selector-driven
+  curve and schedule editing (multiplexing) is deferred to a follow-up.
+- `--profile-name {full,mandatory_1815,mandatory_1547,minimal_1547}` CLI flag
+  to select a bundled profile by name; `--profile` still accepts an arbitrary
+  path and defaults to the packaged `full.json` when neither is given.
+
 ## [0.2.0] - 2026-06-26
 
 ### Added

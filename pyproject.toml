@@ -33,6 +33,10 @@ source = "vcs"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/dnp3"]
+# Profile data lives under src/dnp3/mesa/data/profiles/ (inside the package,
+# not at the repo root) precisely so it ships in both the built wheel and an
+# editable install, and so the CLI can resolve it via importlib.resources
+# instead of a __file__-relative path that breaks once installed.
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
