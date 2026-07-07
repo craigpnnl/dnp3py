@@ -21,8 +21,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Bundled the four mesa-tool PicsProfile conformance profiles
   (`full`, `mandatory_1815`, `mandatory_1547`, `minimal_1547`) under
-  `src/dnp3/mesa/data/profiles/`, plus the format's JSON schema. `full.json`
-  is the CLI default.
+  `src/dnp3/mesa/data/profiles/`. `full.json` is the CLI default. A
+  PicsProfile JSON schema for load-time and CI validation is deferred to a
+  follow-up card; the hand-rolled boundary loader in `profile.py` is the
+  format's authority for now.
 - CTR (counter) and curve support in the mesa outstation: counter points
   register into the existing DNP3 counter database, and curve/schedule AI
   points register at their absolute indices with scaled values. Selector-driven
