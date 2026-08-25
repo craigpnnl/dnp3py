@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 <!-- version list -->
 
+## v0.3.2 (2026-08-25)
+
+### Bug Fixes
+
+- **release**: Add the changelog insertion_flag marker PSR requires
+  ([`05bc2fc`](https://github.com/craigpnnl/dnp3py/commit/05bc2fc6b53ebe5ff62aa2762b36e96c3a0d4050))
+
+- **release**: Drop the deprecated changelog_file key, rely on its default
+  ([`5582674`](https://github.com/craigpnnl/dnp3py/commit/55826740feba25e33f42493afb28a2dbbc91cf11))
+
+### Documentation
+
+- Backfill 0.3.0 and 0.3.1 CHANGELOG sections
+  ([`5b6d2cf`](https://github.com/craigpnnl/dnp3py/commit/5b6d2cfd7c5a8019d612d2a2e57534bd0674e614))
+
+- **release**: Trim PSR config comments to load-bearing facts
+  ([`c8ce68b`](https://github.com/craigpnnl/dnp3py/commit/c8ce68b835a6076c4d5ac260095e8c90a4707f0f))
+
+
 ## [Unreleased]
 
 ## [0.3.1] - 2026-08-25
