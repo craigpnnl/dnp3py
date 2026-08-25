@@ -16,12 +16,26 @@ from dnp3.application.qualifiers import (
     OBJECT_HEADER_SIZE,
     CountRange,
     ObjectHeader,
+    PrefixCode,
     RangeCode,
     StartStopRange,
     get_prefix_size,
     get_range_size,
 )
 from dnp3.core.enums import FunctionCode
+from dnp3.objects import registry
+
+# Prefix codes that prefix each object with its index. The size prefixes
+# (UINT8_SIZE and up) describe variable-format objects, whose width the registry
+# cannot supply.
+_INDEX_PREFIX_CODES = frozenset(
+    {
+        PrefixCode.NONE,
+        PrefixCode.UINT8_INDEX,
+        PrefixCode.UINT16_INDEX,
+        PrefixCode.UINT32_INDEX,
+    }
+)
 
 # Response function codes (0x81-0x83)
 RESPONSE_FUNCTION_CODES = frozenset(
@@ -252,6 +266,98 @@ def parse_object_headers(data: bytes) -> list[ObjectBlock]:
     return blocks
 
 
+def _lookup_object_size(header: ObjectHeader) -> int | None:
+    """Per-object size in bytes for a block's group/variation, or None.
+
+    The object width comes from the object registry, which knows every
+    registered group/variation including timestamped event variations (g2v2 is
+    7 bytes, g32v3 is 11) and float variations (g30v5 is 5, g30v6 is 9). Reading
+    it from the registry keeps one source of truth for object widths instead of
+    a second table in the parser.
+
+    Returns None for group/variations the registry does not know: g1v1 packed
+    format is bit-packed rather than fixed per-object, and groups 40/42 are not
+    registered. Callers then fall back to consuming the rest of the fragment,
+    which is the historical behaviour and correct when the block is last.
+
+    Raises:
+        ValueError: If the qualifier holds a reserved range or prefix code. Both
+            are enum lookups, so decoding them here means a reserved qualifier
+            fails in this call, where the caller guards for it, rather than
+            surfacing mid-block-parse.
+    """
+    # Decoded (not just validated) so a reserved qualifier raises here, and so
+    # the sizes below are keyed off codes this function has actually resolved.
+    range_code = header.range_code
+    prefix_code = header.prefix_code
+    if get_range_size(range_code) == 0 and range_code != RangeCode.ALL_OBJECTS:
+        return None  # Unsupported range specifier: width is unknowable.
+    if get_prefix_size(prefix_code) and prefix_code not in _INDEX_PREFIX_CODES:
+        return None  # Size prefixes describe variable-format objects.
+    return registry.get_size(header.group, header.variation)
+
+
+def parse_response_object_blocks(data: bytes) -> list[ObjectBlock]:
+    """Parse response object blocks, bounding each by its object data size.
+
+    Distinct from `parse_object_headers`, which is for *requests*: a request
+    (READ, for instance) carries object headers and range specifiers but no
+    object data, so consuming a per-object width there would over-read. A
+    response carries values, so each block must be delimited by its own size
+    for the next block's header to be found.
+
+    A block whose size cannot be determined absorbs the remaining fragment, so
+    an unknown group/variation costs the blocks after it rather than corrupting
+    the ones before it.
+
+    When a block declares more objects than its data holds, the block is still
+    returned carrying the bytes that are present, but parsing stops there: the
+    declared width is the only thing that locates the next header, so once the
+    data contradicts it any following boundary is a guess. Truncated trailing
+    data therefore costs the blocks after it, never the ones before.
+    """
+    blocks: list[ObjectBlock] = []
+    offset = 0
+
+    while offset < len(data):
+        remaining = data[offset:]
+        if len(remaining) < OBJECT_HEADER_SIZE:
+            break  # Not enough for another header
+
+        try:
+            header = ObjectHeader.from_bytes(remaining)
+            object_size = _lookup_object_size(header)
+        except ValueError:
+            # A reserved qualifier has no decodable range or prefix code, so the
+            # block's width is unknowable. Stop here and keep what came before
+            # rather than letting it propagate and discard the whole response.
+            break
+
+        if object_size is None and header.range_code != RangeCode.ALL_OBJECTS:
+            # Width unknown for a block that does carry objects. Take the rest of
+            # the fragment: guessing a boundary would decode the payload of this
+            # block as the header of the next one.
+            blocks.append(ObjectBlock(header=header, data=remaining[OBJECT_HEADER_SIZE:]))
+            break
+
+        try:
+            block, consumed = _parse_object_block(remaining, object_size=object_size)
+        except (ParseError, ValueError):
+            # Declared object count exceeds the bytes available. Keep the block
+            # with the data present, then stop: the next boundary is unknowable.
+            blocks.append(ObjectBlock(header=header, data=remaining[OBJECT_HEADER_SIZE:]))
+            break
+
+        blocks.append(block)
+        if consumed <= 0:  # pragma: no cover - defensive
+            # Unreachable: _parse_object_block always consumes the 3-byte header.
+            # Kept so a future change to its return contract cannot spin here.
+            break
+        offset += consumed
+
+    return blocks
+
+
 def parse_request(data: bytes) -> RequestFragment:
     """Parse a complete request fragment.
 
@@ -288,8 +394,9 @@ def parse_response(data: bytes) -> ResponseFragment:
     header, consumed = parse_response_header(data)
     remaining = data[consumed:]
 
-    # Parse object headers (we don't know object sizes without group/variation lookup)
-    objects = parse_object_headers(remaining)
+    # Size-aware: a response carries object data, so each block must be bounded
+    # by its own width for the next block's header to be located.
+    objects = parse_response_object_blocks(remaining)
 
     return ResponseFragment(header=header, objects=tuple(objects))
 

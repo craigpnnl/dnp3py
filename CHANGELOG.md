@@ -33,6 +33,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   to select a bundled profile by name; `--profile` still accepts an arbitrary
   path and defaults to the packaged `full.json` when neither is given.
 
+### Fixed
+
+- Master responses carrying more than one object block are no longer
+  truncated to the first block. Each block is now delimited by its
+  per-object size from the object registry. `parse_object_headers` is
+  unchanged and still serves requests, which carry no object data.
+- Master value parsers now decode the count qualifiers (`0x17`, `0x28`) that
+  every event group uses, together with each object's index prefix.
+  Previously the count field and the index prefixes were read as flag and
+  value bytes, reporting points at wrong indices with wrong values.
+- Bit-packed binary decoding is now selected by object group rather than by
+  variation number alone, so binary event blocks (`g2v1`, `g11v1`) are
+  decoded as one flags byte per point instead of as packed bits. Packed
+  decoding is also bounded by the declared object count, so the unused high
+  bits of the final byte are no longer reported as points.
+- Master parsing of the float analog variations `g30v5` and `g30v6` no
+  longer returns an empty list, and the timestamped event variations
+  (`g2v2`, `g2v3`, `g32v3`, `g22v5`) are sized correctly.
+- A single malformed object block, such as one carrying a reserved
+  qualifier, no longer discards an entire otherwise-valid response.
+
 ## [0.2.0] - 2026-06-26
 
 ### Added

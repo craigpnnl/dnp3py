@@ -15,6 +15,7 @@ from dnp3.application.parser import (
     parse_request_header,
     parse_response,
     parse_response_header,
+    parse_response_object_blocks,
 )
 from dnp3.application.qualifiers import ObjectHeader, PrefixCode, RangeCode
 from dnp3.core.enums import FunctionCode
@@ -350,3 +351,92 @@ class TestRoundtrip:
         assert parsed.header.iin == original.header.iin
         assert parsed.header.control.seq == original.header.control.seq
         assert len(parsed.objects) == len(original.objects)
+
+
+class TestParseResponseObjectBlocks:
+    """Tests for size-aware response block delimiting.
+
+    `parse_response_object_blocks` bounds each block by its object width so the
+    next block's header can be found. `parse_object_headers` (requests) must not
+    do this, because a request carries no object data.
+    """
+
+    def test_two_blocks_are_delimited_by_object_size(self) -> None:
+        """g1v2 with one point, then a g30v1 block, yields two blocks."""
+        data = bytes([0x01, 0x02, 0x00, 0x00, 0x00, 0x81]) + bytes(
+            [0x1E, 0x01, 0x00, 0x00, 0x00, 0x01, 0x61, 0x09, 0x00, 0x00]
+        )
+        blocks = parse_response_object_blocks(data)
+
+        assert [(b.header.group, b.header.variation) for b in blocks] == [(1, 2), (30, 1)]
+
+    def test_unknown_group_absorbs_remainder(self) -> None:
+        """An unregistered group/variation consumes the rest of the fragment.
+
+        Group 40 is not in the object registry, so its width is unknown; it takes
+        the remaining bytes rather than guessing a boundary.
+        """
+        data = bytes([0x28, 0x02, 0x00, 0x00, 0x00, 0x01, 0x09, 0x03]) + bytes([0x01, 0x02, 0x00, 0x00, 0x00, 0x81])
+        blocks = parse_response_object_blocks(data)
+
+        assert len(blocks) == 1
+        assert blocks[0].header.group == 40
+
+    def test_reserved_qualifier_stops_parsing_without_raising(self) -> None:
+        """A reserved range code has no decodable width.
+
+        Parsing stops and returns the blocks already found, rather than raising
+        and discarding the whole response.
+        """
+        data = bytes([0x01, 0x02, 0x00, 0x00, 0x00, 0x81]) + bytes([0x01, 0x02, 0x0C, 0x00, 0x00])
+        blocks = parse_response_object_blocks(data)
+
+        assert len(blocks) == 1
+        assert blocks[0].header.group == 1
+
+    def test_leading_reserved_qualifier_returns_empty(self) -> None:
+        """A reserved qualifier in the first block yields no blocks, not an error."""
+        assert parse_response_object_blocks(bytes([0x01, 0x02, 0x0C, 0x00, 0x00])) == []
+
+    def test_short_object_data_keeps_block_and_stops(self) -> None:
+        """A block declaring more points than it carries is kept, then parsing stops."""
+        # g1v2 start=0 stop=4 declares 5 points but supplies 2 bytes.
+        data = bytes([0x01, 0x02, 0x00, 0x00, 0x04, 0x81, 0x01])
+        blocks = parse_response_object_blocks(data)
+
+        assert len(blocks) == 1
+        assert blocks[0].header.group == 1
+        assert blocks[0].data == bytes([0x00, 0x04, 0x81, 0x01])
+
+    def test_partial_trailing_header_is_ignored(self) -> None:
+        """Fewer than 3 trailing bytes cannot be a header and are dropped."""
+        data = bytes([0x01, 0x02, 0x00, 0x00, 0x00, 0x81]) + bytes([0x1E, 0x01])
+        blocks = parse_response_object_blocks(data)
+
+        assert len(blocks) == 1
+
+    def test_empty_data_returns_empty(self) -> None:
+        assert parse_response_object_blocks(b"") == []
+
+    def test_all_objects_qualifier_block(self) -> None:
+        """An ALL_OBJECTS response block carries no range data and no values."""
+        blocks = parse_response_object_blocks(bytes([0x3C, 0x01, 0x06]))
+
+        assert len(blocks) == 1
+        assert blocks[0].header.group == 60
+
+    def test_virtual_address_range_absorbs_remainder(self) -> None:
+        """A range specifier with no defined width cannot bound the block."""
+        data = bytes([0x01, 0x02, 0x0B, 0x00, 0x00, 0x81]) + bytes([0x1E, 0x01, 0x00, 0x00, 0x00])
+        blocks = parse_response_object_blocks(data)
+
+        assert len(blocks) == 1
+        assert blocks[0].header.group == 1
+
+    def test_size_prefix_absorbs_remainder(self) -> None:
+        """Size-prefixed (variable-format) objects have no registry width."""
+        data = bytes([0x02, 0x01, 0x47, 0x01, 0x01, 0x81]) + bytes([0x1E, 0x01, 0x00, 0x00, 0x00])
+        blocks = parse_response_object_blocks(data)
+
+        assert len(blocks) == 1
+        assert blocks[0].header.group == 2
