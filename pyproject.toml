@@ -160,7 +160,6 @@ allow_zero_version = true
 # built; until then, dated sections beyond 0.3.1 are hand-authored the same way
 # 0.1.0 through 0.3.1 were.
 [tool.semantic_release.changelog]
-changelog_file = "CHANGELOG.md"
 insertion_flag = "<!-- version list -->"
 changelog_sections = [
     {type = "feat", section = "Added"},
