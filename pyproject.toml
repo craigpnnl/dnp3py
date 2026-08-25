@@ -123,30 +123,45 @@ show_missing = true
 # smoke-tested wheel uploaded by the build job is the artifact that reaches
 # PyPI. A PSR re-build would shadow the validated artifact with an unverified one.
 #
-# commit_version_number = false: hatch-vcs derives the version from the git
-# tag at build time, so no version constant lives in source. A PSR version
-# commit would add a meaningless bump commit with nothing to change.
+# CHANGELOG.md is committed to main on every real release. The CLI defaults
+# for `semantic-release version` are --commit and --push, both true, so the
+# release job (which grants contents: write) already commits and pushes the
+# regenerated file; there is no separate flag to enable that. The mechanism
+# that actually gates whether PSR writes anything is the `<!-- version list -->`
+# insertion_flag in CHANGELOG.md (below [tool.semantic_release.changelog]): PSR's
+# UPDATE-mode template only inserts new content at that marker, and produces a
+# byte-identical file (silently, with no error) when the marker is absent. That
+# was the real cause of v0.3.0 and v0.3.1 landing with a full GitHub release body
+# but no corresponding CHANGELOG.md commit; there was no config flag disabling it.
 #
-# branch = "main": PSR runs on main and pushes the tag back to main. This is
-# safe because commit_version_number = false means PSR never pushes a bump
-# commit, only the annotated tag itself.
+# branch = "main": PSR runs on main and pushes the tag and the changelog commit
+# back to main.
 [tool.semantic_release]
 version_toml = []
 version_variables = []
 tag_format = "v{version}"
 branch = "main"
-changelog_file = "CHANGELOG.md"
 build_command = ""
 dist_path = "dist/"
 upload_to_pypi = false
 upload_to_release = true
-commit_version_number = false
 commit_parser = "conventional"
 logging_use_named_masks = false
 major_on_zero = false
 allow_zero_version = true
 
+# changelog_sections below documents the intended feat/fix/perf/refactor/docs to
+# Added/Changed/Fixed mapping, but python-semantic-release 10.6.1 does not read
+# this key from its built-in changelog template: the built-in template renders
+# its own fixed category labels ("Bug Fixes", "Features", "Documentation", etc.)
+# and a `## v{version} (date)` heading, not the bracketed Keep a Changelog
+# `## [x.y.z] - date` heading this file otherwise uses. Reaching an exact match
+# requires custom Jinja2 templates (changelog.template_dir) that are not yet
+# built; until then, dated sections beyond 0.3.1 are hand-authored the same way
+# 0.1.0 through 0.3.1 were.
 [tool.semantic_release.changelog]
+changelog_file = "CHANGELOG.md"
+insertion_flag = "<!-- version list -->"
 changelog_sections = [
     {type = "feat", section = "Added"},
     {type = "fix", section = "Fixed"},
