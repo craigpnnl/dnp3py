@@ -4,7 +4,8 @@ The Master class handles communication with an outstation,
 including polling, commands, and unsolicited response handling.
 """
 
-from collections.abc import Sequence
+import struct
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass, field
 
 from dnp3.application.builder import (
@@ -57,15 +58,339 @@ GROUP_TIME_DELAY = 52
 QUALITY_ONLINE = 0x01
 QUALITY_STATE = 0x80
 
-# DNP3 variation numbers for parsing (IEEE 1815-2012)
-VARIATION_PACKED = 1  # Packed format (bits)
-VARIATION_FLAGS = 2  # With flags byte
-VARIATION_32BIT_FLAGS = 1  # 32-bit value with flags
-VARIATION_16BIT_FLAGS = 2  # 16-bit value with flags
-VARIATION_32BIT_NO_FLAGS = 3  # 32-bit value, no flags (analog g30v3)
-VARIATION_16BIT_NO_FLAGS = 4  # 16-bit value, no flags (analog g30v4)
-VARIATION_COUNTER_32BIT_NO_FLAGS = 5  # 32-bit counter, no flags (g20v5)
-VARIATION_COUNTER_16BIT_NO_FLAGS = 6  # 16-bit counter, no flags (g20v6)
+# Variation 1 of groups 1 and 10 is bit-packed. Other variations are resolved
+# through the per-group width and spec tables below, which is why there is no
+# flat VARIATION_* set here: the same variation number means different layouts
+# in different groups (g30v1 is a 32-bit value, g1v1 is packed bits), and a
+# single table keyed on the number alone is what made event blocks misparse.
+VARIATION_PACKED = 1
+
+
+# Qualifier field masks (IEEE 1815-2012 Table 4-1).
+QUALIFIER_RANGE_MASK = 0x0F
+QUALIFIER_PREFIX_MASK = 0x70
+
+# Range specifier codes carrying an object count rather than start/stop indices.
+# Event responses use these, with a per-object index prefix.
+RANGE_UINT8_COUNT = 0x07
+RANGE_UINT16_COUNT = 0x08
+RANGE_UINT32_COUNT = 0x09
+
+# Range specifier codes carrying start and stop indices.
+RANGE_UINT8_START_STOP = 0x00
+RANGE_UINT16_START_STOP = 0x01
+RANGE_UINT32_START_STOP = 0x02
+
+# Width in bytes of the count field, by range code.
+_COUNT_FIELD_WIDTH = {
+    RANGE_UINT8_COUNT: 1,
+    RANGE_UINT16_COUNT: 2,
+    RANGE_UINT32_COUNT: 4,
+}
+
+# Width in bytes of each start/stop field, by range code.
+_START_STOP_FIELD_WIDTH = {
+    RANGE_UINT8_START_STOP: 1,
+    RANGE_UINT16_START_STOP: 2,
+    RANGE_UINT32_START_STOP: 4,
+}
+
+# Width in bytes of each object's index prefix, by prefix code (Table 4-3).
+# Size prefixes (0x40-0x60) are for variable-format objects, which none of the
+# measurement groups parsed here use.
+_INDEX_PREFIX_WIDTH = {
+    0x00: 0,
+    0x10: 1,
+    0x20: 2,
+    0x30: 4,
+}
+
+
+@dataclass(frozen=True, slots=True)
+class ObjectLayout:
+    """How a block's objects are laid out after the object header.
+
+    Attributes:
+        first_index: Index of the first object (start index, or 0 for counts).
+        count: Number of objects declared, or None if the range does not say.
+        data_offset: Byte offset in the block data where objects begin.
+        index_prefix_width: Bytes of index prefix carried by each object.
+    """
+
+    first_index: int
+    count: int | None
+    data_offset: int
+    index_prefix_width: int
+
+
+def _decode_object_layout(qualifier: int, data: bytes) -> ObjectLayout | None:
+    """Decode a block's range specifier and index-prefix width from its qualifier.
+
+    Handles both range qualifiers (start/stop, used by static responses) and
+    count qualifiers (used by every event response, with a per-object index
+    prefix). Returns None when the qualifier's range specifier is one this
+    parser does not support, so the caller yields no values rather than
+    misreading the payload as data.
+    """
+    range_code = qualifier & QUALIFIER_RANGE_MASK
+    prefix_code = qualifier & QUALIFIER_PREFIX_MASK
+    index_prefix_width = _INDEX_PREFIX_WIDTH.get(prefix_code)
+    if index_prefix_width is None:
+        return None
+
+    count_width = _COUNT_FIELD_WIDTH.get(range_code)
+    if count_width is not None:
+        if len(data) < count_width:
+            return None
+        count = int.from_bytes(data[:count_width], "little")
+        return ObjectLayout(
+            first_index=0,
+            count=count,
+            data_offset=count_width,
+            index_prefix_width=index_prefix_width,
+        )
+
+    field_width = _START_STOP_FIELD_WIDTH.get(range_code)
+    if field_width is not None:
+        if len(data) < field_width * 2:
+            return None
+        start = int.from_bytes(data[:field_width], "little")
+        stop = int.from_bytes(data[field_width : field_width * 2], "little")
+        return ObjectLayout(
+            first_index=start,
+            count=stop - start + 1,
+            data_offset=field_width * 2,
+            index_prefix_width=index_prefix_width,
+        )
+
+    return None
+
+
+def _iter_object_slots(
+    layout: ObjectLayout,
+    data: bytes,
+    object_width: int,
+) -> "Iterator[tuple[int, int]]":
+    """Yield (index, payload_offset) for each object in a block.
+
+    The index comes from the object's own prefix when the qualifier carries one,
+    and from consecutive numbering off `first_index` otherwise. Iteration stops
+    at the declared count or when the remaining bytes cannot hold another whole
+    object, so a truncated or over-long block yields only the objects actually
+    present.
+    """
+    offset = layout.data_offset
+    ordinal = 0
+
+    while layout.count is None or ordinal < layout.count:
+        entry_width = layout.index_prefix_width + object_width
+        if offset + entry_width > len(data):
+            return
+
+        if layout.index_prefix_width:
+            index = int.from_bytes(data[offset : offset + layout.index_prefix_width], "little")
+        else:
+            index = layout.first_index + ordinal
+
+        yield index, offset + layout.index_prefix_width
+        offset += entry_width
+        ordinal += 1
+
+
+# Groups whose variation 1 is genuinely bit-packed (1 bit per point). Event
+# groups (2, 11, 22, 32, 42) also number a variation 1, but it is one flags byte
+# per point, so packed decoding must be keyed on the group as well.
+PACKED_FORMAT_GROUPS = frozenset({GROUP_BINARY_INPUT, GROUP_BINARY_OUTPUT})
+
+# Per-object widths in bytes for binary variations, excluding any index prefix.
+_BINARY_FLAGS_WIDTH = 1
+_ABSOLUTE_TIMESTAMP_WIDTH = 6
+_RELATIVE_TIME_WIDTH = 2
+
+# Static groups 1 and 10: variation 2 is a bare flags byte.
+_STATIC_BINARY_WIDTHS = {
+    2: _BINARY_FLAGS_WIDTH,
+}
+
+# Event groups 2 and 11: variation 1 is a bare flags byte, 2 appends a 48-bit
+# absolute timestamp, 3 appends a 16-bit time relative to the fragment's CTO.
+_EVENT_BINARY_WIDTHS = {
+    1: _BINARY_FLAGS_WIDTH,
+    2: _BINARY_FLAGS_WIDTH + _ABSOLUTE_TIMESTAMP_WIDTH,
+    3: _BINARY_FLAGS_WIDTH + _RELATIVE_TIME_WIDTH,
+}
+
+_BINARY_EVENT_GROUPS = frozenset({GROUP_BINARY_INPUT_EVENT, GROUP_BINARY_OUTPUT_EVENT})
+
+
+def _binary_object_width(group: int, variation: int) -> int | None:
+    """Per-object width for a binary group/variation, or None if unsupported.
+
+    Resolved per group because variation 2 means different things either side of
+    the static/event split: a bare flags byte for g1v2/g10v2, but flags plus a
+    48-bit timestamp for g2v2/g11v2.
+    """
+    if group in _BINARY_EVENT_GROUPS:
+        return _EVENT_BINARY_WIDTHS.get(variation)
+    return _STATIC_BINARY_WIDTHS.get(variation)
+
+
+def _decode_signed_int(raw: bytes) -> float:
+    """Decode a little-endian signed integer as a float."""
+    return float(int.from_bytes(raw, "little", signed=True))
+
+
+def _decode_float32(raw: bytes) -> float:
+    """Decode a little-endian IEEE 754 single-precision value."""
+    return float(struct.unpack("<f", raw)[0])
+
+
+def _decode_float64(raw: bytes) -> float:
+    """Decode a little-endian IEEE 754 double-precision value."""
+    return float(struct.unpack("<d", raw)[0])
+
+
+@dataclass(frozen=True, slots=True)
+class AnalogValueSpec:
+    """How to decode one analog object.
+
+    Attributes:
+        value_width: Bytes of value payload.
+        has_flags: Whether a quality flags byte precedes the value.
+        decode: Converts the value bytes to a float.
+        timestamp_width: Bytes of trailing timestamp to skip.
+    """
+
+    value_width: int
+    has_flags: bool
+    decode: "Callable[[bytes], float]"
+    timestamp_width: int = 0
+
+    @property
+    def object_width(self) -> int:
+        """Total bytes per object, excluding any index prefix."""
+        flags_width = 1 if self.has_flags else 0
+        return flags_width + self.value_width + self.timestamp_width
+
+
+@dataclass(frozen=True, slots=True)
+class CounterValueSpec:
+    """How to decode one counter object."""
+
+    value_width: int
+    has_flags: bool
+    timestamp_width: int = 0
+
+    @property
+    def object_width(self) -> int:
+        """Total bytes per object, excluding any index prefix."""
+        flags_width = 1 if self.has_flags else 0
+        return flags_width + self.value_width + self.timestamp_width
+
+
+# Static analog input/output variations (groups 30, 40).
+_STATIC_ANALOG_SPECS = {
+    1: AnalogValueSpec(value_width=4, has_flags=True, decode=_decode_signed_int),
+    2: AnalogValueSpec(value_width=2, has_flags=True, decode=_decode_signed_int),
+    3: AnalogValueSpec(value_width=4, has_flags=False, decode=_decode_signed_int),
+    4: AnalogValueSpec(value_width=2, has_flags=False, decode=_decode_signed_int),
+    5: AnalogValueSpec(value_width=4, has_flags=True, decode=_decode_float32),
+    6: AnalogValueSpec(value_width=8, has_flags=True, decode=_decode_float64),
+}
+
+# Analog event variations (groups 32, 42). Variations 3, 4, 7 and 8 repeat
+# 1, 2, 5 and 6 with a 48-bit timestamp appended.
+_EVENT_ANALOG_SPECS = {
+    1: AnalogValueSpec(value_width=4, has_flags=True, decode=_decode_signed_int),
+    2: AnalogValueSpec(value_width=2, has_flags=True, decode=_decode_signed_int),
+    3: AnalogValueSpec(
+        value_width=4,
+        has_flags=True,
+        decode=_decode_signed_int,
+        timestamp_width=_ABSOLUTE_TIMESTAMP_WIDTH,
+    ),
+    4: AnalogValueSpec(
+        value_width=2,
+        has_flags=True,
+        decode=_decode_signed_int,
+        timestamp_width=_ABSOLUTE_TIMESTAMP_WIDTH,
+    ),
+    5: AnalogValueSpec(value_width=4, has_flags=True, decode=_decode_float32),
+    6: AnalogValueSpec(value_width=8, has_flags=True, decode=_decode_float64),
+    7: AnalogValueSpec(
+        value_width=4,
+        has_flags=True,
+        decode=_decode_float32,
+        timestamp_width=_ABSOLUTE_TIMESTAMP_WIDTH,
+    ),
+    8: AnalogValueSpec(
+        value_width=8,
+        has_flags=True,
+        decode=_decode_float64,
+        timestamp_width=_ABSOLUTE_TIMESTAMP_WIDTH,
+    ),
+}
+
+# Static counter variations (groups 20, 21).
+_STATIC_COUNTER_SPECS = {
+    1: CounterValueSpec(value_width=4, has_flags=True),
+    2: CounterValueSpec(value_width=2, has_flags=True),
+    5: CounterValueSpec(value_width=4, has_flags=False),
+    6: CounterValueSpec(value_width=2, has_flags=False),
+}
+
+# Counter event variations (group 22). 5 and 6 add a 48-bit timestamp.
+_EVENT_COUNTER_SPECS = {
+    1: CounterValueSpec(value_width=4, has_flags=True),
+    2: CounterValueSpec(value_width=2, has_flags=True),
+    5: CounterValueSpec(value_width=4, has_flags=True, timestamp_width=_ABSOLUTE_TIMESTAMP_WIDTH),
+    6: CounterValueSpec(value_width=2, has_flags=True, timestamp_width=_ABSOLUTE_TIMESTAMP_WIDTH),
+}
+
+
+def _analog_value_spec(group: int, variation: int) -> AnalogValueSpec | None:
+    """Look up the decoding spec for an analog group/variation, or None."""
+    if group in {GROUP_ANALOG_INPUT_EVENT, GROUP_ANALOG_OUTPUT_EVENT}:
+        return _EVENT_ANALOG_SPECS.get(variation)
+    return _STATIC_ANALOG_SPECS.get(variation)
+
+
+def _counter_value_spec(group: int, variation: int) -> CounterValueSpec | None:
+    """Look up the decoding spec for a counter group/variation, or None."""
+    if group == GROUP_COUNTER_EVENT:
+        return _EVENT_COUNTER_SPECS.get(variation)
+    return _STATIC_COUNTER_SPECS.get(variation)
+
+
+def _read_quality(data: bytes, payload: int, *, has_flags: bool) -> tuple[int, int]:
+    """Read the optional quality byte, returning (quality, value_offset)."""
+    if has_flags:
+        return data[payload], payload + 1
+    return QUALITY_ONLINE, payload
+
+
+def _parse_packed_binary(layout: ObjectLayout, data: bytes) -> list[BinaryValue]:
+    """Parse bit-packed binary points (g1v1 / g10v1), 8 points per byte.
+
+    Bounded by the range's declared count so the unused high bits of the final
+    byte are not reported as real points.
+    """
+    values: list[BinaryValue] = []
+    payload = data[layout.data_offset :]
+    total = layout.count if layout.count is not None else len(payload) * 8
+
+    for ordinal in range(total):
+        byte_index, bit = divmod(ordinal, 8)
+        if byte_index >= len(payload):
+            break
+        values.append(
+            BinaryValue(
+                index=layout.first_index + ordinal,
+                value=bool((payload[byte_index] >> bit) & 1),
+                quality=QUALITY_ONLINE,
+            )
+        )
+    return values
 
 
 @dataclass
@@ -387,72 +712,36 @@ class Master:
         Returns:
             List of parsed binary values.
         """
-        values: list[BinaryValue] = []
         data = block.data
         if not data:
-            return values
+            return []
 
-        # Parse based on qualifier - simplified for common cases
-        qualifier = block.header.qualifier
-        variation = block.header.variation
+        header = block.header
+        layout = _decode_object_layout(header.qualifier, data)
+        if layout is None:
+            return []
 
-        # Handle packed format (g1v1) - 1 bit per point
-        if variation == VARIATION_PACKED:
-            # Packed binary - each byte has 8 points
-            # First parse the range to get start index
-            offset = 0
-            start_index = 0
-            if qualifier & 0x0F == 0x00:  # Start-stop 1-byte
-                start_index = data[0]
-                offset = 2  # start + stop
-            elif qualifier & 0x0F == 0x01:  # Start-stop 2-byte
-                start_index = int.from_bytes(data[0:2], "little")
-                offset = 4
+        # Packed format is group 1 variation 1 only (and group 10 variation 1 for
+        # outputs). Event groups also number their first variation 1, but it is
+        # one flags byte per point, so keying off variation alone would decode
+        # every event block as bit-packed and fabricate points.
+        if header.variation == VARIATION_PACKED and header.group in PACKED_FORMAT_GROUPS:
+            return _parse_packed_binary(layout, data)
 
-            # Parse packed bits
-            bit_index = 0
-            for byte_idx in range(offset, len(data)):
-                byte_val = data[byte_idx]
-                for bit in range(8):
-                    if offset + (bit_index // 8) < len(data):
-                        value = bool((byte_val >> bit) & 1)
-                        values.append(
-                            BinaryValue(
-                                index=start_index + bit_index,
-                                value=value,
-                                quality=QUALITY_ONLINE,
-                            )
-                        )
-                    bit_index += 1
+        object_width = _binary_object_width(header.group, header.variation)
+        if object_width is None:
+            return []
 
-        # Handle flags format (g1v2, g10v2) - 1 byte per point
-        elif variation == VARIATION_FLAGS:
-            offset = 0
-            start_index = 0
-
-            # Parse range
-            if qualifier & 0x0F == 0x00:  # Start-stop 1-byte
-                start_index = data[0]
-                offset = 2
-            elif qualifier & 0x0F == 0x01:  # Start-stop 2-byte
-                start_index = int.from_bytes(data[0:2], "little")
-                offset = 4
-
-            # Parse flag bytes
-            index = start_index
-            for i in range(offset, len(data)):
-                flags = data[i]
-                value = bool(flags & QUALITY_STATE)
-                quality = flags & ~QUALITY_STATE
-                values.append(
-                    BinaryValue(
-                        index=index,
-                        value=value,
-                        quality=quality,
-                    )
+        values: list[BinaryValue] = []
+        for index, payload in _iter_object_slots(layout, data, object_width):
+            flags = data[payload]
+            values.append(
+                BinaryValue(
+                    index=index,
+                    value=bool(flags & QUALITY_STATE),
+                    quality=flags & ~QUALITY_STATE,
                 )
-                index += 1
-
+            )
         return values
 
     def _parse_analog_values(self, block: ObjectBlock) -> list[AnalogValue]:
@@ -464,76 +753,29 @@ class Master:
         Returns:
             List of parsed analog values.
         """
-        values: list[AnalogValue] = []
         data = block.data
         if not data:
-            return values
+            return []
 
-        qualifier = block.header.qualifier
-        variation = block.header.variation
+        header = block.header
+        spec = _analog_value_spec(header.group, header.variation)
+        if spec is None:
+            return []
 
-        # Determine value size based on variation
-        # g30v1: 32-bit with flags (5 bytes)
-        # g30v2: 16-bit with flags (3 bytes)
-        # g30v3: 32-bit no flags (4 bytes)
-        # g30v4: 16-bit no flags (2 bytes)
-        # g30v5: float with flags (5 bytes)
-        # g30v6: double with flags (9 bytes)
+        layout = _decode_object_layout(header.qualifier, data)
+        if layout is None:
+            return []
 
-        if variation == VARIATION_32BIT_FLAGS:
-            value_size = 5  # 1 flag + 4 value
-            has_flags = True
-            is_32bit = True
-        elif variation == VARIATION_16BIT_FLAGS:
-            value_size = 3  # 1 flag + 2 value
-            has_flags = True
-            is_32bit = False
-        elif variation == VARIATION_32BIT_NO_FLAGS:
-            value_size = 4
-            has_flags = False
-            is_32bit = True
-        elif variation == VARIATION_16BIT_NO_FLAGS:
-            value_size = 2
-            has_flags = False
-            is_32bit = False
-        else:
-            return values  # Unsupported variation
-
-        # Parse range
-        offset = 0
-        start_index = 0
-        if qualifier & 0x0F == 0x00:
-            start_index = data[0]
-            offset = 2
-        elif qualifier & 0x0F == 0x01:
-            start_index = int.from_bytes(data[0:2], "little")
-            offset = 4
-
-        # Parse values
-        index = start_index
-        while offset + value_size <= len(data):
-            if has_flags:
-                quality = data[offset]
-                offset += 1
-            else:
-                quality = QUALITY_ONLINE
-
-            if is_32bit:
-                raw_value = int.from_bytes(data[offset : offset + 4], "little", signed=True)
-                offset += 4
-            else:
-                raw_value = int.from_bytes(data[offset : offset + 2], "little", signed=True)
-                offset += 2
-
+        values: list[AnalogValue] = []
+        for index, payload in _iter_object_slots(layout, data, spec.object_width):
+            quality, value_offset = _read_quality(data, payload, has_flags=spec.has_flags)
             values.append(
                 AnalogValue(
                     index=index,
-                    value=float(raw_value),
+                    value=spec.decode(data[value_offset : value_offset + spec.value_width]),
                     quality=quality,
                 )
             )
-            index += 1
-
         return values
 
     def _parse_counter_values(self, block: ObjectBlock) -> list[CounterValue]:
@@ -545,73 +787,24 @@ class Master:
         Returns:
             List of parsed counter values.
         """
-        values: list[CounterValue] = []
         data = block.data
         if not data:
-            return values
+            return []
 
-        qualifier = block.header.qualifier
-        variation = block.header.variation
+        header = block.header
+        spec = _counter_value_spec(header.group, header.variation)
+        if spec is None:
+            return []
 
-        # g20v1: 32-bit with flags (5 bytes)
-        # g20v2: 16-bit with flags (3 bytes)
-        # g20v5: 32-bit no flags (4 bytes)
-        # g20v6: 16-bit no flags (2 bytes)
+        layout = _decode_object_layout(header.qualifier, data)
+        if layout is None:
+            return []
 
-        if variation == VARIATION_32BIT_FLAGS:
-            value_size = 5
-            has_flags = True
-            is_32bit = True
-        elif variation == VARIATION_16BIT_FLAGS:
-            value_size = 3
-            has_flags = True
-            is_32bit = False
-        elif variation == VARIATION_COUNTER_32BIT_NO_FLAGS:
-            value_size = 4
-            has_flags = False
-            is_32bit = True
-        elif variation == VARIATION_COUNTER_16BIT_NO_FLAGS:
-            value_size = 2
-            has_flags = False
-            is_32bit = False
-        else:
-            return values
-
-        # Parse range
-        offset = 0
-        start_index = 0
-        if qualifier & 0x0F == 0x00:
-            start_index = data[0]
-            offset = 2
-        elif qualifier & 0x0F == 0x01:
-            start_index = int.from_bytes(data[0:2], "little")
-            offset = 4
-
-        # Parse values
-        index = start_index
-        while offset + value_size <= len(data):
-            if has_flags:
-                quality = data[offset]
-                offset += 1
-            else:
-                quality = QUALITY_ONLINE
-
-            if is_32bit:
-                raw_value = int.from_bytes(data[offset : offset + 4], "little", signed=False)
-                offset += 4
-            else:
-                raw_value = int.from_bytes(data[offset : offset + 2], "little", signed=False)
-                offset += 2
-
-            values.append(
-                CounterValue(
-                    index=index,
-                    value=raw_value,
-                    quality=quality,
-                )
-            )
-            index += 1
-
+        values: list[CounterValue] = []
+        for index, payload in _iter_object_slots(layout, data, spec.object_width):
+            quality, value_offset = _read_quality(data, payload, has_flags=spec.has_flags)
+            raw = int.from_bytes(data[value_offset : value_offset + spec.value_width], "little", signed=False)
+            values.append(CounterValue(index=index, value=raw, quality=quality))
         return values
 
     # -------------------------------------------------------------------------
