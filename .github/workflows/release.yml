@@ -176,7 +176,12 @@ jobs:
       - name: Install python-semantic-release
         run: |
           python -m pip install --upgrade pip
-          pip install python-semantic-release
+          # GitPython is pinned below 3.1.60, which removed Actor.name_email_regex.
+          # PSR 10.6.1 still reads that attribute and declares only gitpython~=3.0,
+          # so an unpinned install resolves a combination that fails at run time with
+          # "type object 'Actor' has no attribute 'name_email_regex'". Drop the pin
+          # once PSR releases a version that no longer uses it.
+          pip install python-semantic-release "gitpython<3.1.60"
 
       - name: Assert PSR would produce a release (version --print)
         # `semantic-release version --print` computes the next semver version
@@ -233,7 +238,12 @@ jobs:
       - name: Install python-semantic-release
         run: |
           python -m pip install --upgrade pip
-          pip install python-semantic-release
+          # GitPython is pinned below 3.1.60, which removed Actor.name_email_regex.
+          # PSR 10.6.1 still reads that attribute and declares only gitpython~=3.0,
+          # so an unpinned install resolves a combination that fails at run time with
+          # "type object 'Actor' has no attribute 'name_email_regex'". Drop the pin
+          # once PSR releases a version that no longer uses it.
+          pip install python-semantic-release "gitpython<3.1.60"
 
       - name: Download build artifacts
         uses: actions/download-artifact@v8
