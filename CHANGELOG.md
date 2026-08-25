@@ -5,7 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+<!-- version list -->
+
 ## [Unreleased]
+
+## [0.3.1] - 2026-08-25
+
+### Fixed
+
+- Master responses carrying more than one object block are no longer
+  truncated to the first block. Each block is now delimited by its
+  per-object size from the object registry. `parse_object_headers` is
+  unchanged and still serves requests, which carry no object data.
+- Master value parsers now decode the count qualifiers (`0x17`, `0x28`) that
+  every event group uses, together with each object's index prefix.
+  Previously the count field and the index prefixes were read as flag and
+  value bytes, reporting points at wrong indices with wrong values.
+- Bit-packed binary decoding is now selected by object group rather than by
+  variation number alone, so binary event blocks (`g2v1`, `g11v1`) are
+  decoded as one flags byte per point instead of as packed bits. Packed
+  decoding is also bounded by the declared object count, so the unused high
+  bits of the final byte are no longer reported as points.
+- Master parsing of the float analog variations `g30v5` and `g30v6` no
+  longer returns an empty list, and the timestamped event variations
+  (`g2v2`, `g2v3`, `g32v3`, `g22v5`) are sized correctly.
+- A single malformed object block, such as one carrying a reserved
+  qualifier, no longer discards an entire otherwise-valid response.
+
+## [0.3.0] - 2026-07-07
 
 ### Changed
 
@@ -35,24 +62,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Master responses carrying more than one object block are no longer
-  truncated to the first block. Each block is now delimited by its
-  per-object size from the object registry. `parse_object_headers` is
-  unchanged and still serves requests, which carry no object data.
-- Master value parsers now decode the count qualifiers (`0x17`, `0x28`) that
-  every event group uses, together with each object's index prefix.
-  Previously the count field and the index prefixes were read as flag and
-  value bytes, reporting points at wrong indices with wrong values.
-- Bit-packed binary decoding is now selected by object group rather than by
-  variation number alone, so binary event blocks (`g2v1`, `g11v1`) are
-  decoded as one flags byte per point instead of as packed bits. Packed
-  decoding is also bounded by the declared object count, so the unused high
-  bits of the final byte are no longer reported as points.
-- Master parsing of the float analog variations `g30v5` and `g30v6` no
-  longer returns an empty list, and the timestamped event variations
-  (`g2v2`, `g2v3`, `g32v3`, `g22v5`) are sized correctly.
-- A single malformed object block, such as one carrying a reserved
-  qualifier, no longer discards an entire otherwise-valid response.
+- Packaged-profile resolution now works under non-regular-install packaging
+  (zipimport, zipapp) by resolving bundled profiles through
+  `importlib.resources.as_file` instead of assuming a real filesystem path;
+  the startup summary now prints a stable package-relative identity.
+  `--profile` and `--profile-name` are now a real argparse mutually
+  exclusive group.
+- Counter event timestamps default to change time instead of poll time.
+- Duplicate AI point indices during database construction now raise instead
+  of silently deduplicating.
+- `engineering_to_transmission` guards against a non-finite
+  `engineering_value`.
+- g22v5 counter events now carry a 48-bit timestamp.
 
 ## [0.2.0] - 2026-06-26
 
@@ -110,7 +131,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - PyPI publication with hatch build backend.
 - GitHub Actions CI across Python 3.11, 3.12, 3.13, 3.14 on Ubuntu and macOS.
 
-[Unreleased]: https://github.com/craigpnnl/dnp3py/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/craigpnnl/dnp3py/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/craigpnnl/dnp3py/compare/v0.3.0...v0.3.1
+[0.3.0]: https://github.com/craigpnnl/dnp3py/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/craigpnnl/dnp3py/compare/v0.1.2...v0.2.0
 [0.1.2]: https://github.com/craigpnnl/dnp3py/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/craigpnnl/dnp3py/compare/v0.1.0...v0.1.1
