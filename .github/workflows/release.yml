@@ -420,34 +420,45 @@ jobs:
           fi
           echo "" >> "$GITHUB_STEP_SUMMARY"
 
-          # Determine overall outcome. Stop on first failure.
+          # Determine overall outcome. A phase is not-success unless its
+          # result is exactly "success", so cancelled/skipped/any future
+          # GitHub Actions result string is caught instead of falling
+          # through to SUCCESS. Stops at the first not-success phase found.
           FAILED_PHASE=""
+          FAILED_RESULT=""
           for PHASE_RESULT in "${BUILD}:build" "${SMOKE}:smoke-test" "${TEST}:test"; do
             RESULT="${PHASE_RESULT%%:*}"
             PHASE="${PHASE_RESULT##*:}"
-            if [ "${RESULT}" = "failure" ]; then
+            if [ "${RESULT}" != "success" ] && [ -z "${FAILED_PHASE}" ]; then
               FAILED_PHASE="${PHASE}"
+              FAILED_RESULT="${RESULT}"
               break
             fi
           done
 
           if [ "${DRY_RUN}" = "true" ]; then
-            if [ "${DRY_CHECK}" = "failure" ] && [ -z "${FAILED_PHASE}" ]; then
+            if [ "${DRY_CHECK}" != "success" ] && [ -z "${FAILED_PHASE}" ]; then
               FAILED_PHASE="dry-run-version-check"
+              FAILED_RESULT="${DRY_CHECK}"
             fi
           else
             for PHASE_RESULT in "${PSR}:semantic-release" "${PYPI}:publish-pypi"; do
               RESULT="${PHASE_RESULT%%:*}"
               PHASE="${PHASE_RESULT##*:}"
-              if [ "${RESULT}" = "failure" ] && [ -z "${FAILED_PHASE}" ]; then
+              if [ "${RESULT}" != "success" ] && [ -z "${FAILED_PHASE}" ]; then
                 FAILED_PHASE="${PHASE}"
+                FAILED_RESULT="${RESULT}"
                 break
               fi
             done
           fi
 
+          # Any not-success result exits non-zero, including "cancelled":
+          # a cancelled release did not complete, so this job must not
+          # report green, and the summary must not claim a tag, release,
+          # or PyPI push that never happened.
           if [ -n "${FAILED_PHASE}" ]; then
-            echo "**Outcome: FAILED** at phase \`${FAILED_PHASE}\`." >> "$GITHUB_STEP_SUMMARY"
+            echo "**Outcome: NOT SUCCESSFUL** at phase \`${FAILED_PHASE}\` (result: \`${FAILED_RESULT}\`)." >> "$GITHUB_STEP_SUMMARY"
             echo "See the failing job log above for the full (unredacted) output." >> "$GITHUB_STEP_SUMMARY"
             exit 1
           else
