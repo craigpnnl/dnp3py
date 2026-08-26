@@ -715,3 +715,72 @@ class TestMultiFragmentResponse:
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError, Exception):
             await task
+
+    @pytest.mark.asyncio
+    async def test_stale_first_fragment_confirm_does_not_advance_second_wait(self) -> None:
+        """A CONFIRM carrying fragment one's sequence, replayed while fragment two
+        is awaited, must be discarded rather than mistaken for fragment two's confirm.
+
+        Before SEQ incremented per fragment, this path was unfalsifiable: every
+        fragment shared one sequence, so "fragment one's sequence" and "fragment
+        two's sequence" were the same value and any confirm would match. Now
+        that each fragment has its own sequence, replaying the first one while
+        the second is awaited exercises a genuinely different (stale) value.
+        """
+        database = _build_large_database(num_analog=500)
+        config = OutstationConfig(
+            address=OUTSTATION_ADDR,
+            master_address=MASTER_ADDR,
+            max_fragment_size=249,
+            confirm_timeout=2.0,
+        )
+        outstation = Outstation(config=config, database=database)
+        runner = _make_runner(outstation)
+        master_ch, outstation_ch = create_channel_pair()
+        await master_ch.open()
+        await outstation_ch.open()
+
+        request = build_integrity_poll(seq=0)
+        frame_bytes = _build_request_frame(MASTER_ADDR, OUTSTATION_ADDR, request.to_bytes())
+        await master_ch.write_all(frame_bytes)
+
+        task = asyncio.create_task(runner._handle_connection(outstation_ch))
+
+        # Read fragment one and confirm it correctly, advancing to fragment two.
+        reassembler1 = Reassembler()
+        frag_data1, ac1 = await _reassemble_fragment(master_ch, reassembler1, timeout=3.0)
+        assert frag_data1 is not None, "Expected first fragment"
+        first_fragment_seq = ac1.seq
+        confirm_frame = _build_confirm_frame(first_fragment_seq, MASTER_ADDR, OUTSTATION_ADDR)
+        await master_ch.write_all(confirm_frame)
+
+        # Read fragment two; its sequence must differ from fragment one's.
+        reassembler2 = Reassembler()
+        frag_data2, ac2 = await _reassemble_fragment(master_ch, reassembler2, timeout=3.0)
+        assert frag_data2 is not None, "Expected second fragment"
+        second_fragment_seq = ac2.seq
+        assert second_fragment_seq != first_fragment_seq, "Fragment two must not share fragment one's sequence"
+        assert second_fragment_seq == (first_fragment_seq + 1) % 16
+
+        # Replay fragment one's (now stale) sequence while fragment two is awaited.
+        stale_confirm = _build_confirm_frame(first_fragment_seq, MASTER_ADDR, OUTSTATION_ADDR)
+        await master_ch.write_all(stale_confirm)
+
+        reassembler_stale = Reassembler()
+        frag_data_stale, _ = await _reassemble_fragment(master_ch, reassembler_stale, timeout=0.5)
+        assert frag_data_stale is None, "Fragment one's stale sequence must not advance fragment two's wait"
+
+        # The correctly-sequenced confirm for fragment two still advances the loop.
+        correct_confirm = _build_confirm_frame(second_fragment_seq, MASTER_ADDR, OUTSTATION_ADDR)
+        await master_ch.write_all(correct_confirm)
+
+        reassembler3 = Reassembler()
+        frag_data3, ac3 = await _reassemble_fragment(master_ch, reassembler3, timeout=3.0)
+        assert frag_data3 is not None, "Correctly-sequenced CONFIRM should advance to fragment three"
+        assert ac3.seq == (second_fragment_seq + 1) % 16
+
+        await master_ch.close()
+        await asyncio.sleep(0.1)
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await task

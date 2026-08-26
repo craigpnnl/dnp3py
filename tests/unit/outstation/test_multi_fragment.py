@@ -36,9 +36,9 @@ def _make_outstation(
     return Outstation(config=config, database=database)
 
 
-def _do_integrity_poll(outstation: Outstation) -> list:
+def _do_integrity_poll(outstation: Outstation, seq: int = 0) -> list:
     """Send integrity poll and return list of response fragments."""
-    request = build_integrity_poll()
+    request = build_integrity_poll(seq=seq)
     return outstation.process_request(request.to_bytes())
 
 
@@ -165,6 +165,41 @@ class TestMultiFragmentLargeDatabase:
         assert set(recovered) == set(range(num_ai))
         for index in range(num_ai):
             assert recovered[index] == index * 100, f"index {index}: expected {index * 100}, got {recovered[index]}"
+
+
+class TestMultiFragmentSequence:
+    """SEQ must increment modulo 16 across a fragment burst (IEEE 1815-2012 4.2.2.4.5)."""
+
+    def test_sequence_increments_across_burst(self) -> None:
+        """Fragment i carries seq == (request_seq + i) % 16."""
+        outstation = _make_outstation(num_ai=1000)
+        request_seq = 5
+        responses = _do_integrity_poll(outstation, seq=request_seq)
+        assert len(responses) >= 3
+        for i, frag in enumerate(responses):
+            expected_seq = (request_seq + i) % 16
+            assert frag.sequence == expected_seq, f"fragment {i}: expected seq {expected_seq}, got {frag.sequence}"
+
+    def test_sequence_wraps_around_at_16(self) -> None:
+        """A burst starting at 14 walks 14, 15, 0, 1, ... across the wraparound."""
+        outstation = _make_outstation(num_ai=1000)
+        request_seq = 14
+        responses = _do_integrity_poll(outstation, seq=request_seq)
+        assert len(responses) >= 3
+        expected = [(request_seq + i) % 16 for i in range(len(responses))]
+        actual = [frag.sequence for frag in responses]
+        assert actual == expected
+        assert actual[0] == 14
+        assert actual[1] == 15
+        assert actual[2] == 0
+
+    def test_single_fragment_keeps_request_sequence(self) -> None:
+        """A single-fragment response carries the request's sequence unchanged."""
+        outstation = _make_outstation(num_bi=2, num_ai=2)
+        request_seq = 9
+        responses = _do_integrity_poll(outstation, seq=request_seq)
+        assert len(responses) == 1
+        assert responses[0].sequence == request_seq
 
 
 class TestMultiFragmentCustomSize:
