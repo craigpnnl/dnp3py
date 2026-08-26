@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 <!-- version list -->
 
+## v0.4.0 (2026-08-26)
+
+### Bug Fixes
+
+- Correct ResponseInfo fir/fin/con docstring wording
+  ([`89842c1`](https://github.com/craigpnnl/dnp3py/commit/89842c1890f5ca1677d76c485d53664fe510f798))
+
+- Increment application sequence per outstation fragment
+  ([`fc5dc55`](https://github.com/craigpnnl/dnp3py/commit/fc5dc552d3773db11e5be06b97ac5edd0156ea7d))
+
+- Verify CONFIRM sequence before advancing fragment loop
+  ([`1e903ac`](https://github.com/craigpnnl/dnp3py/commit/1e903ac208f82175c11894be8780025b8b68bac8))
+
+- **ci**: Treat any non-success job result as not-success in release outcome
+  ([`2d896f5`](https://github.com/craigpnnl/dnp3py/commit/2d896f52633669a64e934ce5c5e2ac9b443d3d7d))
+
+### Features
+
+- Expose fir/fin/con fragment flags on ResponseInfo
+  ([`cc35909`](https://github.com/craigpnnl/dnp3py/commit/cc359093161219591f3ecc26f9905c92be56a294))
+
+
 ## v0.3.2 (2026-08-25)
 
 ### Bug Fixes
