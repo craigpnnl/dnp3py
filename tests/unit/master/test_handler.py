@@ -235,6 +235,33 @@ class TestResponseInfo:
         assert info.sequence == 5
         assert info.is_unsolicited is False
 
+    def test_fragment_flag_defaults(self) -> None:
+        """Omitted fir/fin/con keep existing call sites working unchanged."""
+        info = ResponseInfo(
+            function=FunctionCode.RESPONSE,
+            iin=IIN(0),
+            sequence=5,
+        )
+
+        assert info.fir is True
+        assert info.fin is True
+        assert info.con is False
+
+    def test_fragment_flags_explicit(self) -> None:
+        """fir/fin/con carry the values a caller passes for them."""
+        info = ResponseInfo(
+            function=FunctionCode.RESPONSE,
+            iin=IIN(0),
+            sequence=5,
+            fir=False,
+            fin=False,
+            con=True,
+        )
+
+        assert info.fir is False
+        assert info.fin is False
+        assert info.con is True
+
     def test_unsolicited_response(self) -> None:
         """Test unsolicited response info."""
         iin = IIN(0)
