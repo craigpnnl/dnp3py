@@ -81,6 +81,11 @@ class LinkFunctionCode(IntEnum):
 
     Primary station codes (PRM=1): 0-4, 9
     Secondary station codes (PRM=0): 0-1, 11, 15
+
+    Values collide across the PRM bit: PRI_RESET_LINK_STATE and SEC_ACK are
+    both 0, and PRI_RESET_USER_PROCESS and SEC_NACK are both 1. A raw
+    function-code value is ambiguous on its own; always check PRM first to
+    pick the primary or secondary interpretation before matching a code.
     """
 
     # Primary station function codes (PRM=1)

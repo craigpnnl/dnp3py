@@ -427,3 +427,49 @@ class TestMalformedBlocks:
 
         assert indexed_values(values) == {0: -9.0}
         assert values[0].quality == QUALITY_ONLINE
+
+
+class TestFragmentFlags:
+    """ResponseInfo carries the FIR/FIN/CON bits the app-control byte held.
+
+    Regression cover for issue #57: these were parsed and discarded, so a
+    caller could not tell a non-final fragment (awaiting CONFIRM) from a
+    final one without re-parsing the header.
+    """
+
+    def test_non_final_fragment_reports_fin_false_con_true(self) -> None:
+        """FIR=1, FIN=0, CON=1: first fragment of a multi-fragment transfer."""
+        master = Master()
+        control = 0xA1  # FIR|CON, seq=1
+        header = bytes([control, 0x81, 0x00, 0x00])
+
+        info = master.process_response(header)
+
+        assert info is not None
+        assert info.fir is True
+        assert info.fin is False
+        assert info.con is True
+
+    def test_final_fragment_reports_fin_true(self) -> None:
+        """FIR=0, FIN=1, CON=0: closing fragment of the same transfer."""
+        master = Master()
+        control = 0x42  # FIN, seq=2
+        header = bytes([control, 0x81, 0x00, 0x00])
+
+        info = master.process_response(header)
+
+        assert info is not None
+        assert info.fir is False
+        assert info.fin is True
+        assert info.con is False
+
+    def test_single_fragment_response_reports_fir_and_fin_true(self) -> None:
+        """FIR=1, FIN=1: the common single-fragment case."""
+        master = Master()
+
+        info = master.process_response(RESPONSE_HEADER)
+
+        assert info is not None
+        assert info.fir is True
+        assert info.fin is True
+        assert info.con is False

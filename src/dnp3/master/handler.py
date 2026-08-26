@@ -92,12 +92,20 @@ class ResponseInfo:
         iin: Internal indications.
         sequence: Application sequence number.
         is_unsolicited: True if this was an unsolicited response.
+        fir: True if this is the first fragment, including for a
+            single-fragment response.
+        fin: True if this is the final fragment. False if more fragments
+            follow.
+        con: True if the outstation requested a CONFIRM for this fragment.
     """
 
     function: FunctionCode
     iin: IIN
     sequence: int
     is_unsolicited: bool = False
+    fir: bool = True
+    fin: bool = True
+    con: bool = False
 
 
 @runtime_checkable

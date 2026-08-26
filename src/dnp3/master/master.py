@@ -644,6 +644,9 @@ class Master:
             iin=response.header.iin,
             sequence=response.header.control.seq,
             is_unsolicited=response.header.control.uns,
+            fir=response.header.control.fir,
+            fin=response.header.control.fin,
+            con=response.header.control.con,
         )
 
         # Handle unsolicited responses
