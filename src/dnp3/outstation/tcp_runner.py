@@ -6,6 +6,7 @@ import asyncio
 import logging
 from dataclasses import dataclass, field
 
+from dnp3.application.header import ApplicationControl
 from dnp3.core.enums import LinkFunctionCode
 from dnp3.datalink.builder import build_ack, build_link_status, build_unconfirmed_user_data
 from dnp3.datalink.parser import FrameParser
@@ -196,6 +197,7 @@ class OutstationTcpRunner:
                                     reassembler,
                                     outstation_addr,
                                     effective_master,
+                                    expected_seq=response.sequence,
                                     timeout=self.outstation.config.confirm_timeout,
                                 )
                                 if not confirm_received:
@@ -227,6 +229,8 @@ class OutstationTcpRunner:
         reassembler: Reassembler,
         outstation_addr: int,
         master_addr: int,
+        *,
+        expected_seq: int,
         timeout: float = 5.0,
     ) -> bool:
         """Wait for an APPLICATION_CONFIRM from the master.
@@ -241,6 +245,9 @@ class OutstationTcpRunner:
             reassembler: Transport reassembler (a fresh one is used internally).
             outstation_addr: This outstation's address.
             master_addr: The master's address.
+            expected_seq: Application sequence number of the fragment being
+                confirmed. A CONFIRM carrying any other sequence is a stale
+                or duplicate frame and must not advance the fragment loop.
             timeout: Maximum seconds to wait for confirm.
 
         Returns:
@@ -311,6 +318,16 @@ class OutstationTcpRunner:
                     # Check function code (second byte of application data)
                     func_code = result.data[1]
                     if func_code == 0x00:  # FunctionCode.CONFIRM
-                        return True
+                        confirm_seq = ApplicationControl.from_byte(result.data[0]).seq
+                        if confirm_seq == expected_seq:
+                            return True
+                        # A conformant master won't send this; guard against a
+                        # stale/duplicate CONFIRM retransmitted on the same
+                        # connection prematurely advancing the fragment loop.
+                        logger.warning(
+                            "Discarding CONFIRM with sequence %d, expected %d",
+                            confirm_seq,
+                            expected_seq,
+                        )
 
         return False

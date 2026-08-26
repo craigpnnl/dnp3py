@@ -657,3 +657,61 @@ class TestMultiFragmentResponse:
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError, Exception):
             await task
+
+    @pytest.mark.asyncio
+    async def test_mismatched_confirm_does_not_advance_fragment(self) -> None:
+        """A CONFIRM whose sequence doesn't match the awaited fragment must be discarded.
+
+        A stale or duplicate CONFIRM (wrong sequence) must not advance the
+        outstation to the next fragment. The correctly-sequenced CONFIRM,
+        sent afterward, must still work.
+        """
+        database = _build_large_database(num_analog=500)
+        config = OutstationConfig(
+            address=OUTSTATION_ADDR,
+            master_address=MASTER_ADDR,
+            max_fragment_size=249,
+            confirm_timeout=2.0,
+        )
+        outstation = Outstation(config=config, database=database)
+        runner = _make_runner(outstation)
+        master_ch, outstation_ch = create_channel_pair()
+        await master_ch.open()
+        await outstation_ch.open()
+
+        request = build_integrity_poll(seq=0)
+        frame_bytes = _build_request_frame(MASTER_ADDR, OUTSTATION_ADDR, request.to_bytes())
+        await master_ch.write_all(frame_bytes)
+
+        task = asyncio.create_task(runner._handle_connection(outstation_ch))
+
+        # Read first fragment - note its sequence number.
+        reassembler = Reassembler()
+        frag_data, ac = await _reassemble_fragment(master_ch, reassembler, timeout=3.0)
+        assert frag_data is not None, "Expected first fragment"
+        assert ac.con, "First fragment should have CON bit"
+
+        # Send a CONFIRM with the wrong sequence number (stale/duplicate).
+        wrong_seq = (ac.seq + 1) % 16
+        stale_confirm = _build_confirm_frame(wrong_seq, MASTER_ADDR, OUTSTATION_ADDR)
+        await master_ch.write_all(stale_confirm)
+
+        # It must be discarded: no second fragment shows up on a short read.
+        reassembler_stale = Reassembler()
+        frag_data_stale, _ = await _reassemble_fragment(master_ch, reassembler_stale, timeout=0.5)
+        assert frag_data_stale is None, "Mismatched-sequence CONFIRM must not advance the fragment"
+
+        # The correctly-sequenced CONFIRM still works within the same wait window.
+        correct_confirm = _build_confirm_frame(ac.seq, MASTER_ADDR, OUTSTATION_ADDR)
+        await master_ch.write_all(correct_confirm)
+
+        reassembler_next = Reassembler()
+        frag_data2, ac2 = await _reassemble_fragment(master_ch, reassembler_next, timeout=3.0)
+        assert frag_data2 is not None, "Correctly-sequenced CONFIRM should still advance the fragment"
+        assert not ac2.fir, "Second fragment should not have FIR"
+
+        await master_ch.close()
+        await asyncio.sleep(0.1)
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await task
