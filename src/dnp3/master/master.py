@@ -858,6 +858,19 @@ class Master:
         """
         task.mark_executed()
 
+    def next_request_sequence(self) -> int:
+        """Reserve the next application sequence number for an outbound request.
+
+        The `build_*` methods call this internally. It is public so that a
+        caller building a request from a `PollTask` -- which does its own
+        building and takes `seq` as an argument -- draws from the same counter,
+        instead of numbering scheduled polls separately from direct ones.
+
+        Returns:
+            Sequence number to use, 0-15.
+        """
+        return self._state.get_next_request_sequence()
+
     def check_timeout(self) -> bool:
         """Check for and handle task timeout.
 

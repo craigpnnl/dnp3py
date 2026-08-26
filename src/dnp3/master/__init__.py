@@ -27,6 +27,12 @@ from dnp3.master.polling import (
     RangePollTask,
 )
 from dnp3.master.state import MasterState, MasterStateManager
+from dnp3.master.tcp_runner import (
+    LinkResetPolicy,
+    MasterRunnerError,
+    MasterTcpRunner,
+    ResponseTimeoutError,
+)
 
 __all__ = [
     "ClassPollTask",
@@ -36,16 +42,20 @@ __all__ = [
     "DefaultSOEHandler",
     "DirectOperateTask",
     "IntegrityPollTask",
+    "LinkResetPolicy",
     "Master",
     "MasterConfig",
+    "MasterRunnerError",
     "MasterState",
     "MasterStateManager",
+    "MasterTcpRunner",
     "OperateTask",
     "PollScheduler",
     "PollTask",
     "PollingConfig",
     "RangePollTask",
     "ResponseHandler",
+    "ResponseTimeoutError",
     "SOEHandler",
     "SelectTask",
 ]
