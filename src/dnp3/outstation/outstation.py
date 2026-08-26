@@ -15,7 +15,7 @@ from dnp3.application.builder import (
     build_unsolicited_response,
 )
 from dnp3.application.fragment import ObjectBlock, RequestFragment, ResponseFragment
-from dnp3.application.header import RESPONSE_HEADER_SIZE
+from dnp3.application.header import MAX_APP_SEQUENCE, RESPONSE_HEADER_SIZE
 from dnp3.application.parser import parse_request
 from dnp3.application.qualifiers import (
     OBJECT_HEADER_SIZE,
@@ -138,7 +138,9 @@ def _split_response_objects(
     Args:
         objects: Object blocks to distribute across fragments.
         iin: Internal indications for all fragments.
-        seq: Sequence number for all fragments.
+        seq: Sequence number of the request; the first fragment carries this
+            value and each subsequent fragment increments it, modulo 16, per
+            IEEE 1815-2012 4.2.2.4.5.
         max_fragment_size: Maximum bytes per fragment.
 
     Returns:
@@ -161,7 +163,7 @@ def _split_response_objects(
                 build_response(
                     objects=tuple(current_objects),
                     iin=iin,
-                    seq=seq,
+                    seq=(seq + len(fragments)) % (MAX_APP_SEQUENCE + 1),
                     fir=is_first,
                     fin=False,
                 )
@@ -179,7 +181,7 @@ def _split_response_objects(
             build_response(
                 objects=tuple(current_objects),
                 iin=iin,
-                seq=seq,
+                seq=(seq + len(fragments)) % (MAX_APP_SEQUENCE + 1),
                 fir=is_first,
                 fin=True,
             )
