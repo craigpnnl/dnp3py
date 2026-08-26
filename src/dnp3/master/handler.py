@@ -92,9 +92,10 @@ class ResponseInfo:
         iin: Internal indications.
         sequence: Application sequence number.
         is_unsolicited: True if this was an unsolicited response.
-        fir: True if this is the first fragment of a multi-fragment response.
-        fin: True if this is the final fragment. False means more fragments
-            follow and a CONFIRM is expected before the outstation sends them.
+        fir: True if this is the first fragment, including for a
+            single-fragment response.
+        fin: True if this is the final fragment. False if more fragments
+            follow.
         con: True if the outstation requested a CONFIRM for this fragment.
     """
 
