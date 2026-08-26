@@ -3,7 +3,8 @@
 When the outstation database contains enough points to exceed
 max_fragment_size (default 2048 bytes), the outstation must split
 the response into multiple fragments with correct FIR/FIN flags
-per IEEE 1815-2012.
+per IEEE 1815-2012, and increment the application sequence number
+by one modulo 16 for each fragment after the first (clause 4.2.2.4.5).
 """
 
 from dnp3.application.builder import build_integrity_poll
@@ -36,10 +37,19 @@ def _make_outstation(
     return Outstation(config=config, database=database)
 
 
-def _do_integrity_poll(outstation: Outstation) -> list:
-    """Send integrity poll and return list of response fragments."""
-    request = build_integrity_poll()
+def _do_integrity_poll(outstation: Outstation, seq: int = 0) -> list:
+    """Send integrity poll and return list of response fragments.
+
+    `seq` pins the request's application sequence number so a test can assert
+    the response burst against a known starting value, including wrap.
+    """
+    request = build_integrity_poll(seq=seq)
     return outstation.process_request(request.to_bytes())
+
+
+def _sequences(fragments: list) -> list[int]:
+    """Application sequence number of each fragment, in order."""
+    return [fragment.header.control.seq for fragment in fragments]
 
 
 class TestMultiFragmentSmallDatabase:
@@ -336,3 +346,76 @@ class TestMultiFragmentMESAScale:
             assert recovered_bi[index] == (index % 2 == 0), f"BI {index} value mismatch"
         for index in range(num_ai):
             assert recovered_ai[index] == index * 100, f"AI {index}: expected {index * 100}"
+
+
+class TestMultiFragmentSequenceNumbers:
+    """IEEE 1815-2012 clause 4.2.2.4.5: SEQ increments across a fragment burst.
+
+    The first fragment carries the request's sequence number and each
+    subsequent fragment increments by one, modulo 16. DNP3 IED Certification
+    Procedure v3.1 rev 1 (2022) test 8.9.1 step 9 verifies this for Subset
+    Levels 1 through 3.
+
+    Regression cover for issue #60: every fragment previously carried the
+    request's sequence unchanged, so a conformant master discarded everything
+    after the first fragment and the exchange deadlocked waiting for a CONFIRM
+    that never came.
+    """
+
+    def test_burst_increments_by_one_per_fragment(self) -> None:
+        fragments = _do_integrity_poll(_make_outstation(num_ai=500), seq=5)
+
+        assert len(fragments) > 1, "fixture must produce a multi-fragment response"
+        assert _sequences(fragments) == [(5 + offset) % 16 for offset in range(len(fragments))]
+
+    def test_first_fragment_carries_the_request_sequence(self) -> None:
+        fragments = _do_integrity_poll(_make_outstation(num_ai=500), seq=5)
+
+        assert fragments[0].header.control.seq == 5
+
+    def test_sequence_wraps_modulo_16(self) -> None:
+        """Starting at the top of the range must wrap through zero, not reach 16."""
+        fragments = _do_integrity_poll(_make_outstation(num_ai=1000), seq=15)
+
+        sequences = _sequences(fragments)
+        assert len(sequences) >= 3, "fixture must span the wrap boundary"
+        assert sequences[0] == 15
+        assert sequences[1] == 0, "sequence must wrap to 0 after 15"
+        assert sequences[2] == 1
+        assert all(0 <= value <= 15 for value in sequences)
+
+    def test_sequences_are_distinct_within_a_burst(self) -> None:
+        """Distinctness is what makes a per-fragment CONFIRM identifiable.
+
+        The confirm-sequence check added in #59 compares an incoming CONFIRM
+        against the awaited fragment's sequence. That comparison can only
+        distinguish fragments once their sequences actually differ.
+        """
+        fragments = _do_integrity_poll(_make_outstation(num_ai=500), seq=0)
+
+        sequences = _sequences(fragments)
+        assert len(sequences) <= 16, "fixture must not wrap for this assertion"
+        assert len(set(sequences)) == len(sequences)
+
+    def test_single_fragment_keeps_the_request_sequence(self) -> None:
+        """A response that fits in one fragment must not shift its sequence."""
+        fragments = _do_integrity_poll(_make_outstation(num_ai=5), seq=7)
+
+        assert len(fragments) == 1
+        assert fragments[0].header.control.seq == 7
+
+    def test_empty_response_keeps_the_request_sequence(self) -> None:
+        fragments = _do_integrity_poll(_make_outstation(), seq=9)
+
+        assert len(fragments) == 1
+        assert fragments[0].header.control.seq == 9
+
+    def test_sequence_increments_independently_of_fir_fin(self) -> None:
+        """FIR/FIN and SEQ are separate fields; fixing one must not disturb the other."""
+        fragments = _do_integrity_poll(_make_outstation(num_ai=500), seq=3)
+
+        first, *middle, last = fragments
+        assert (first.header.control.fir, first.header.control.fin) == (True, False)
+        assert all((f.header.control.fir, f.header.control.fin) == (False, False) for f in middle)
+        assert (last.header.control.fir, last.header.control.fin) == (False, True)
+        assert _sequences(fragments) == [(3 + offset) % 16 for offset in range(len(fragments))]

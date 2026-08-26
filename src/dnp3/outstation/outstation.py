@@ -121,6 +121,19 @@ QUALIFIER_CROB_2BYTE = 0x28
 _CROB_BODY_BYTES = 11
 
 
+def _fragment_seq(request_seq: int, fragment_offset: int) -> int:
+    """Application sequence number for one fragment of a response burst.
+
+    IEEE 1815-2012 clause 4.2.2.4.5: the first fragment carries the request's
+    sequence number and each subsequent fragment increments by one, modulo 16.
+
+    The bare `% 16` matches how the application sequence is advanced elsewhere
+    (`outstation/state.py`, `master/state.py`); `transport.segment.MAX_SEQUENCE`
+    bounds the transport sequence, which is a different field.
+    """
+    return (request_seq + fragment_offset) % 16
+
+
 def _split_response_objects(
     objects: list[ObjectBlock],
     iin: IIN,
@@ -135,10 +148,17 @@ def _split_response_objects(
     - Middle: FIR=False, FIN=False
     - Last: FIR=False, FIN=True
 
+    The application sequence number increments by one, modulo 16, for each
+    fragment after the first, per IEEE 1815-2012 clause 4.2.2.4.5. The first
+    fragment carries the request's own sequence number. A conformant master
+    tracks this and discards a fragment whose sequence it does not expect, so a
+    burst that repeats one sequence stalls after the first fragment.
+
     Args:
         objects: Object blocks to distribute across fragments.
         iin: Internal indications for all fragments.
-        seq: Sequence number for all fragments.
+        seq: Sequence number of the request; the first fragment carries it and
+            each later fragment increments from it.
         max_fragment_size: Maximum bytes per fragment.
 
     Returns:
@@ -161,7 +181,7 @@ def _split_response_objects(
                 build_response(
                     objects=tuple(current_objects),
                     iin=iin,
-                    seq=seq,
+                    seq=_fragment_seq(seq, len(fragments)),
                     fir=is_first,
                     fin=False,
                 )
@@ -179,7 +199,7 @@ def _split_response_objects(
             build_response(
                 objects=tuple(current_objects),
                 iin=iin,
-                seq=seq,
+                seq=_fragment_seq(seq, len(fragments)),
                 fir=is_first,
                 fin=True,
             )
