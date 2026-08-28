@@ -862,8 +862,8 @@ class Master:
         """Reserve the next application sequence number for an outbound request.
 
         The `build_*` methods call this internally. It is public so that a
-        caller building a request from a `PollTask` -- which does its own
-        building and takes `seq` as an argument -- draws from the same counter,
+        caller building a request from a `PollTask` (which does its own
+        building and takes `seq` as an argument) draws from the same counter,
         instead of numbering scheduled polls separately from direct ones.
 
         Returns:

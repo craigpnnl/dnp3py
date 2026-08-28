@@ -28,6 +28,7 @@ from dnp3.master.polling import (
 )
 from dnp3.master.state import MasterState, MasterStateManager
 from dnp3.master.tcp_runner import (
+    LinkError,
     LinkResetPolicy,
     MasterRunnerError,
     MasterTcpRunner,
@@ -42,6 +43,7 @@ __all__ = [
     "DefaultSOEHandler",
     "DirectOperateTask",
     "IntegrityPollTask",
+    "LinkError",
     "LinkResetPolicy",
     "Master",
     "MasterConfig",

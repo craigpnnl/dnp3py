@@ -6,13 +6,14 @@ handshake, the sequence walk), which needs no network. Socket-level cover lives
 in `tests/integration/test_tcp_master_runner_e2e.py`.
 
 The peer side is deliberately hand-rolled rather than an `Outstation`, so a
-fragment burst can be emitted with a chosen sequence -- including a wrong one --
+fragment burst can be emitted with a chosen sequence, including a wrong one,
 which a conformant outstation would never produce.
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import struct
 
 import pytest
@@ -32,13 +33,14 @@ from dnp3.master.handler import ResponseInfo
 from dnp3.master.master import Master
 from dnp3.master.polling import IntegrityPollTask
 from dnp3.master.tcp_runner import (
+    LinkError,
     LinkResetPolicy,
     MasterRunnerError,
     MasterTcpRunner,
     ResponseTimeoutError,
 )
 from dnp3.transport.segment import TransportSegment
-from dnp3.transport_io.channel import ChannelClosedError
+from dnp3.transport_io.channel import ChannelError
 from dnp3.transport_io.simulator import create_channel_pair
 
 MASTER_ADDR = 3
@@ -98,10 +100,51 @@ class FakeOutstation:
         )
         await self.channel.write_all(frame.to_bytes())  # type: ignore[attr-defined]
 
+    def frame_fragment(self, app_bytes: bytes) -> bytes:
+        """Frame one application fragment, returning the bytes without sending."""
+        segment = TransportSegment.build(fir=True, fin=True, seq=0, payload=app_bytes)
+        frame = build_unconfirmed_user_data(
+            destination=MASTER_ADDR,
+            source=OUTSTATION_ADDR,
+            dir_from_master=False,
+            user_data=segment.to_bytes(),
+        )
+        return frame.to_bytes()
+
+    async def send_raw(self, data: bytes) -> None:
+        """Write pre-framed bytes in one call.
+
+        One `write_all` is one queue item and therefore one `read()` on the far
+        side, which is how a coalesced read is reproduced without a real kernel:
+        passing two concatenated frames here delivers both in a single read.
+        """
+        await self.channel.write_all(data)  # type: ignore[attr-defined]
+
+    async def send_fragment_from(self, app_bytes: bytes, *, source: int) -> None:
+        """Frame a fragment from an arbitrary source address."""
+        segment = TransportSegment.build(fir=True, fin=True, seq=0, payload=app_bytes)
+        frame = build_unconfirmed_user_data(
+            destination=MASTER_ADDR,
+            source=source,
+            dir_from_master=False,
+            user_data=segment.to_bytes(),
+        )
+        await self.channel.write_all(frame.to_bytes())  # type: ignore[attr-defined]
+
     async def send_ack(self) -> None:
         """Answer a link reset with an ACK carrying no user data."""
         ack = build_ack(MASTER_ADDR, OUTSTATION_ADDR, False)
         await self.channel.write_all(ack.to_bytes())  # type: ignore[attr-defined]
+
+    async def read_request_seq(self, timeout: float = 2.0) -> int:
+        """Read one request and return the application sequence it carries.
+
+        A real outstation answers with the sequence it was asked on; tests that
+        hardcode a response sequence instead are asserting against a peer no
+        conformant outstation resembles.
+        """
+        fragments = await self.read_fragments(1, timeout=timeout)
+        return fragments[0][0] & 0x0F
 
     async def read_fragments(self, count: int, timeout: float = 2.0) -> list[bytes]:
         """Read until `count` application fragments arrive from the master."""
@@ -334,11 +377,16 @@ class TestMultiFragment:
         peer = FakeOutstation(channel_b)
         confirms: list[bytes] = []
 
+        seq_holder: list[int] = []
+
         async def respond() -> None:
-            await peer.read_fragments(1)
-            await peer.send_fragment(analog_response(seq=7, fir=True, fin=False, con=True, index=0, value=1.0))
+            seq = await peer.read_request_seq()
+            seq_holder.append(seq)
+            await peer.send_fragment(analog_response(seq=seq, fir=True, fin=False, con=True, index=0, value=1.0))
             confirms.extend(await peer.read_fragments(1))
-            await peer.send_fragment(analog_response(seq=8, fir=False, fin=True, con=False, index=1, value=2.0))
+            await peer.send_fragment(
+                analog_response(seq=(seq + 1) % 16, fir=False, fin=True, con=False, index=1, value=2.0)
+            )
 
         responder = asyncio.create_task(respond())
         await runner.integrity_poll()
@@ -347,7 +395,7 @@ class TestMultiFragment:
         assert len(confirms) == 1
         assert confirms[0][1] == FunctionCode.CONFIRM.value
         # Application control byte low nibble is the sequence.
-        assert confirms[0][0] & 0x0F == 7
+        assert confirms[0][0] & 0x0F == seq_holder[0]
 
     async def test_accepts_sequence_wrap(self) -> None:
         """A burst crossing 15 -> 0 is accepted, per modulo-16 sequencing."""
@@ -358,8 +406,17 @@ class TestMultiFragment:
         await runner.open()
         peer = FakeOutstation(channel_b)
 
+        # Walk the master's own counter so the *next* allocation, the one
+        # `build_integrity_poll()` makes, is 15 and its burst is the one that
+        # wraps. The wrap has to be reached through the allocator rather than by
+        # inventing a response sequence: fragment one is now correlated to the
+        # request that was actually sent.
+        while runner.master.next_request_sequence() != 14:
+            pass
+
         async def respond() -> None:
-            await peer.read_fragments(1)
+            seq = await peer.read_request_seq()
+            assert seq == 15, "request should carry the sequence the counter was walked to"
             await peer.send_fragment(analog_response(seq=15, fir=True, fin=False, con=True, index=0, value=1.0))
             await peer.read_fragments(1)
             await peer.send_fragment(analog_response(seq=0, fir=False, fin=True, con=False, index=1, value=2.0))
@@ -385,11 +442,13 @@ class TestMultiFragment:
         peer = FakeOutstation(channel_b)
 
         async def respond() -> None:
-            await peer.read_fragments(1)
-            await peer.send_fragment(analog_response(seq=4, fir=True, fin=False, con=True, index=0, value=1.0))
+            # Fragment one must correlate to the request, so the rejection under
+            # test is the repeat rather than a mismatched first fragment.
+            seq = await peer.read_request_seq()
+            await peer.send_fragment(analog_response(seq=seq, fir=True, fin=False, con=True, index=0, value=1.0))
             await peer.read_fragments(1)
             # Same sequence again: the pre-#61 outstation behaviour.
-            await peer.send_fragment(analog_response(seq=4, fir=False, fin=True, con=False, index=1, value=2.0))
+            await peer.send_fragment(analog_response(seq=seq, fir=False, fin=True, con=False, index=1, value=2.0))
 
         responder = asyncio.create_task(respond())
         with pytest.raises(MasterRunnerError, match="sequence"):
@@ -455,7 +514,7 @@ class TestUnsolicited:
             await peer.read_fragments(1)
             await peer.send_fragment(analog_response(seq=0, fir=True, fin=False, con=True, index=0, value=1.0))
             # Master's CONFIRM for fragment 1, then its CONFIRM for the
-            # unsolicited response -- order is not guaranteed, so just drain 2.
+            # unsolicited response; order is not guaranteed, so just drain 2.
             await peer.send_fragment(bytes(unsolicited))
             await peer.read_fragments(2)
             await peer.send_fragment(analog_response(seq=1, fir=False, fin=True, con=False, index=1, value=2.0))
@@ -816,14 +875,14 @@ class TestReceiveEdgeCases:
 
         assert await runner.listen_unsolicited(timeout=0.3) is None
 
-    async def test_closed_channel_propagates_channel_error(self) -> None:
-        """Writing to a closed channel raises the channel error, not a timeout.
+    async def test_closed_channel_raises_runner_error(self) -> None:
+        """A closed channel is one condition with one exception type.
 
-        A closed channel is a transport fault with a cause worth seeing;
-        rewriting it as `ResponseTimeoutError` would hide why the exchange
-        failed. Only a channel that closes *while a response is awaited*
-        surfaces as a timeout, which is what `test_read_side_close_times_out`
-        covers.
+        Previously a post-close write surfaced a bare `ChannelClosedError` while
+        a post-close read surfaced `ResponseTimeoutError`: two types for one
+        condition, and neither the `MasterRunnerError` the docstrings promise.
+        `_require_open()` now checks `is_open`, so the guard fires before any
+        I/O is attempted.
         """
         channel_a, channel_b = create_channel_pair()
         await channel_a.open()
@@ -833,7 +892,7 @@ class TestReceiveEdgeCases:
 
         await channel_a.close()
 
-        with pytest.raises(ChannelClosedError):
+        with pytest.raises(MasterRunnerError, match="closed"):
             await runner.integrity_poll()
 
     async def test_read_side_close_times_out(self) -> None:
@@ -877,3 +936,443 @@ class TestReceiveEdgeCases:
         stopper = asyncio.create_task(stop_soon())
         await asyncio.wait_for(runner.run_polls(stop=stop), timeout=2.0)
         await stopper
+
+
+class TestRequestCorrelation:
+    """A response must belong to the request that is outstanding.
+
+    Without this, the failure is not primarily an injected frame: it is a poll
+    that times out, a next poll that goes out, and the outstation's late answer
+    to the first being served as the second's response. Stale analog values
+    reach the SOE handler looking current, with no exception anywhere.
+    """
+
+    async def test_rejects_first_fragment_with_foreign_sequence(self) -> None:
+        """A fragment whose sequence is not the request's is refused."""
+        channel_a, channel_b = create_channel_pair()
+        await channel_a.open()
+        await channel_b.open()
+        runner, _ = make_runner(channel_a, response_timeout=1.0)
+        await runner.open()
+        peer = FakeOutstation(channel_b)
+
+        async def respond() -> None:
+            seq = await peer.read_request_seq()
+            # A sequence that is emphatically not the one asked for.
+            await peer.send_fragment(
+                analog_response(seq=(seq + 7) % 16, fir=True, fin=True, con=False, index=7, value=4242.0)
+            )
+
+        responder = asyncio.create_task(respond())
+        with pytest.raises(MasterRunnerError, match="does not match the request"):
+            await runner.integrity_poll()
+        await responder
+
+    async def test_late_response_is_not_served_as_the_next_poll(self) -> None:
+        """The operational case: a timed-out poll's answer arriving during the next.
+
+        Poll one times out. Poll two goes out. The outstation's late answer to
+        poll one then arrives carrying poll one's sequence. It must not be
+        returned as poll two's response.
+        """
+        channel_a, channel_b = create_channel_pair()
+        await channel_a.open()
+        await channel_b.open()
+        runner, handler = make_runner(channel_a, response_timeout=0.3)
+        await runner.open()
+        peer = FakeOutstation(channel_b)
+
+        first_seq = await asyncio.wait_for(_poll_and_time_out(runner, peer), timeout=5.0)
+
+        # Poll two, answered with poll one's stale sequence and a stale value.
+        async def respond_stale() -> None:
+            await peer.read_request_seq()
+            await peer.send_fragment(
+                analog_response(seq=first_seq, fir=True, fin=True, con=False, index=3, value=-999.0)
+            )
+
+        responder = asyncio.create_task(respond_stale())
+        with pytest.raises(MasterRunnerError, match="does not match the request"):
+            await runner.integrity_poll()
+        await responder
+
+        assert handler.analog_inputs.get(3) != -999.0, "a stale fragment's values must not reach the handler as current"
+
+
+async def _poll_and_time_out(runner: MasterTcpRunner, peer: FakeOutstation) -> int:
+    """Send one poll, let it time out unanswered, and return its sequence."""
+    seq_holder: list[int] = []
+
+    async def capture() -> None:
+        seq_holder.append(await peer.read_request_seq())
+
+    capturer = asyncio.create_task(capture())
+    with pytest.raises(ResponseTimeoutError):
+        await runner.integrity_poll()
+    await capturer
+    return seq_holder[0]
+
+
+class TestSourceAddressFilter:
+    """User data must come from the configured outstation, not merely be addressed here."""
+
+    async def test_rejects_frame_from_foreign_source(self) -> None:
+        """A frame addressed to this master from another outstation is ignored."""
+        channel_a, channel_b = create_channel_pair()
+        await channel_a.open()
+        await channel_b.open()
+        runner, handler = make_runner(channel_a, response_timeout=0.5)
+        await runner.open()
+        peer = FakeOutstation(channel_b)
+
+        async def respond() -> None:
+            await peer.read_request_seq()
+            # Correctly addressed to the master, but from address 9999.
+            await peer.send_fragment_from(
+                analog_response(seq=0, fir=True, fin=True, con=False, index=5, value=1234.0),
+                source=9999,
+            )
+
+        responder = asyncio.create_task(respond())
+        with pytest.raises(ResponseTimeoutError):
+            await runner.integrity_poll()
+        await responder
+
+        assert 5 not in handler.analog_inputs, "values from a foreign source must never reach the handler"
+
+    async def test_accepts_frame_from_configured_source(self) -> None:
+        """The filter admits the configured outstation, so it is not simply closed."""
+        channel_a, channel_b = create_channel_pair()
+        await channel_a.open()
+        await channel_b.open()
+        runner, handler = make_runner(channel_a)
+        await runner.open()
+        peer = FakeOutstation(channel_b)
+
+        async def respond() -> None:
+            seq = await peer.read_request_seq()
+            await peer.send_fragment_from(
+                analog_response(seq=seq, fir=True, fin=True, con=False, index=5, value=1234.0),
+                source=OUTSTATION_ADDR,
+            )
+
+        responder = asyncio.create_task(respond())
+        await runner.integrity_poll()
+        await responder
+
+        assert handler.analog_inputs[5] == 1234.0
+
+
+class TestCoalescedRead:
+    """Frames sharing one TCP read must all be processed.
+
+    `FrameParser.feed()` materializes every complete frame from a chunk before
+    the caller sees the first, so consuming them inside the iteration and
+    returning early discards the rest. A kernel that coalesces an ACK with a
+    response, or two back-to-back segments, into one read makes this routine.
+    """
+
+    async def test_second_fragment_in_same_read_is_not_lost(self) -> None:
+        """Two response fragments delivered in a single read both arrive."""
+        channel_a, channel_b = create_channel_pair()
+        await channel_a.open()
+        await channel_b.open()
+        runner, handler = make_runner(channel_a, response_timeout=1.0)
+        await runner.open()
+        peer = FakeOutstation(channel_b)
+
+        async def respond() -> None:
+            seq = await peer.read_request_seq()
+            # A non-final fragment and an ACK in one write, hence one read. The
+            # ACK follows the fragment that completes reassembly, so it is the
+            # frame the old code discarded.
+            first = peer.frame_fragment(analog_response(seq=seq, fir=True, fin=False, con=True, index=0, value=1.0))
+            ack = build_ack(MASTER_ADDR, OUTSTATION_ADDR, False).to_bytes()
+            await peer.send_raw(first + ack)
+            await peer.read_fragments(1)
+            await peer.send_fragment(
+                analog_response(seq=(seq + 1) % 16, fir=False, fin=True, con=False, index=1, value=2.0)
+            )
+
+        responder = asyncio.create_task(respond())
+        infos = await runner.integrity_poll()
+        await responder
+
+        assert len(infos) == 2
+        assert handler.analog_inputs[0] == 1.0
+        assert handler.analog_inputs[1] == 2.0
+
+    async def test_ack_preceding_a_response_in_one_read(self) -> None:
+        """An ACK coalesced ahead of a response does not swallow the response."""
+        channel_a, channel_b = create_channel_pair()
+        await channel_a.open()
+        await channel_b.open()
+        runner, handler = make_runner(channel_a, response_timeout=1.0)
+        await runner.open()
+        peer = FakeOutstation(channel_b)
+
+        async def respond() -> None:
+            seq = await peer.read_request_seq()
+            ack = build_ack(MASTER_ADDR, OUTSTATION_ADDR, False).to_bytes()
+            body = peer.frame_fragment(analog_response(seq=seq, fir=True, fin=True, con=False, index=9, value=7.5))
+            await peer.send_raw(ack + body)
+
+        responder = asyncio.create_task(respond())
+        infos = await runner.integrity_poll()
+        await responder
+
+        assert len(infos) == 1
+        assert handler.analog_inputs[9] == 7.5
+
+
+class TestBurstBounds:
+    """A burst must end, whether or not the peer sets FIN."""
+
+    async def test_endless_burst_is_abandoned(self) -> None:
+        """A peer that increments forever is cut off rather than looped on.
+
+        The mod-16 walk wraps, so sequence continuity alone never terminates:
+        the peer below stays perfectly in sequence indefinitely.
+        """
+        channel_a, channel_b = create_channel_pair()
+        await channel_a.open()
+        await channel_b.open()
+        runner, _ = make_runner(channel_a, response_timeout=10.0)
+        await runner.open()
+        peer = FakeOutstation(channel_b)
+
+        async def respond_forever() -> None:
+            seq = await peer.read_request_seq()
+            with contextlib.suppress(Exception):
+                while True:
+                    await peer.send_fragment(
+                        analog_response(seq=seq, fir=True, fin=False, con=True, index=0, value=1.0)
+                    )
+                    await peer.read_fragments(1)
+                    seq = (seq + 1) % 16
+
+        responder = asyncio.create_task(respond_forever())
+        try:
+            with pytest.raises(MasterRunnerError, match="exceeded"):
+                await runner.integrity_poll()
+        finally:
+            responder.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await responder
+
+    async def test_total_deadline_bounds_a_slow_burst(self) -> None:
+        """`response_timeout` bounds the exchange, not merely each fragment.
+
+        A peer answering steadily but slowly would otherwise hold a request open
+        for as long as it kept talking, since a per-fragment deadline resets on
+        every arrival.
+        """
+        channel_a, channel_b = create_channel_pair()
+        await channel_a.open()
+        await channel_b.open()
+        runner, _ = make_runner(channel_a, response_timeout=0.6)
+        await runner.open()
+        peer = FakeOutstation(channel_b)
+
+        async def respond_slowly() -> None:
+            seq = await peer.read_request_seq()
+            with contextlib.suppress(Exception):
+                while True:
+                    await peer.send_fragment(
+                        analog_response(seq=seq, fir=True, fin=False, con=True, index=0, value=1.0)
+                    )
+                    await peer.read_fragments(1)
+                    await asyncio.sleep(0.15)
+                    seq = (seq + 1) % 16
+
+        responder = asyncio.create_task(respond_slowly())
+        started = asyncio.get_running_loop().time()
+        try:
+            with pytest.raises(ResponseTimeoutError):
+                await runner.integrity_poll()
+        finally:
+            responder.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await responder
+        elapsed = asyncio.get_running_loop().time() - started
+        assert elapsed < 3.0, "the exchange must be bounded by response_timeout, not per fragment"
+
+
+class TestErrorContainment:
+    """`run_polls()` must survive the failures a real link produces."""
+
+    async def test_run_polls_survives_a_timeout(self) -> None:
+        """A dropped packet does not end the polling loop.
+
+        One `ResponseTimeoutError` is the normal outcome of a single lost frame.
+        Ending the loop on it turns a transient blip into permanent silence with
+        `is_open` still reporting `True`.
+        """
+        channel_a, channel_b = create_channel_pair()
+        await channel_a.open()
+        await channel_b.open()
+        runner, handler = make_runner(channel_a, response_timeout=0.2)
+        await runner.open()
+        peer = FakeOutstation(channel_b)
+        runner.master.scheduler.add_task(IntegrityPollTask())
+
+        stop = asyncio.Event()
+
+        async def ignore_then_answer() -> None:
+            # First poll: read it and stay silent, forcing a timeout.
+            await peer.read_request_seq()
+            # Second poll: answer properly. Reaching here at all proves the loop
+            # survived the first failure.
+            seq = await peer.read_request_seq(timeout=5.0)
+            await peer.send_fragment(analog_response(seq=seq, fir=True, fin=True, con=False, index=2, value=55.0))
+            stop.set()
+
+        peer_task = asyncio.create_task(ignore_then_answer())
+        poll_task = asyncio.create_task(runner.run_polls(stop=stop))
+        try:
+            await asyncio.wait_for(peer_task, timeout=10.0)
+            await asyncio.wait_for(poll_task, timeout=10.0)
+        finally:
+            stop.set()
+            poll_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await poll_task
+
+        assert handler.analog_inputs.get(2) == 55.0, "the loop must keep polling after a timeout"
+
+    async def test_reassembly_error_is_wrapped_as_link_error(self) -> None:
+        """An out-of-order transport segment surfaces under `MasterRunnerError`.
+
+        `ReassemblyError` belongs to the transport package and escaped the
+        runner's whole documented contract; a caller cannot be asked to import
+        from `dnp3.transport` to catch what a master raises.
+        """
+        channel_a, channel_b = create_channel_pair()
+        await channel_a.open()
+        await channel_b.open()
+        runner, _ = make_runner(channel_a, response_timeout=1.0)
+        await runner.open()
+        peer = FakeOutstation(channel_b)
+
+        def frame_segment(segment: TransportSegment) -> bytes:
+            return build_unconfirmed_user_data(
+                destination=MASTER_ADDR,
+                source=OUTSTATION_ADDR,
+                dir_from_master=False,
+                user_data=segment.to_bytes(),
+            ).to_bytes()
+
+        async def respond_out_of_order() -> None:
+            await peer.read_request_seq()
+            body = analog_response(seq=0, fir=True, fin=True, con=False, index=0, value=1.0)
+            # A first segment opens assembly, then a continuation whose sequence
+            # is not the expected next one. The reassembler only raises from the
+            # ASSEMBLING state: a lone out-of-order segment while IDLE is
+            # silently dropped, so both segments are needed to reach the error.
+            first = TransportSegment.build(fir=True, fin=False, seq=0, payload=body[:4])
+            bad = TransportSegment.build(fir=False, fin=True, seq=9, payload=body[4:])
+            await peer.send_raw(frame_segment(first) + frame_segment(bad))
+
+        responder = asyncio.create_task(respond_out_of_order())
+        try:
+            with pytest.raises(LinkError, match="reassembly"):
+                await runner.integrity_poll()
+        finally:
+            responder.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await responder
+
+
+class TestLinkFailure:
+    """A link that dies mid-exchange must surface under `MasterRunnerError`."""
+
+    async def test_connection_reset_becomes_link_error(self) -> None:
+        """A bare `ChannelError` is caught, not just `ChannelClosedError`.
+
+        `ChannelClosedError` and `ChannelTimeoutError` are *siblings* under
+        `ChannelError`, and `TcpClientChannel.read` raises the bare parent on
+        `OSError`. So ECONNRESET, the most common way a real link dies, arrives
+        as `ChannelError` itself and previously escaped the runner entirely.
+        """
+
+        class ResettingChannel:
+            """Channel whose read fails the way a reset socket does."""
+
+            is_open = True
+
+            async def write_all(self, data: bytes) -> None:
+                return None
+
+            async def read(self, size: int) -> bytes:
+                raise ChannelError("Read failed: [Errno 104] Connection reset by peer")
+
+            async def close(self) -> None:
+                self.is_open = False
+
+        runner, _ = make_runner(ResettingChannel(), response_timeout=1.0)
+        await runner.open()
+
+        with pytest.raises(LinkError, match="Link failed"):
+            await runner.integrity_poll()
+
+
+class TestPostCloseLifecycle:
+    """State must not survive `close()` into the next connection."""
+
+    async def test_request_after_close_raises_runner_error(self) -> None:
+        """The documented guard fires rather than a bare channel error."""
+        channel_a, channel_b = create_channel_pair()
+        await channel_a.open()
+        await channel_b.open()
+        runner, _ = make_runner(channel_a)
+        await runner.open()
+        await runner.close()
+
+        with pytest.raises(MasterRunnerError):
+            await runner.integrity_poll()
+
+    async def test_close_clears_protocol_state(self) -> None:
+        """Reassembler and parser state do not leak into the next connection."""
+        channel_a, channel_b = create_channel_pair()
+        await channel_a.open()
+        await channel_b.open()
+        runner, handler = make_runner(channel_a)
+        await runner.open()
+        peer = FakeOutstation(channel_b)
+
+        # Leave a partial frame mid-parse, then close.
+        await peer.send_raw(b"\x05\x64\x0a")
+        with contextlib.suppress(Exception):
+            await asyncio.wait_for(runner.integrity_poll(), timeout=0.4)
+        await runner.close()
+
+        assert runner._reassembler is None
+        assert not runner._pending
+
+        # A fresh open must not prepend the old partial frame's bytes.
+        channel_c, channel_d = create_channel_pair()
+        await channel_c.open()
+        await channel_d.open()
+        runner.channel = channel_c
+        await runner.open()
+        peer2 = FakeOutstation(channel_d)
+
+        async def respond() -> None:
+            seq = await peer2.read_request_seq()
+            await peer2.send_fragment(analog_response(seq=seq, fir=True, fin=True, con=False, index=4, value=8.0))
+
+        responder = asyncio.create_task(respond())
+        infos = await runner.integrity_poll()
+        await responder
+        assert len(infos) == 1
+        assert handler.analog_inputs[4] == 8.0
+
+    async def test_double_open_is_refused(self) -> None:
+        """Re-opening would replace the reassembler under an in-flight request."""
+        channel_a, _ = create_channel_pair()
+        await channel_a.open()
+        runner, _ = make_runner(channel_a)
+        await runner.open()
+
+        with pytest.raises(MasterRunnerError, match="already open"):
+            await runner.open()

@@ -2,7 +2,7 @@
 
 `test_tcp_master_values_e2e.py` proves a `Master` can decode what an
 `Outstation` sends, but hand-rolls the link and transport layers in the test
-itself -- which is the duplication `MasterTcpRunner` exists to remove. These
+itself, which is the duplication `MasterTcpRunner` exists to remove. These
 tests drive the runner instead, so the stack under test is the shipped one.
 
 Sockets bind to `127.0.0.1` on port 0 and the runner is told the port the OS
