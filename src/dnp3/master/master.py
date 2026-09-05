@@ -288,7 +288,7 @@ class CounterValueSpec:
         return flags_width + self.value_width + self.timestamp_width
 
 
-# Static analog input/output variations (groups 30, 40).
+# Static analog input variations (group 30).
 _STATIC_ANALOG_SPECS = {
     1: AnalogValueSpec(value_width=4, has_flags=True, decode=_decode_signed_int),
     2: AnalogValueSpec(value_width=2, has_flags=True, decode=_decode_signed_int),
@@ -296,6 +296,16 @@ _STATIC_ANALOG_SPECS = {
     4: AnalogValueSpec(value_width=2, has_flags=False, decode=_decode_signed_int),
     5: AnalogValueSpec(value_width=4, has_flags=True, decode=_decode_float32),
     6: AnalogValueSpec(value_width=8, has_flags=True, decode=_decode_float64),
+}
+
+# Static analog output status variations (group 40).
+# v3 is single-precision float (with flag) and v4 is double (with flag) — not the
+# int-without-flag layouts group 30 uses for v3/v4.
+_STATIC_AO_SPECS = {
+    1: AnalogValueSpec(value_width=4, has_flags=True, decode=_decode_signed_int),
+    2: AnalogValueSpec(value_width=2, has_flags=True, decode=_decode_signed_int),
+    3: AnalogValueSpec(value_width=4, has_flags=True, decode=_decode_float32),
+    4: AnalogValueSpec(value_width=8, has_flags=True, decode=_decode_float64),
 }
 
 # Analog event variations (groups 32, 42). Variations 3, 4, 7 and 8 repeat
@@ -352,6 +362,8 @@ def _analog_value_spec(group: int, variation: int) -> AnalogValueSpec | None:
     """Look up the decoding spec for an analog group/variation, or None."""
     if group in {GROUP_ANALOG_INPUT_EVENT, GROUP_ANALOG_OUTPUT_EVENT}:
         return _EVENT_ANALOG_SPECS.get(variation)
+    if group == GROUP_ANALOG_OUTPUT:
+        return _STATIC_AO_SPECS.get(variation)
     return _STATIC_ANALOG_SPECS.get(variation)
 
 
