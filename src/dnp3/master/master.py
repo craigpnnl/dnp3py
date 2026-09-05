@@ -288,7 +288,7 @@ class CounterValueSpec:
         return flags_width + self.value_width + self.timestamp_width
 
 
-# Static analog input/output variations (group 30).
+# Static analog input variations (group 30).
 _STATIC_ANALOG_SPECS = {
     1: AnalogValueSpec(value_width=4, has_flags=True, decode=_decode_signed_int),
     2: AnalogValueSpec(value_width=2, has_flags=True, decode=_decode_signed_int),
