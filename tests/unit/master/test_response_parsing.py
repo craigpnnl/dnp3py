@@ -38,6 +38,7 @@ class CollectingHandler(SOEHandler):
         self.binary_outputs: dict[int, bool] = {}
         self.analog_inputs: dict[int, float] = {}
         self.counters: dict[int, int] = {}
+        self.frozen_counters: dict[int, int] = {}
 
     def on_binary_input(self, values, info: ResponseInfo) -> None:
         self.binary_inputs.update({v.index: v.value for v in values})
@@ -50,6 +51,9 @@ class CollectingHandler(SOEHandler):
 
     def on_counter(self, values, info: ResponseInfo) -> None:
         self.counters.update({v.index: v.value for v in values})
+
+    def on_frozen_counter(self, values, info: ResponseInfo) -> None:
+        self.frozen_counters.update({v.index: v.value for v in values})
 
 
 def indexed_values(values) -> dict[int, object]:
@@ -473,3 +477,78 @@ class TestFragmentFlags:
         assert info.fir is True
         assert info.fin is True
         assert info.con is False
+
+
+class TestFrozenCounterLayout:
+    """g21v5/v6 (IEEE 1815-2012 A.11.5 p.529, A.11.6 p.531) are flag + value +
+    6-octet DNP3TIME, distinct from the g20v5/v6 no-flag layout. Regression
+    cover for craigpnnl/dnp3py#79.
+    """
+
+    # Non-zero, non-palindromic time octets: a decoder that reads past the
+    # value width would pull these bytes in, and the test would still catch
+    # it even though `timestamp` is never populated by this decode path.
+    _TIME_OCTETS = bytes([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF])
+
+    def test_g21v5_delivers_flag_as_quality_and_uint32_value(self) -> None:
+        """A.11.5.2.2: BSTR8 flag, UINT32 count, DNP3TIME. 11.3.4: little-endian."""
+        master = Master()
+        header = ObjectHeader(group=21, variation=5, qualifier=0x00)
+        data = bytes([0x00, 0x00, 0x01]) + struct.pack("<I", 0x12345678) + self._TIME_OCTETS
+        values = master._parse_counter_values(ObjectBlock(header=header, data=data))
+
+        assert indexed_values(values) == {0: 0x12345678}
+        assert values[0].quality == 0x01
+        assert values[0].timestamp is None
+
+    def test_g21v6_delivers_flag_as_quality_and_uint16_value(self) -> None:
+        """A.11.6.2.2: BSTR8 flag, UINT16 count, DNP3TIME. 11.3.4: little-endian."""
+        master = Master()
+        header = ObjectHeader(group=21, variation=6, qualifier=0x00)
+        data = bytes([0x00, 0x00, 0x01]) + struct.pack("<H", 0x1234) + self._TIME_OCTETS
+        values = master._parse_counter_values(ObjectBlock(header=header, data=data))
+
+        assert indexed_values(values) == {0: 0x1234}
+        assert values[0].quality == 0x01
+        assert values[0].timestamp is None
+
+    def test_g21v1_frozen_counter_32bit_with_flag_unchanged(self) -> None:
+        """A.11.1: flag + UINT32, no time. Must not move when v5/v6 are fixed."""
+        master = Master()
+        header = ObjectHeader(group=21, variation=1, qualifier=0x00)
+        data = bytes([0x00, 0x00, 0x01]) + struct.pack("<I", 0x12345678)
+        values = master._parse_counter_values(ObjectBlock(header=header, data=data))
+
+        assert indexed_values(values) == {0: 0x12345678}
+        assert values[0].quality == 0x01
+
+    def test_g21v2_frozen_counter_16bit_with_flag_unchanged(self) -> None:
+        """A.11.2: flag + UINT16, no time. Must not move when v5/v6 are fixed."""
+        master = Master()
+        header = ObjectHeader(group=21, variation=2, qualifier=0x00)
+        data = bytes([0x00, 0x00, 0x01]) + struct.pack("<H", 0x1234)
+        values = master._parse_counter_values(ObjectBlock(header=header, data=data))
+
+        assert indexed_values(values) == {0: 0x1234}
+        assert values[0].quality == 0x01
+
+    def test_g21v5_block_and_g30v1_block_both_delivered(self) -> None:
+        """A g21v5 block followed by a g30v1 block delivers both (no absorption)."""
+        handler = CollectingHandler()
+        master = Master(handler=handler)
+        body = (
+            bytes([21, 5, 0x00, 0, 0])
+            + bytes([0x01])
+            + struct.pack("<I", 0x12345678)
+            + self._TIME_OCTETS
+            + bytes([0x1E, 0x01, 0x00, 0, 0])
+            + bytes([0x01])
+            + struct.pack("<i", 2401)
+        )
+        fragment = parse_response(RESPONSE_HEADER + body)
+        assert len(fragment.objects) == 2
+
+        master.process_response(RESPONSE_HEADER + body)
+
+        assert handler.frozen_counters == {0: 0x12345678}
+        assert handler.analog_inputs == {0: 2401.0}
