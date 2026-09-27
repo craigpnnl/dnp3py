@@ -133,7 +133,7 @@ class TestBinaryEventCountQualifiers:
 
 
 class TestBinaryEventVariationIsNotPacked:
-    """Variation 1 means packed only for group 1 — never for event groups."""
+    """Variation 1 means packed only for group 1 - never for event groups."""
 
     def test_g2v1_is_flags_per_point_not_packed_bits(self) -> None:
         """g2v1 is one flags byte per point; treating it as packed fabricates points."""

@@ -299,7 +299,7 @@ _STATIC_ANALOG_SPECS = {
 }
 
 # Static analog output status variations (group 40).
-# v3 is single-precision float (with flag) and v4 is double (with flag) — not the
+# v3 is single-precision float (with flag) and v4 is double (with flag) - not the
 # int-without-flag layouts group 30 uses for v3/v4.
 _STATIC_AO_SPECS = {
     1: AnalogValueSpec(value_width=4, has_flags=True, decode=_decode_signed_int),
