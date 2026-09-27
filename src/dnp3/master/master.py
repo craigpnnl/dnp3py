@@ -299,7 +299,7 @@ _STATIC_ANALOG_SPECS = {
 }
 
 # Static analog output status variations (group 40).
-# v3 is single-precision float (with flag) and v4 is double (with flag) — not the
+# v3 is single-precision float (with flag) and v4 is double (with flag) - not the
 # int-without-flag layouts group 30 uses for v3/v4.
 _STATIC_AO_SPECS = {
     1: AnalogValueSpec(value_width=4, has_flags=True, decode=_decode_signed_int),
@@ -341,12 +341,23 @@ _EVENT_ANALOG_SPECS = {
     ),
 }
 
-# Static counter variations (groups 20, 21).
+# Static counter variations (group 20). v5/v6 carry no flag or time.
 _STATIC_COUNTER_SPECS = {
     1: CounterValueSpec(value_width=4, has_flags=True),
     2: CounterValueSpec(value_width=2, has_flags=True),
     5: CounterValueSpec(value_width=4, has_flags=False),
     6: CounterValueSpec(value_width=2, has_flags=False),
+}
+
+# Frozen counter variations (group 21). Unlike g20, v5/v6 carry a flag and a
+# 48-bit time-of-occurrence (IEEE 1815-2012 A.11.5, A.11.6): they are not the
+# g20v5/v6 layout despite sharing a variation number. The time-of-occurrence
+# is skipped, not decoded; CounterValue.timestamp stays None until #81.
+_STATIC_FROZEN_COUNTER_SPECS = {
+    1: CounterValueSpec(value_width=4, has_flags=True),
+    2: CounterValueSpec(value_width=2, has_flags=True),
+    5: CounterValueSpec(value_width=4, has_flags=True, timestamp_width=_ABSOLUTE_TIMESTAMP_WIDTH),
+    6: CounterValueSpec(value_width=2, has_flags=True, timestamp_width=_ABSOLUTE_TIMESTAMP_WIDTH),
 }
 
 # Counter event variations (group 22). 5 and 6 add a 48-bit timestamp.
@@ -371,6 +382,8 @@ def _counter_value_spec(group: int, variation: int) -> CounterValueSpec | None:
     """Look up the decoding spec for a counter group/variation, or None."""
     if group == GROUP_COUNTER_EVENT:
         return _EVENT_COUNTER_SPECS.get(variation)
+    if group == GROUP_FROZEN_COUNTER:
+        return _STATIC_FROZEN_COUNTER_SPECS.get(variation)
     return _STATIC_COUNTER_SPECS.get(variation)
 
 
