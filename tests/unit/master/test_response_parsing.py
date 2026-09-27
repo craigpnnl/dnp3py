@@ -485,32 +485,63 @@ class TestFrozenCounterLayout:
     cover for craigpnnl/dnp3py#79.
     """
 
-    # Non-zero, non-palindromic time octets: a decoder that reads past the
-    # value width would pull these bytes in, and the test would still catch
-    # it even though `timestamp` is never populated by this decode path.
+    # Non-zero, non-palindromic time octets so a wrong stride misreads point 1
+    # from inside them (see the two-point tests below).
     _TIME_OCTETS = bytes([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF])
 
     def test_g21v5_delivers_flag_as_quality_and_uint32_value(self) -> None:
-        """A.11.5.2.2: BSTR8 flag, UINT32 count, DNP3TIME. 11.3.4: little-endian."""
+        """A.11.5.2.2: BSTR8 flag, UINT32 count, DNP3TIME. 11.3.4: little-endian.
+
+        Range 0..1 (two objects) exercises the 11-octet stride: a decoder
+        missing timestamp_width reads point 1 out of point 0's time octets
+        instead of its own flag and value.
+        """
         master = Master()
         header = ObjectHeader(group=21, variation=5, qualifier=0x00)
-        data = bytes([0x00, 0x00, 0x01]) + struct.pack("<I", 0x12345678) + self._TIME_OCTETS
+        data = (
+            bytes([0x00, 0x01])
+            + bytes([0x21])
+            + struct.pack("<I", 0x12345678)
+            + self._TIME_OCTETS
+            + bytes([0x03])
+            + struct.pack("<I", 0x87654321)
+            + self._TIME_OCTETS
+        )
         values = master._parse_counter_values(ObjectBlock(header=header, data=data))
 
-        assert indexed_values(values) == {0: 0x12345678}
-        assert values[0].quality == 0x01
+        assert indexed_values(values) == {0: 0x12345678, 1: 0x87654321}
+        assert values[0].quality == 0x21
+        assert values[1].quality == 0x03
+        # Known limitation (#81): time-of-occurrence is skipped, not decoded.
         assert values[0].timestamp is None
+        assert values[1].timestamp is None
 
     def test_g21v6_delivers_flag_as_quality_and_uint16_value(self) -> None:
-        """A.11.6.2.2: BSTR8 flag, UINT16 count, DNP3TIME. 11.3.4: little-endian."""
+        """A.11.6.2.2: BSTR8 flag, UINT16 count, DNP3TIME. 11.3.4: little-endian.
+
+        Range 0..1 (two objects) exercises the 9-octet stride: a decoder
+        missing timestamp_width reads point 1 out of point 0's time octets
+        instead of its own flag and value.
+        """
         master = Master()
         header = ObjectHeader(group=21, variation=6, qualifier=0x00)
-        data = bytes([0x00, 0x00, 0x01]) + struct.pack("<H", 0x1234) + self._TIME_OCTETS
+        data = (
+            bytes([0x00, 0x01])
+            + bytes([0x21])
+            + struct.pack("<H", 0x1234)
+            + self._TIME_OCTETS
+            + bytes([0x03])
+            + struct.pack("<H", 0x4321)
+            + self._TIME_OCTETS
+        )
         values = master._parse_counter_values(ObjectBlock(header=header, data=data))
 
-        assert indexed_values(values) == {0: 0x1234}
-        assert values[0].quality == 0x01
+        assert indexed_values(values) == {0: 0x1234, 1: 0x4321}
+        assert values[0].quality == 0x21
+        assert values[1].quality == 0x03
+        # Known limitation (#81): time-of-occurrence is skipped, not decoded.
         assert values[0].timestamp is None
+        assert values[1].timestamp is None
 
     def test_g21v1_frozen_counter_32bit_with_flag_unchanged(self) -> None:
         """A.11.1: flag + UINT32, no time. Must not move when v5/v6 are fixed."""
