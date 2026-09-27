@@ -351,7 +351,8 @@ _STATIC_COUNTER_SPECS = {
 
 # Frozen counter variations (group 21). Unlike g20, v5/v6 carry a flag and a
 # 48-bit time-of-occurrence (IEEE 1815-2012 A.11.5, A.11.6): they are not the
-# g20v5/v6 layout despite sharing a variation number.
+# g20v5/v6 layout despite sharing a variation number. The time-of-occurrence
+# is skipped, not decoded; CounterValue.timestamp stays None until #81.
 _STATIC_FROZEN_COUNTER_SPECS = {
     1: CounterValueSpec(value_width=4, has_flags=True),
     2: CounterValueSpec(value_width=2, has_flags=True),
