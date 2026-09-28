@@ -69,6 +69,12 @@ class CommandHandler(Protocol):
 
     Implement this protocol to handle control operations from the master.
     The outstation will call these methods when processing control requests.
+
+    Binary output methods receive the whole g12v1 control-code octet: Trip-Close
+    code, Clear bit and Op Type (see ``ControlCode.tcc``, ``.clear`` and
+    ``.op_type``). The outstation has already refused a set Queue bit and an
+    undefined Op Type. Return NOT_SUPPORTED for any combination the handler does
+    not carry out, rather than SUCCESS without acting (IEEE 1815-2012 A.8.1.2.2).
     """
 
     def select_binary_output(
@@ -86,7 +92,7 @@ class CommandHandler(Protocol):
 
         Args:
             index: Point index.
-            code: Control code (LATCH_ON, LATCH_OFF, PULSE_ON, etc.).
+            code: Whole control-code octet; NOT_SUPPORTED for codes not carried out.
             count: Number of times to execute (for pulsed operations).
             on_time: On time in milliseconds (for pulsed operations).
             off_time: Off time in milliseconds (for pulsed operations).
@@ -112,7 +118,7 @@ class CommandHandler(Protocol):
 
         Args:
             index: Point index.
-            code: Control code (LATCH_ON, LATCH_OFF, PULSE_ON, etc.).
+            code: Whole control-code octet; NOT_SUPPORTED for codes not carried out.
             count: Number of times to execute.
             on_time: On time in milliseconds.
             off_time: Off time in milliseconds.
@@ -138,7 +144,7 @@ class CommandHandler(Protocol):
 
         Args:
             index: Point index.
-            code: Control code.
+            code: Whole control-code octet; NOT_SUPPORTED for codes not carried out.
             count: Number of times to execute.
             on_time: On time in milliseconds.
             off_time: Off time in milliseconds.

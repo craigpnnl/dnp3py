@@ -36,7 +36,7 @@ class SelectState:
     Attributes:
         index: Point index that was selected.
         is_binary: True for binary output, False for analog output.
-        control_code: Control code for binary output.
+        control_code: Control-code octet for binary output.
         count: Count for binary output pulsed operations.
         on_time: On time for binary output.
         off_time: Off time for binary output.
@@ -75,6 +75,9 @@ class SelectState:
         off_time: int,
     ) -> bool:
         """Check if OPERATE matches the SELECT for binary output.
+
+        The control code is compared as the whole octet, so TCC, Clear and
+        Queue must match as well as Op Type (IEEE 1815-2012 4.4.4.3).
 
         Args:
             index: Point index.

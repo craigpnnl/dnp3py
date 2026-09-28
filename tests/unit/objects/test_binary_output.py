@@ -4,6 +4,8 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
+from dnp3.core.enums import ControlCode as CoreControlCode
+from dnp3.core.enums import OperationType, TripCloseCode
 from dnp3.core.flags import BinaryQuality
 from dnp3.core.timestamp import DNP3Timestamp
 from dnp3.objects.base import EventObject, StaticObject
@@ -45,7 +47,7 @@ class TestConstants:
 
 
 class TestControlCode:
-    """Tests for ControlCode enum."""
+    """ControlCode on the object path is the single core definition (IEEE 1815-2012 A.8.1.2)."""
 
     def test_operation_types(self) -> None:
         """Operation type values."""
@@ -56,21 +58,28 @@ class TestControlCode:
         assert ControlCode.LATCH_OFF == 0x04
 
     def test_trip_close_codes(self) -> None:
-        """Trip-close code values."""
-        assert ControlCode.TC_NUL == 0x00
-        assert ControlCode.TC_CLOSE == 0x10
-        assert ControlCode.TC_TRIP == 0x20
-        assert ControlCode.TC_RESERVED == 0x30
+        """Trip-Close code sits in bits 7-6."""
+        assert TripCloseCode.NUL == 0
+        assert TripCloseCode.CLOSE == 1
+        assert TripCloseCode.TRIP == 2
+        assert TripCloseCode.RESERVED == 3
+        assert int(ControlCode.from_fields(OperationType.NUL, tcc=TripCloseCode.CLOSE)) == 0x40
+        assert int(ControlCode.from_fields(OperationType.NUL, tcc=TripCloseCode.TRIP)) == 0x80
+        assert int(ControlCode.from_fields(OperationType.NUL, tcc=TripCloseCode.RESERVED)) == 0xC0
 
     def test_modifiers(self) -> None:
-        """Modifier bit values."""
-        assert ControlCode.QUEUE == 0x40
-        assert ControlCode.CLEAR == 0x80
+        """Queue is bit 4 and Clear is bit 5."""
+        assert int(ControlCode.from_fields(OperationType.NUL, queue=True)) == 0x10
+        assert int(ControlCode.from_fields(OperationType.NUL, clear=True)) == 0x20
 
     def test_combine_flags(self) -> None:
         """Combine operation with modifiers."""
-        combined = ControlCode.PULSE_ON | ControlCode.TC_CLOSE | ControlCode.QUEUE
+        combined = ControlCode.from_fields(OperationType.PULSE_ON, tcc=TripCloseCode.CLOSE, queue=True)
         assert combined == 0x51
+
+    def test_same_class_as_core(self) -> None:
+        """The object-path ControlCode is the core class, not a second definition."""
+        assert ControlCode is CoreControlCode
 
 
 class TestCommandStatus:
@@ -458,7 +467,7 @@ class TestCROB:
     def test_roundtrip(self) -> None:
         """Serialize then parse returns equivalent object."""
         original = CROB(
-            control_code=ControlCode.LATCH_ON | ControlCode.TC_CLOSE,
+            control_code=ControlCode.from_fields(OperationType.LATCH_ON, tcc=TripCloseCode.CLOSE),
             count=10,
             on_time_ms=5000,
             off_time_ms=2000,
@@ -468,7 +477,7 @@ class TestCROB:
         assert parsed == original
 
     @given(
-        st.sampled_from(list(ControlCode)),
+        st.integers(min_value=0, max_value=255).filter(lambda octet: octet & 0x0F <= OperationType.LATCH_OFF),
         st.integers(min_value=0, max_value=255),
         st.integers(min_value=0, max_value=0xFFFFFFFF),
         st.integers(min_value=0, max_value=0xFFFFFFFF),
@@ -476,7 +485,7 @@ class TestCROB:
     )
     def test_roundtrip_hypothesis(
         self,
-        control_code: ControlCode,
+        octet: int,
         count: int,
         on_time_ms: int,
         off_time_ms: int,
@@ -484,7 +493,7 @@ class TestCROB:
     ) -> None:
         """Property: roundtrip preserves all values."""
         original = CROB(
-            control_code=control_code,
+            control_code=ControlCode(octet),
             count=count,
             on_time_ms=on_time_ms,
             off_time_ms=off_time_ms,
@@ -548,3 +557,38 @@ class TestCROB:
         obj = CROB.pulse_on()
         with pytest.raises(AttributeError):
             obj.count = 5  # type: ignore[misc]
+
+
+class TestCROBControlCodeOctet:
+    """CROB decodes the control octet with the Table A-2 field layout."""
+
+    @pytest.mark.parametrize("octet", [0x00, 0x20, 0x01, 0x21, 0x03, 0x23, 0x04, 0x24, 0x41, 0x61, 0x81, 0xA1])
+    def test_table_a2_octet_round_trips(self, octet: int) -> None:
+        """from_bytes then to_bytes keeps the control octet byte for byte."""
+        data = bytes([octet, 1]) + (250).to_bytes(4, "little") + (0).to_bytes(4, "little") + bytes([0])
+        crob = CROB.from_bytes(data)
+        assert int(crob.control_code) == octet
+        assert crob.to_bytes() == data
+
+    def test_trip_is_not_clear(self) -> None:
+        """0x81 decodes as TRIP + PULSE_ON with Clear 0, not as a clear."""
+        data = bytes([0x81, 1]) + bytes(8) + bytes([0])
+        code = CROB.from_bytes(data).control_code
+        assert code.tcc is TripCloseCode.TRIP
+        assert code.op_type is OperationType.PULSE_ON
+        assert code.clear is False
+        assert code.queue is False
+
+    def test_close_is_not_queue(self) -> None:
+        """0x41 decodes as CLOSE + PULSE_ON with Queue 0."""
+        data = bytes([0x41, 1]) + bytes(8) + bytes([0])
+        code = CROB.from_bytes(data).control_code
+        assert code.tcc is TripCloseCode.CLOSE
+        assert code.queue is False
+        assert code.clear is False
+
+    def test_undefined_op_type_rejected(self) -> None:
+        """An Op Type of 5 to 15 is undefined and is not silently accepted."""
+        data = bytes([0x85, 1]) + bytes(8) + bytes([0])
+        with pytest.raises(ValueError, match="Op Type"):
+            CROB.from_bytes(data)

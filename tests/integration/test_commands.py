@@ -188,6 +188,36 @@ class TestCommandHandler:
         assert len(received_commands) == 1
         assert received_commands[0] == (0, ControlCode.LATCH_ON)
 
+    def test_trip_and_close_reach_handler_distinct(self) -> None:
+        """A master TRIP and CLOSE arrive at the outstation handler as TRIP and CLOSE, not as PULSE_ON."""
+        database = Database()
+        database.add_binary_output(0, BinaryOutputConfig())
+        received: list[ControlCode] = []
+
+        class TrackingHandler(DefaultCommandHandler):
+            def direct_operate_binary_output(
+                self,
+                index: int,
+                code: ControlCode,
+                count: int,
+                on_time: int,
+                off_time: int,
+            ):
+                received.append(code)
+                return super().direct_operate_binary_output(index, code, count, on_time, off_time)
+
+        outstation = Outstation(database=database, handler=TrackingHandler())
+        master = Master()
+
+        for code in (ControlCode.TRIP_PULSE_ON, ControlCode.CLOSE_PULSE_ON):
+            builder = master.command_builder()
+            builder.add_crob(index=0, code=code, on_time=100)
+            request = master.build_direct_operate(builder.build_direct_operate())
+            outstation.process_request(request.to_bytes())
+
+        assert received == [ControlCode.TRIP_PULSE_ON, ControlCode.CLOSE_PULSE_ON]
+        assert [int(code) for code in received] == [0x81, 0x41]
+
 
 class TestAnalogOutput:
     """Test analog output commands."""

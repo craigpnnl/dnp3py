@@ -13,9 +13,11 @@ Group 12: Control Relay Output Block (CROB)
 """
 
 from dataclasses import dataclass
-from enum import IntEnum, IntFlag
+from enum import IntEnum
 from typing import ClassVar
 
+# ControlCode is defined once, in core; this module re-exports it for the object path.
+from dnp3.core.enums import ControlCode as ControlCode
 from dnp3.core.flags import BinaryQuality
 from dnp3.core.timestamp import DNP3Timestamp
 from dnp3.objects.base import (
@@ -37,33 +39,6 @@ TIMESTAMP_SIZE = 6
 
 # State bit mask
 STATE_BIT = 0x80
-
-
-class ControlCode(IntFlag):
-    """Control operation code (Table 4-1).
-
-    Bits 0-3: Operation type
-    Bits 4-5: Trip-Close code
-    Bit 6: Queue
-    Bit 7: Clear
-    """
-
-    # Operation types (bits 0-3)
-    NUL = 0x00  # No operation
-    PULSE_ON = 0x01  # Pulse output on
-    PULSE_OFF = 0x02  # Pulse output off
-    LATCH_ON = 0x03  # Latch output on
-    LATCH_OFF = 0x04  # Latch output off
-
-    # Trip-Close codes (bits 4-5)
-    TC_NUL = 0x00  # No trip-close
-    TC_CLOSE = 0x10  # Close
-    TC_TRIP = 0x20  # Trip
-    TC_RESERVED = 0x30  # Reserved
-
-    # Modifiers (bits 6-7)
-    QUEUE = 0x40  # Queue operation
-    CLEAR = 0x80  # Clear queued operations
 
 
 class CommandStatus(IntEnum):
@@ -227,7 +202,7 @@ class CROB(StaticObject):
     11-byte control command for binary output.
 
     Attributes:
-        control_code: Control operation type.
+        control_code: Control-code octet (TCC, Clear, Queue and Op Type fields).
         count: Number of times to execute.
         on_time_ms: Duration of ON state in milliseconds.
         off_time_ms: Duration of OFF state in milliseconds.
@@ -274,7 +249,11 @@ class CROB(StaticObject):
 
     @classmethod
     def from_bytes(cls, data: bytes) -> "CROB":
-        """Parse from 11 bytes."""
+        """Parse from 11 bytes.
+
+        Raises:
+            ValueError: Fewer than 11 bytes, or an undefined Op Type in the control code.
+        """
         if len(data) < SIZE_11_BYTES:
             msg = f"CROB requires {SIZE_11_BYTES} bytes, got {len(data)}"
             raise ValueError(msg)
