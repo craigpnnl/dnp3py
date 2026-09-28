@@ -397,6 +397,17 @@ class TestPartlyRefusedSelectRetry:
         assert handler.calls == []
         assert outstation._state.selection_of(MASTER_A) is None
 
+    def test_direct_select_leaves_no_record(self) -> None:
+        # With no request octets there is nothing a retry could be matched against.
+        outstation, handler = _outstation()
+        handler.statuses[("bo_select", 2)] = REFUSED
+        block = ObjectBlock(ObjectHeader(group=12, variation=1, qualifier=0x17), _crob(1, 2)[3:])
+
+        outstation._handle_select(build_select_request(objects=(block,), seq=2), peer=MASTER_A)
+
+        assert handler.calls == [("bo_select", 1), ("bo_select", 2)]
+        assert outstation._state.selection_of(MASTER_A) is None
+
     def test_record_expires_on_the_selection_timer(self) -> None:
         timeout = 0.2
         outstation, handler = _outstation(select_timeout=timeout)
