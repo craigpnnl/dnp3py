@@ -6,6 +6,8 @@ g22v1 from A.12.1 (flag, UINT32), g3v1 from A.4.1 (packed 2-bit states),
 little-endian per 11.3.4, and qualifiers from Tables 4-3 and 4-5.
 """
 
+import logging
+
 import pytest
 
 from dnp3.application.fragment import ObjectBlock, Truncation, TruncationReason
@@ -123,6 +125,28 @@ class TestDetectedFaultKeepsEarlierBlocks:
         assert info.truncation == Truncation(
             reason=TruncationReason.DATA_SHORTER_THAN_DECLARED, offset=6, group=30, variation=1, qualifier=0x00
         )
+
+
+class TestTruncationIsLogged:
+    """A truncation is logged, because an unsolicited fragment's ResponseInfo may reach no caller."""
+
+    def test_truncated_response_logs_a_warning(self, caplog: pytest.LogCaptureFixture) -> None:
+        with caplog.at_level(logging.WARNING, logger="dnp3.master.master"):
+            process(B1 + OVER_DECLARED_G30 + G7)
+
+        warnings = [r for r in caplog.records if r.name == "dnp3.master.master" and r.levelno == logging.WARNING]
+        assert len(warnings) == 1
+        message = warnings[0].getMessage()
+        for part in ("data_shorter_than_declared", "offset 6", "group 30", "variation 1", "qualifier 0x17"):
+            assert part in message
+
+    def test_complete_response_logs_nothing(self, caplog: pytest.LogCaptureFixture) -> None:
+        matching = bytes([0x1E, 0x01, 0x17, 0x01, 0x05, 0x01, 0x64, 0x00, 0x00, 0x00])
+        with caplog.at_level(logging.DEBUG, logger="dnp3.master.master"):
+            info, _ = process(matching + G7)
+
+        assert info.truncation is None
+        assert [r for r in caplog.records if r.levelno >= logging.WARNING] == []
 
 
 class TestValidFramesUnchanged:

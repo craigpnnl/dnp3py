@@ -4,6 +4,7 @@ The Master class handles communication with an outstation,
 including polling, commands, and unsolicited response handling.
 """
 
+import logging
 import struct
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -51,6 +52,8 @@ from dnp3.master.polling import (
 )
 from dnp3.master.state import MasterState, MasterStateManager
 from dnp3.objects.layout import PointKind, TimeKind, ValueCodec, WireLayout, layout_for
+
+logger = logging.getLogger(__name__)
 
 # Quality flag mask
 QUALITY_ONLINE = 0x01
@@ -718,6 +721,22 @@ class Master:
             con=response.header.control.con,
             truncation=response.truncation,
         )
+
+        truncation = response.truncation
+        if truncation is not None:
+            # An unsolicited fragment's info reaches no caller of request(), so this may be its only trace.
+            qualifier = "None" if truncation.qualifier is None else f"0x{truncation.qualifier:02X}"
+            logger.warning(
+                "Response fragment seq=%d unsolicited=%s cut short (%s) at object offset %d: "
+                "group %s, variation %s, qualifier %s; no value from that block onward was delivered",
+                info.sequence,
+                info.is_unsolicited,
+                truncation.reason.value,
+                truncation.offset,
+                truncation.group,
+                truncation.variation,
+                qualifier,
+            )
 
         # Handle unsolicited responses
         if info.is_unsolicited:
