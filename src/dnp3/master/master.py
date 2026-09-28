@@ -328,8 +328,8 @@ class _Delivery(Protocol):
 class _KindDelivery(Generic[_V]):
     """A point kind's decode function and the handler callback its values go to."""
 
-    decode: "Callable[[ObjectBlock, WireLayout], list[_V]]"
-    deliver: "Callable[[SOEHandler, list[_V], ResponseInfo], None]"
+    decode: Callable[[ObjectBlock, WireLayout], list[_V]]
+    deliver: Callable[[SOEHandler, list[_V], ResponseInfo], None]
 
     def batch(self) -> "_KindBatch[_V]":
         """Start an empty batch for one response."""
