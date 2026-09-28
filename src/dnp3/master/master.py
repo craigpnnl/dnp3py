@@ -369,6 +369,7 @@ def _decode_double_bit(block: ObjectBlock, wire: WireLayout) -> list[DoubleBitVa
     data = block.data
     if wire.is_packed:
         # A.4.1 packs states over a contiguous index range; a prefixed block has no bit layout.
+        # Every range decoded here sets count; the None test only narrows its optional type.
         if slots.index_prefix_width or slots.count is None:
             return []
         states = unpack_double_bit_states(data[slots.data_offset :], slots.count)
