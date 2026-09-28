@@ -10,6 +10,14 @@ from __future__ import annotations
 
 import time
 
+import pytest
+
+from dnp3.application.builder import build_operate_request, build_select_request
+from dnp3.application.fragment import ObjectBlock, ResponseFragment
+from dnp3.application.qualifiers import ObjectHeader
+from dnp3.core.enums import CommandStatus, ControlCode
+from dnp3.outstation import Outstation
+from dnp3.outstation.handler import CommandResult, DefaultCommandHandler
 from dnp3.outstation.peer import UNSPECIFIED_PEER, PeerId
 from dnp3.outstation.state import OutstationStateManager, SelectState
 
@@ -104,3 +112,177 @@ class TestSelectStoreIsPerPeer:
         assert manager.get_select(6, peer=second_source_same_connection) is None
         assert manager.get_select(5, peer=MASTER_B) is kept_b
         assert manager.get_select(6) is kept_unspecified
+
+
+class _RecordingHandler(DefaultCommandHandler):
+    """Accepts every binary-output SELECT and OPERATE and records (index, on_time)."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.selects: list[tuple[int, int]] = []
+        self.operates: list[tuple[int, int]] = []
+
+    def select_binary_output(
+        self, index: int, code: ControlCode, count: int, on_time: int, off_time: int
+    ) -> CommandResult:
+        self.selects.append((index, on_time))
+        return CommandResult.success()
+
+    def operate_binary_output(
+        self, index: int, code: ControlCode, count: int, on_time: int, off_time: int, select_sequence: int
+    ) -> CommandResult:
+        self.operates.append((index, on_time))
+        return CommandResult.success()
+
+
+def _crob_block(*points: tuple[int, int]) -> ObjectBlock:
+    """g12v1, qualifier 0x17, LATCH_ON, one object per (index, on_time)."""
+    data = bytearray([len(points)])
+    for index, on_time in points:
+        data += bytes([index, int(ControlCode.LATCH_ON), 1])
+        data += on_time.to_bytes(4, "little") + (0).to_bytes(4, "little") + bytes([0])
+    return ObjectBlock(header=ObjectHeader(group=12, variation=1, qualifier=0x17), data=bytes(data))
+
+
+def _statuses(responses: list[ResponseFragment]) -> list[tuple[int, CommandStatus]]:
+    """(index, status) for every object in the single echoed g12v1 block."""
+    assert len(responses) == 1
+    (block,) = responses[0].objects
+    data = block.data
+    return [(data[1 + 12 * i], CommandStatus(data[12 + 12 * i])) for i in range(data[0])]
+
+
+def _select(outstation: Outstation, peer: PeerId | None, *points: tuple[int, int]) -> list[tuple[int, CommandStatus]]:
+    request = build_select_request(objects=(_crob_block(*points),), seq=0)
+    return _statuses(outstation.process_request(request.to_bytes(), peer=peer))
+
+
+def _operate(outstation: Outstation, peer: PeerId | None, *points: tuple[int, int]) -> list[tuple[int, CommandStatus]]:
+    request = build_operate_request(objects=(_crob_block(*points),), seq=1)
+    return _statuses(outstation.process_request(request.to_bytes(), peer=peer))
+
+
+def _outstation() -> tuple[Outstation, _RecordingHandler]:
+    handler = _RecordingHandler()
+    outstation = Outstation(handler=handler)
+    outstation.database.add_binary_output(5)
+    outstation.database.add_binary_output(6)
+    return outstation, handler
+
+
+SUCCESS = CommandStatus.SUCCESS
+NO_SELECT = CommandStatus.NO_SELECT
+BLOCKED = CommandStatus.BLOCKED_OTHER_MASTER
+
+
+class TestTwoPeersSelectAndOperate:
+    """SELECT and OPERATE through process_request with two peers."""
+
+    def test_each_peer_operates_with_its_own_on_time(self) -> None:
+        outstation, handler = _outstation()
+
+        assert _select(outstation, MASTER_A, (5, 1000)) == [(5, SUCCESS)]
+        assert _select(outstation, MASTER_B, (5, 5000)) == [(5, BLOCKED)]
+        assert _operate(outstation, MASTER_A, (5, 1000)) == [(5, SUCCESS)]
+        assert _select(outstation, MASTER_B, (5, 5000)) == [(5, SUCCESS)]
+        assert _operate(outstation, MASTER_B, (5, 5000)) == [(5, SUCCESS)]
+
+        assert handler.selects == [(5, 1000), (5, 5000)]
+        assert handler.operates == [(5, 1000), (5, 5000)]
+
+    def test_concurrent_selections_on_two_points_each_operate(self) -> None:
+        outstation, handler = _outstation()
+
+        assert _select(outstation, MASTER_A, (5, 1000)) == [(5, SUCCESS)]
+        assert _select(outstation, MASTER_B, (6, 5000)) == [(6, SUCCESS)]
+        assert _operate(outstation, MASTER_A, (5, 1000)) == [(5, SUCCESS)]
+        assert _operate(outstation, MASTER_B, (6, 5000)) == [(6, SUCCESS)]
+
+        assert handler.operates == [(5, 1000), (6, 5000)]
+
+    @pytest.mark.parametrize("intruder_on_time", [1000, 5000], ids=["same-params", "different-params"])
+    def test_operate_from_another_peer_is_no_select_and_holder_still_operates(self, intruder_on_time: int) -> None:
+        outstation, handler = _outstation()
+        _select(outstation, MASTER_A, (5, 1000))
+
+        assert _operate(outstation, MASTER_B, (5, intruder_on_time)) == [(5, NO_SELECT)]
+        assert handler.operates == []
+
+        assert _operate(outstation, MASTER_A, (5, 1000)) == [(5, SUCCESS)]
+        assert handler.operates == [(5, 1000)]
+
+
+class TestSelectOnPointAnotherPeerHolds:
+    """A SELECT on a point another peer holds returns BLOCKED_OTHER_MASTER (17)."""
+
+    def test_returns_17_skips_the_handler_and_leaves_the_holder_armed(self) -> None:
+        outstation, handler = _outstation()
+        _select(outstation, MASTER_A, (5, 1000))
+
+        assert _select(outstation, MASTER_B, (5, 5000)) == [(5, BLOCKED)]
+        assert int(BLOCKED) == 17
+        assert handler.selects == [(5, 1000)]
+        held = outstation._state.get_select(5, peer=MASTER_A)
+        assert held is not None
+        assert held.on_time == 1000
+        assert outstation._state.get_select(5, peer=MASTER_B) is None
+
+        assert _operate(outstation, MASTER_A, (5, 1000)) == [(5, SUCCESS)]
+        assert handler.operates == [(5, 1000)]
+
+    def test_status_is_per_object(self) -> None:
+        outstation, handler = _outstation()
+        _select(outstation, MASTER_A, (5, 1000))
+
+        assert _select(outstation, MASTER_B, (5, 5000), (6, 6000)) == [(5, BLOCKED), (6, SUCCESS)]
+        assert handler.selects == [(5, 1000), (6, 6000)]
+
+    def test_an_expired_holder_does_not_block(self) -> None:
+        outstation, handler = _outstation()
+        _select(outstation, MASTER_A, (5, 1000))
+        held = outstation._state.get_select(5, peer=MASTER_A)
+        assert held is not None
+        held.timestamp = time.monotonic() - 2 * outstation.config.select_timeout
+
+        assert _select(outstation, MASTER_B, (5, 5000)) == [(5, SUCCESS)]
+        assert _operate(outstation, MASTER_B, (5, 5000)) == [(5, SUCCESS)]
+        assert handler.operates == [(5, 5000)]
+
+    def test_the_holder_may_select_its_own_point_again(self) -> None:
+        outstation, handler = _outstation()
+        _select(outstation, MASTER_A, (5, 1000))
+
+        assert _select(outstation, MASTER_A, (5, 2000)) == [(5, SUCCESS)]
+        assert _operate(outstation, MASTER_A, (5, 2000)) == [(5, SUCCESS)]
+        assert handler.operates == [(5, 2000)]
+
+
+class TestSameSourceOnTwoConnections:
+    """Two connections carrying the same link source address are two peers."""
+
+    def test_selection_on_connection_1_is_no_select_on_connection_2(self) -> None:
+        outstation, handler = _outstation()
+        first = PeerId(source=3, connection=1)
+        second = PeerId(source=3, connection=2)
+        _select(outstation, first, (5, 1000))
+
+        assert _operate(outstation, second, (5, 1000)) == [(5, NO_SELECT)]
+        assert handler.operates == []
+        assert _operate(outstation, first, (5, 1000)) == [(5, SUCCESS)]
+        assert handler.operates == [(5, 1000)]
+
+
+class TestSingleMasterUnchanged:
+    """A caller that passes no peer keeps the behaviour it had before peers existed."""
+
+    def test_reselect_without_a_peer_replaces_the_selection(self) -> None:
+        outstation, handler = _outstation()
+
+        assert _select(outstation, None, (5, 1000)) == [(5, SUCCESS)]
+        assert _select(outstation, None, (5, 2000)) == [(5, SUCCESS)]
+        assert _operate(outstation, None, (5, 1000)) == [(5, NO_SELECT)]
+        assert _select(outstation, None, (5, 3000)) == [(5, SUCCESS)]
+        assert _operate(outstation, None, (5, 3000)) == [(5, SUCCESS)]
+
+        assert handler.selects == [(5, 1000), (5, 2000), (5, 3000)]
+        assert handler.operates == [(5, 3000)]

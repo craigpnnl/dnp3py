@@ -604,9 +604,9 @@ class Outstation:
         if function == FunctionCode.WRITE:
             return [self._handle_write(request)]
         if function == FunctionCode.SELECT:
-            return [self._handle_select(request)]
+            return [self._handle_select(request, peer=peer)]
         if function == FunctionCode.OPERATE:
-            return [self._handle_operate(request)]
+            return [self._handle_operate(request, peer=peer)]
         if function == FunctionCode.DIRECT_OPERATE:
             return [self._handle_direct_operate(request)]
         if function == FunctionCode.DIRECT_OPERATE_NO_ACK:
@@ -1062,7 +1062,7 @@ class Outstation:
             if bit_index == IIN_BIT_DEVICE_RESTART and bit_value == 0:
                 self._state.clear_restart()
 
-    def _handle_select(self, request: RequestFragment) -> ResponseFragment:
+    def _handle_select(self, request: RequestFragment, *, peer: PeerId = UNSPECIFIED_PEER) -> ResponseFragment:
         """Handle SELECT request."""
         results: list[tuple[int, CommandStatus]] = []
         seq = request.header.control.seq
@@ -1070,7 +1070,7 @@ class Outstation:
         for block in request.objects:
             if block.header.group == GROUP_CROB and block.header.variation == 1:
                 # CROB - Control Relay Output Block
-                block_results = self._process_crob_select(block, seq)
+                block_results = self._process_crob_select(block, seq, peer=peer)
                 results.extend(block_results)
             else:
                 # Unsupported object
@@ -1079,19 +1079,27 @@ class Outstation:
         # Build response with command status
         return self._build_control_response(request, results)
 
-    def _process_crob_select(self, block: ObjectBlock, seq: int) -> list[tuple[int, CommandStatus]]:
+    def _process_crob_select(
+        self, block: ObjectBlock, seq: int, *, peer: PeerId = UNSPECIFIED_PEER
+    ) -> list[tuple[int, CommandStatus]]:
         """Process CROB SELECT.
 
         Delegates parsing to _parse_crob_block which handles qualifier sizing,
         buffer validation, and control-code decoding.  Rejected entries are
-        forwarded with their status; valid entries are dispatched to the handler and, on
-        success, stored as pending SELECT state.
+        forwarded with their status.  A point another peer holds returns
+        BLOCKED_OTHER_MASTER without reaching the handler.  Other valid entries
+        are dispatched to the handler and, on success, stored as this peer's
+        pending SELECT state.
         """
         results: list[tuple[int, CommandStatus]] = []
 
         for crob in _parse_crob_block(block):
             if crob.control_code is None:
                 results.append((crob.index, crob.status))
+                continue
+
+            if self._state.held_by_other_peer(crob.index, peer, self.config.select_timeout):
+                results.append((crob.index, CommandStatus.BLOCKED_OTHER_MASTER))
                 continue
 
             result = self.handler.select_binary_output(
@@ -1112,13 +1120,13 @@ class Outstation:
                     off_time=crob.off_time,
                     sequence=seq,
                 )
-                self._state.add_select(select_state)
+                self._state.add_select(select_state, peer=peer)
 
             results.append((crob.index, result.status))
 
         return results
 
-    def _handle_operate(self, request: RequestFragment) -> ResponseFragment:
+    def _handle_operate(self, request: RequestFragment, *, peer: PeerId = UNSPECIFIED_PEER) -> ResponseFragment:
         """Handle OPERATE request."""
         results: list[tuple[int, CommandStatus]] = []
         seq = request.header.control.seq
@@ -1128,17 +1136,20 @@ class Outstation:
 
         for block in request.objects:
             if block.header.group == GROUP_CROB and block.header.variation == 1:
-                block_results = self._process_crob_operate(block, seq)
+                block_results = self._process_crob_operate(block, seq, peer=peer)
                 results.extend(block_results)
 
         return self._build_control_response(request, results)
 
-    def _process_crob_operate(self, block: ObjectBlock, seq: int) -> list[tuple[int, CommandStatus]]:
+    def _process_crob_operate(
+        self, block: ObjectBlock, seq: int, *, peer: PeerId = UNSPECIFIED_PEER
+    ) -> list[tuple[int, CommandStatus]]:
         """Process CROB OPERATE.
 
         Delegates parsing to _parse_crob_block.  Rejected entries are forwarded
-        with their status.  Valid entries are checked against stored SELECT state; mismatches
-        return NO_SELECT and clear the pending state.
+        with their status.  Valid entries are checked against this peer's stored
+        SELECT state only; mismatches return NO_SELECT and clear this peer's
+        pending state.
         """
         results: list[tuple[int, CommandStatus]] = []
 
@@ -1147,7 +1158,7 @@ class Outstation:
                 results.append((crob.index, crob.status))
                 continue
 
-            select_state = self._state.get_select(crob.index)
+            select_state = self._state.get_select(crob.index, peer=peer)
             if select_state is None:
                 results.append((crob.index, CommandStatus.NO_SELECT))
                 continue
@@ -1156,7 +1167,7 @@ class Outstation:
                 crob.index, crob.control_code, crob.op_count, crob.on_time, crob.off_time
             ):
                 results.append((crob.index, CommandStatus.NO_SELECT))
-                self._state.remove_select(crob.index)
+                self._state.remove_select(crob.index, peer=peer)
                 continue
 
             result = self.handler.operate_binary_output(
@@ -1168,7 +1179,7 @@ class Outstation:
                 select_sequence=select_state.sequence,
             )
 
-            self._state.remove_select(crob.index)
+            self._state.remove_select(crob.index, peer=peer)
             results.append((crob.index, result.status))
 
         return results
