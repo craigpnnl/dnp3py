@@ -20,6 +20,18 @@ from dnp3.transport_io.tcp_server import TcpServer, TcpServerChannel, serve
 logger = logging.getLogger(__name__)
 
 
+def _outer_cancellation_pending() -> bool:
+    """True when the running task's own cancellation is still outstanding.
+
+    Distinguishes a CancelledError delivered because THIS task was
+    cancelled from one raised only by the child task being awaited: the
+    child's own cancellation must not count against this task's
+    Task.cancelling() total.
+    """
+    task = asyncio.current_task()
+    return task is not None and task.cancelling() > 0
+
+
 @dataclass
 class OutstationTcpRunner:
     """Runs an outstation over TCP, handling full protocol stack."""
@@ -67,8 +79,15 @@ class OutstationTcpRunner:
                     self._connection_task.cancel()
                     try:
                         await self._connection_task
-                    except (asyncio.CancelledError, Exception):
-                        pass
+                    except asyncio.CancelledError:
+                        # A cancellation directed at run() itself (rather
+                        # than at the task we just cancelled) must keep
+                        # propagating, or a shutdown landing mid-handoff
+                        # never completes (#68).
+                        if _outer_cancellation_pending():
+                            raise
+                    except Exception:
+                        logger.exception("Connection task failed during handoff")
 
                 logger.info("Accepted connection")
                 self._connection_task = asyncio.create_task(self._handle_connection(channel))
@@ -77,8 +96,14 @@ class OutstationTcpRunner:
                 self._connection_task.cancel()
                 try:
                     await self._connection_task
-                except (asyncio.CancelledError, Exception):
-                    pass
+                except asyncio.CancelledError:
+                    # Same guard as the handoff site: a cancellation aimed
+                    # at run() while it tears down the connection task must
+                    # still propagate rather than end this shutdown quietly.
+                    if _outer_cancellation_pending():
+                        raise
+                except Exception:
+                    logger.exception("Connection task failed during shutdown")
             await self._server.stop()
 
     async def stop(self) -> None:
