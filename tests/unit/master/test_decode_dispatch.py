@@ -13,11 +13,10 @@ import pytest
 
 from dnp3.application.fragment import ObjectBlock
 from dnp3.application.qualifiers import ObjectHeader
-from dnp3.core.enums import FunctionCode
-from dnp3.core.flags import IIN
-from dnp3.master.handler import AnalogValue, BinaryValue, CounterValue, ResponseInfo
+from dnp3.master.handler import AnalogValue, BinaryValue, CounterValue
 from dnp3.master.master import Master
 from dnp3.objects.layout import LAYOUTS, PointKind
+from tests.unit.master.delivery import PointValue, RecordingHandler, dispatch
 
 # Response header: app control (FIR+FIN, seq 1), RESPONSE function, 2-byte IIN.
 RESPONSE_HEADER = bytes([0xC1, 0x81, 0x00, 0x00])
@@ -29,8 +28,6 @@ COUNT_8_INDEX_8 = 0x17
 # Non-zero time octets, so a decoder with the wrong stride reads a point from them.
 TIME_OCTETS = bytes([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF])
 
-PointValue = BinaryValue | AnalogValue | CounterValue
-
 CALLBACK_BY_KIND = {
     PointKind.BINARY_INPUT: "on_binary_input",
     PointKind.BINARY_OUTPUT: "on_binary_output",
@@ -41,48 +38,12 @@ CALLBACK_BY_KIND = {
 }
 
 
-class RecordingHandler:
-    """Records each callback as (name, values), in call order.
-
-    Deliberately not a subclass of SOEHandler, so the master must call the
-    instance's own methods rather than the protocol's.
-    """
-
-    def __init__(self) -> None:
-        self.calls: list[tuple[str, list[PointValue]]] = []
-
-    def on_binary_input(self, values: list[BinaryValue], info: ResponseInfo) -> None:
-        self.calls.append(("on_binary_input", list(values)))
-
-    def on_binary_output(self, values: list[BinaryValue], info: ResponseInfo) -> None:
-        self.calls.append(("on_binary_output", list(values)))
-
-    def on_analog_input(self, values: list[AnalogValue], info: ResponseInfo) -> None:
-        self.calls.append(("on_analog_input", list(values)))
-
-    def on_analog_output(self, values: list[AnalogValue], info: ResponseInfo) -> None:
-        self.calls.append(("on_analog_output", list(values)))
-
-    def on_counter(self, values: list[CounterValue], info: ResponseInfo) -> None:
-        self.calls.append(("on_counter", list(values)))
-
-    def on_frozen_counter(self, values: list[CounterValue], info: ResponseInfo) -> None:
-        self.calls.append(("on_frozen_counter", list(values)))
-
-
-def _info() -> ResponseInfo:
-    return ResponseInfo(function=FunctionCode.RESPONSE, iin=IIN(0), sequence=1)
-
-
 def _block(group: int, variation: int, qualifier: int, data: bytes) -> ObjectBlock:
     return ObjectBlock(header=ObjectHeader(group=group, variation=variation, qualifier=qualifier), data=data)
 
 
 def _dispatch(*blocks: ObjectBlock) -> list[tuple[str, list[PointValue]]]:
-    handler = RecordingHandler()
-    master = Master(handler=handler)
-    master._parse_response_objects(blocks, _info())
-    return handler.calls
+    return dispatch(blocks)
 
 
 class TestRouting:
@@ -165,6 +126,10 @@ class TestRouting:
 
         assert master.process_response(RESPONSE_HEADER + body) is not None
         assert handler.calls == [("on_analog_output", [AnalogValue(index=0, value=777.0, quality=0x01)])]
+
+    def test_g11v3_is_not_a_binary_output_event(self) -> None:
+        # A.7 defines g11v1 and g11v2 only, so a flag octet and relative time here is not a point.
+        assert _dispatch(_block(11, 3, COUNT_8_INDEX_8, bytes([1, 3, 0x81, 0x12, 0x34]))) == []
 
 
 def _one_object(layout_width: int, *, has_flags: bool) -> bytes:
