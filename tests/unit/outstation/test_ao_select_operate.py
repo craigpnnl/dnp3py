@@ -373,7 +373,8 @@ class TestGroupsDoNotSatisfyEachOther:
         outstation, handler = _outstation()
         _select(outstation, MASTER_A, _crob_block(5))
         assert outstation._state.get_select(5, peer=MASTER_A) is not None
-        analog = _ao_block(3, "<f", [(5, 1.5)])
+        # 0.0 is the analog value a CROB selection carries, so the value comparison cannot refuse it.
+        analog = _ao_block(3, "<f", [(5, 0.0)])
 
         response = self._operate_points(outstation, analog)
 
