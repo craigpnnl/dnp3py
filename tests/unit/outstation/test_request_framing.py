@@ -18,6 +18,7 @@ from dnp3.core.flags import IIN
 from dnp3.outstation import Outstation
 from dnp3.outstation.config import OutstationConfig
 from dnp3.outstation.handler import CommandResult, DefaultCommandHandler
+from dnp3.outstation.outstation import _NO_ACK_FUNCTIONS
 from dnp3.outstation.peer import PeerId
 
 MASTER_A = PeerId(source=3, connection=1)
@@ -75,6 +76,15 @@ _EXECUTED = [
     (FunctionCode.DELAY_MEASURE, _G60V1_ALL + _TRAILING),
 ]
 _NO_ACK = {FunctionCode.DIRECT_OPERATE_NO_ACK, FunctionCode.IMMEDIATE_FREEZE_NO_ACK, FunctionCode.FREEZE_CLEAR_NO_ACK}
+# Every other request function but CONFIRM. One the outstation starts to execute fails here
+# until it joins _EXECUTED.
+_UNSUPPORTED = [
+    function
+    for function in FunctionCode
+    if not function.is_response()
+    and function != FunctionCode.CONFIRM
+    and function not in {executed for executed, _ in _EXECUTED}
+]
 
 
 class _RecordingHandler(DefaultCommandHandler):
@@ -331,6 +341,29 @@ class TestUnframeableRequestRunsNothing:
         response = _only(_send(outstation, FunctionCode.FREEZE_AT_TIME, _G50V2 + _G20_ALL, seq=4))
 
         assert response.to_bytes() == _null_response(4, 0x01)
+
+    @pytest.mark.parametrize("function", _UNSUPPORTED, ids=[function.name for function in _UNSUPPORTED])
+    def test_every_unsupported_function_still_answers_no_function_support(
+        self, function: FunctionCode, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        outstation, handler = _outstation()
+        called = _spy_on_function_handlers(outstation, monkeypatch)
+
+        response = _only(_send(outstation, function, _G60V1_ALL + _TRAILING, seq=4))
+
+        assert response.to_bytes() == _null_response(4, 0x01)
+        assert called == []
+        assert handler.calls == 0
+
+    def test_no_ack_functions_are_the_four_the_standard_names(self) -> None:
+        """IEEE 1815-2012 4.4.5 to 4.4.8; FREEZE_AT_TIME_NO_ACK is not executed, so no request reaches it yet."""
+        standard = {
+            FunctionCode.DIRECT_OPERATE_NO_ACK,
+            FunctionCode.IMMEDIATE_FREEZE_NO_ACK,
+            FunctionCode.FREEZE_CLEAR_NO_ACK,
+            FunctionCode.FREEZE_AT_TIME_NO_ACK,
+        }
+        assert standard == _NO_ACK_FUNCTIONS
 
 
 class TestRefusalAndSelection:
