@@ -4,6 +4,7 @@ The Outstation class handles incoming requests from a master station,
 processes them according to the DNP3 protocol, and generates responses.
 """
 
+import logging
 import struct
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -41,6 +42,10 @@ from dnp3.outstation.state import (
     OutstationStateManager,
     SelectState,
 )
+
+# #119 tracks adding logging throughout this module; this logger exists only
+# to warn when a commanded NaN analog output value cannot be stored (below).
+_log = logging.getLogger(__name__)
 
 # Group/Variation constants for response building
 GV_BINARY_INPUT_FLAGS = (1, 2)  # g1v2 - Binary Input with flags
@@ -1394,6 +1399,8 @@ class Outstation:
                 continue
 
             result = self.handler.operate_analog_output(index=index, value=value, select_sequence=select_state.sequence)
+            if result.is_success:
+                self._track_ao_command(index, value)
 
             self._state.remove_select(index, peer=peer, group=GROUP_ANALOG_OUTPUT)
             results.append((index, result.status))
@@ -1457,8 +1464,27 @@ class Outstation:
         results: list[tuple[int, CommandStatus]] = []
         for index, value in points:
             result = self.handler.direct_operate_analog_output(index=index, value=value)
+            if result.is_success:
+                self._track_ao_command(index, value)
             results.append((index, result.status))
         return results, has_parse_error
+
+    def _track_ao_command(self, index: int, value: float) -> None:
+        """Store a commanded analog output value as its status (clause 11.9.2.2).
+
+        Called after DIRECT_OPERATE, DIRECT_OPERATE_NO_ACK or OPERATE of
+        group 41 succeeds. A no-op when the Database has no point at index or
+        the point opts out with config.track_commands = False. A NaN value
+        (g41v3/v4) is refused rather than synthesized (data-invariants rule
+        2): the point keeps its prior value and the refusal is logged once.
+        """
+        point = self.database.get_analog_output(index)
+        if point is None or not point.config.track_commands:
+            return
+        try:
+            self.database.update_analog_output(index, value)
+        except ValueError:
+            _log.warning("analog output %d: commanded value %r rejected, status unchanged", index, value)
 
     def _build_control_response(
         self,
