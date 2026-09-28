@@ -13,6 +13,7 @@ Regression cover for the response-parsing bugs reported in issue #30.
 """
 
 import struct
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -442,9 +443,12 @@ class TestFrozenCounterLayout:
     cover for craigpnnl/dnp3py#79.
     """
 
-    # Non-zero, non-palindromic time octets so a wrong stride misreads point 1
+    # A.11.5/A.11.6: DNP3TIME is UINT48 ms since epoch, little-endian (11.3.4).
+    # Non-zero, non-palindromic octets so a wrong stride misreads point 1
     # from inside them (see the two-point tests below).
-    _TIME_OCTETS = bytes([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF])
+    _TIME_MS = 1_700_000_000_123
+    _TIME_OCTETS = _TIME_MS.to_bytes(6, "little")
+    _EXPECTED_TIME = datetime(1970, 1, 1, tzinfo=UTC) + timedelta(milliseconds=_TIME_MS)
 
     def test_g21v5_delivers_flag_as_quality_and_uint32_value(self) -> None:
         """A.11.5.2.2: BSTR8 flag, UINT32 count, DNP3TIME. 11.3.4: little-endian.
@@ -468,9 +472,8 @@ class TestFrozenCounterLayout:
         assert indexed_values(values) == {0: 0x12345678, 1: 0x87654321}
         assert values[0].quality == 0x21
         assert values[1].quality == 0x03
-        # Known limitation (#81): time-of-occurrence is skipped, not decoded.
-        assert values[0].timestamp is None
-        assert values[1].timestamp is None
+        assert values[0].timestamp == self._EXPECTED_TIME
+        assert values[1].timestamp == self._EXPECTED_TIME
 
     def test_g21v6_delivers_flag_as_quality_and_uint16_value(self) -> None:
         """A.11.6.2.2: BSTR8 flag, UINT16 count, DNP3TIME. 11.3.4: little-endian.
@@ -494,9 +497,8 @@ class TestFrozenCounterLayout:
         assert indexed_values(values) == {0: 0x1234, 1: 0x4321}
         assert values[0].quality == 0x21
         assert values[1].quality == 0x03
-        # Known limitation (#81): time-of-occurrence is skipped, not decoded.
-        assert values[0].timestamp is None
-        assert values[1].timestamp is None
+        assert values[0].timestamp == self._EXPECTED_TIME
+        assert values[1].timestamp == self._EXPECTED_TIME
 
     def test_g21v1_frozen_counter_32bit_with_flag_unchanged(self) -> None:
         """A.11.1: flag + UINT32, no time. Must not move when v5/v6 are fixed."""

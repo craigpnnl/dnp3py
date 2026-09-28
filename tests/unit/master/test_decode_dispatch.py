@@ -8,6 +8,7 @@ encoders.
 """
 
 import struct
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -15,7 +16,7 @@ from dnp3.application.fragment import ObjectBlock
 from dnp3.application.qualifiers import ObjectHeader
 from dnp3.master.handler import AnalogValue, BinaryValue, CounterValue
 from dnp3.master.master import Master
-from dnp3.objects.layout import LAYOUTS, PointKind, ValueCodec, WireLayout
+from dnp3.objects.layout import LAYOUTS, PointKind, TimeKind, ValueCodec, WireLayout
 from tests.unit.master.delivery import PointValue, RecordingHandler, delivered, dispatch
 
 # Response header: app control (FIR+FIN, seq 1), RESPONSE function, 2-byte IIN.
@@ -25,8 +26,19 @@ RESPONSE_HEADER = bytes([0xC1, 0x81, 0x00, 0x00])
 RANGE_8 = 0x00
 COUNT_8_INDEX_8 = 0x17
 
-# Non-zero time octets, so a decoder with the wrong stride reads a point from them.
-TIME_OCTETS = bytes([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF])
+# Non-zero, non-palindromic time octets, so a decoder with the wrong stride
+# reads a point from them; also a real in-range DNP3TIME (11.3.4: UINT48 ms
+# since epoch, little-endian), so an absolute-time row's decoded timestamp
+# is checked against an exact value rather than passing by coincidence.
+_TIME_MS = 1_700_000_000_123
+TIME_OCTETS = _TIME_MS.to_bytes(6, "little")
+EXPECTED_TIME = datetime(1970, 1, 1, tzinfo=UTC) + timedelta(milliseconds=_TIME_MS)
+
+
+def _expected_timestamp(layout: WireLayout) -> datetime | None:
+    """The timestamp a layout's decoded value must carry: real for absolute time, else None."""
+    return EXPECTED_TIME if layout.time is TimeKind.ABSOLUTE else None
+
 
 CALLBACK_BY_KIND = {
     PointKind.BINARY_INPUT: "on_binary_input",
@@ -166,15 +178,17 @@ def _row_object(layout: WireLayout) -> tuple[bytes, PointValue]:
         return bytes([0x01]), BinaryValue(index=ROW_INDEX, value=True, quality=0x01)
     if kind in {PointKind.BINARY_INPUT, PointKind.BINARY_OUTPUT}:
         return bytes([ROW_FLAGS]) + TIME_OCTETS[: layout.time.octets], BinaryValue(
-            index=ROW_INDEX, value=True, quality=ROW_FLAGS & 0x7F
+            index=ROW_INDEX, value=True, quality=ROW_FLAGS & 0x7F, timestamp=_expected_timestamp(layout)
         )
     octets, value = _ROW_VALUES[(layout.codec, layout.value_width)]
     flags = bytes([ROW_FLAGS]) if layout.has_flags else b""
     quality = ROW_FLAGS if layout.has_flags else 0x01
     data = flags + octets + TIME_OCTETS[: layout.time.octets]
     if kind in {PointKind.ANALOG_INPUT, PointKind.ANALOG_OUTPUT}:
-        return data, AnalogValue(index=ROW_INDEX, value=float(value), quality=quality)
-    return data, CounterValue(index=ROW_INDEX, value=int(value), quality=quality)
+        return data, AnalogValue(
+            index=ROW_INDEX, value=float(value), quality=quality, timestamp=_expected_timestamp(layout)
+        )
+    return data, CounterValue(index=ROW_INDEX, value=int(value), quality=quality, timestamp=_expected_timestamp(layout))
 
 
 _DELIVERED_PAIRS = sorted(pair for pair, layout in LAYOUTS.items() if layout.point_kind in CALLBACK_BY_KIND)
@@ -244,7 +258,8 @@ class TestAnalogOutputValues:
 
         values = delivered(_block(42, variation, COUNT_8_INDEX_8, data), "on_analog_output")
 
+        expected_time = EXPECTED_TIME if timed else None
         assert values == [
-            AnalogValue(index=9, value=first, quality=0x01),
-            AnalogValue(index=0x42, value=second, quality=0x21),
+            AnalogValue(index=9, value=first, quality=0x01, timestamp=expected_time),
+            AnalogValue(index=0x42, value=second, quality=0x21, timestamp=expected_time),
         ]
