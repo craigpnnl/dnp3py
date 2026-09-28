@@ -258,8 +258,8 @@ def _parse_packed_binary(layout: ObjectLayout, data: bytes) -> list[BinaryValue]
     """Parse bit-packed binary points (g1v1 / g10v1), 8 points per byte.
 
     Bounded by the range's declared count so the unused high bits of the final
-    byte are not reported as real points. A payload shorter than the declared
-    count needs yields nothing, as in `_iter_object_slots`.
+    byte are not reported as real points. Returns an empty list when the payload
+    is too short to hold every declared point, the rule `_iter_object_slots` applies.
     """
     values: list[BinaryValue] = []
     payload = data[layout.data_offset :]
