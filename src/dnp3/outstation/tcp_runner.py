@@ -262,12 +262,14 @@ class OutstationTcpRunner:
         except Exception:
             logger.exception("Error handling connection")
         finally:
-            self.outstation.release_connection(conn_id)
             try:
-                await channel.close()  # type: ignore[union-attr]
-            except Exception:
-                pass
-            logger.info("Connection closed")
+                self.outstation.release_connection(conn_id)
+            finally:
+                try:
+                    await channel.close()  # type: ignore[union-attr]
+                except Exception:
+                    pass
+                logger.info("Connection closed")
 
     async def _wait_for_confirm(
         self,

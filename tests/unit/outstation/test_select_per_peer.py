@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 import time
 
 import pytest
@@ -26,6 +27,7 @@ from dnp3.outstation.peer import UNSPECIFIED_PEER, PeerId
 from dnp3.outstation.state import OutstationStateManager, SelectState
 from dnp3.outstation.tcp_runner import OutstationTcpRunner
 from dnp3.transport.segment import TransportSegment
+from dnp3.transport_io.channel import ChannelError
 from dnp3.transport_io.simulator import SimulatorChannel, create_channel_pair
 
 MASTER_A = PeerId(source=3, connection=1)
@@ -369,6 +371,70 @@ class TestRunnerReleasesSelectionsOnDisconnect:
         assert outstation._state.get_select(5, peer=MASTER_A) is None
         assert _select(outstation, MASTER_B, (5, 5000)) == [(5, SUCCESS)]
         assert outstation._state.get_select(6, peer=other_connection) is not None
+
+
+class _ScriptedChannel:
+    """Returns each scripted read in turn, raising any exception it holds; then EOF."""
+
+    def __init__(self, *reads: bytes | Exception) -> None:
+        self._reads = list(reads)
+        self.closed = 0
+
+    async def read(self, _max_bytes: int) -> bytes:
+        if not self._reads:
+            return b""
+        item = self._reads.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+    async def write_all(self, _data: bytes) -> None:
+        return None
+
+    async def close(self) -> None:
+        self.closed += 1
+
+
+class _ReleaseFails(Outstation):
+    def release_connection(self, connection: int) -> None:
+        raise RuntimeError("release failed")
+
+
+class TestRunnerCloseWhenReleaseRaises:
+    """A failing release does not leave the connection open or unlogged."""
+
+    @pytest.mark.asyncio
+    async def test_channel_still_closes_and_the_error_surfaces(self, caplog: pytest.LogCaptureFixture) -> None:
+        runner = OutstationTcpRunner(outstation=_ReleaseFails())
+        channel = _ScriptedChannel()
+
+        with (
+            caplog.at_level(logging.INFO, logger="dnp3.outstation.tcp_runner"),
+            pytest.raises(RuntimeError, match="release failed"),
+        ):
+            await runner._handle_connection(channel)
+
+        assert channel.closed == 1
+        assert "Connection closed" in caplog.messages
+
+
+class TestRunnerReleasesOnChannelError:
+    """A connection that ends in a transport error releases its selections too."""
+
+    @pytest.mark.asyncio
+    async def test_selection_is_released_after_a_channel_error(self) -> None:
+        handler = _RecordingHandler()
+        config = OutstationConfig(address=OUTSTATION_ADDR, master_address=MASTER_A.source)
+        outstation = Outstation(config=config, database=Database(), handler=handler)
+        outstation.database.add_binary_output(5)
+        select = build_select_request(objects=(_crob_block((5, 1000)),), seq=0)
+        channel = _ScriptedChannel(_frame(MASTER_A.source, select.to_bytes()), ChannelError("reset by peer"))
+
+        await OutstationTcpRunner(outstation=outstation)._handle_connection(channel)
+
+        assert handler.selects == [(5, 1000)]
+        assert channel.closed == 1
+        assert _select(outstation, MASTER_B, (5, 5000)) == [(5, SUCCESS)]
 
 
 class TestTwoRunnersOverOneOutstation:
