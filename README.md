@@ -187,10 +187,13 @@ are framed but not delivered to any handler.
 
 ### Level 2 (clause 14.4, Table 14-3)
 
-The outstation implements every Table 14-3 row except one: it silently
-ignores WRITE requests for Group 50 (time synchronization) rather than
-parsing them, and never issues Group 51 (Time and Date CTO) responses. A
-master relying on DNP3 clock sync against this outstation will not get one.
+The outstation does not yet parse WRITE requests for Group 50 (time
+synchronization): the write is silently ignored, and the outstation answers
+with a null response carrying no error IIN, so a master reading only the
+response sees success. DELAY_MEASURE (function code 23) is implemented and
+clears the outstation's NEED_TIME flag on its own, independent of any time
+write. Tracked in #140 (the Group 50 write and the Group 80 NEED_TIME clear)
+and #142 (RECORD_CURRENT_TIME and Group 50 Variation 3).
 
 ## Development
 
