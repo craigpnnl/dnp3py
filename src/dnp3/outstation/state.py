@@ -133,6 +133,9 @@ class PeerSelection:
         response: Response sent to the SELECT, repeated on a valid retry.
         started: time.monotonic() when the selection began.
         points: Selected points by (group, index).
+        cancelled: True when a non-zero status in the SELECT cancelled its
+            points (IEEE 1815-2012 4.4.4.3 Rule 3). The record stays, with no
+            points, so a retry repeats the response.
     """
 
     sequence: int
@@ -140,6 +143,7 @@ class PeerSelection:
     response: ResponseFragment | None
     started: float
     points: dict[PointKey, SelectState] = field(default_factory=dict)
+    cancelled: bool = False
 
 
 @dataclass
@@ -399,8 +403,10 @@ class OutstationStateManager:
             expired = [key for key, select in selection.points.items() if select.is_expired(timeout)]
             for key in expired:
                 del selection.points[key]
-            # A selection begun for a SELECT still being processed has no points yet.
-            if expired and not selection.points:
+            # A selection begun for a SELECT still being processed has no points yet. A cancelled
+            # one has none left to expire, so it ends on the timer its SELECT started.
+            cancelled_expired = selection.cancelled and time.monotonic() - selection.started > timeout
+            if (expired and not selection.points) or cancelled_expired:
                 del self.selections[peer]
 
     def selection_of(self, peer: PeerId) -> PeerSelection | None:
@@ -447,6 +453,23 @@ class OutstationStateManager:
             peer: The peer whose selection ends.
         """
         self.selections.pop(peer, None)
+
+    def cancel_points(self, peer: PeerId) -> None:
+        """End every point of a peer's selection, as IEEE 1815-2012 4.4.4.3 Rule 3 requires.
+
+        A selection begun for a SELECT request stays as a record with no points, so a
+        retry of that request repeats its response rather than running again
+        (Table 4-9). A selection stored without a request ends, as with terminate.
+
+        Args:
+            peer: The peer whose selection is cancelled.
+        """
+        selection = self.selections.get(peer)
+        if selection is None or selection.body is None:
+            self.selections.pop(peer, None)
+            return
+        selection.points.clear()
+        selection.cancelled = True
 
     def get_current_iin(self) -> IIN:
         """Get the current IIN flags.

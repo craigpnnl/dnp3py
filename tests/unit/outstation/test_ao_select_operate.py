@@ -170,7 +170,10 @@ class TestSelectAnalogOutput:
         assert _objects_on_wire(response) == _echo(block, [OUT_OF_RANGE])
         assert handler.ao_selects == [(5, value)]
         assert outstation._state.get_select(5, peer=MASTER_A, group=41) is None
-        assert outstation._state.selection_of(MASTER_A) is None
+        selection = outstation._state.selection_of(MASTER_A)
+        assert selection is not None
+        assert selection.response == response
+        assert selection.points == {}
 
     def test_status_is_per_object(self) -> None:
         outstation, handler = _outstation()
@@ -181,8 +184,10 @@ class TestSelectAnalogOutput:
 
         assert _objects_on_wire(response) == _echo(block, [SUCCESS, NOT_SUPPORTED])
         assert handler.ao_selects == [(5, 1.5), (6, 2.5)]
-        assert outstation._state.get_select(5, peer=MASTER_A, group=41) is not None
-        assert outstation._state.get_select(6, peer=MASTER_A, group=41) is None
+        selection = outstation._state.selection_of(MASTER_A)
+        assert selection is not None
+        assert selection.response == response
+        assert selection.points == {}
 
     @pytest.mark.parametrize(("variation", "fmt", "value"), VARIATIONS)
     def test_point_held_by_another_master_is_17_without_the_handler(
@@ -235,19 +240,19 @@ class TestMalformedAnalogOutputBlock:
     """
 
     @pytest.mark.parametrize(
-        ("variation", "qualifier", "data", "error", "echoed"),
+        ("variation", "qualifier", "data", "error"),
         [
             # Count 1, index 5, value 1.5, status 0.
-            (5, 0x17, bytes([1, 5, 0, 0, 0xC0, 0x3F, 0]), IIN.OBJECT_UNKNOWN, False),
+            (5, 0x17, bytes([1, 5, 0, 0, 0xC0, 0x3F, 0]), IIN.OBJECT_UNKNOWN),
             # Count 1 and no index prefix: the block frames, so the g41 qualifier check refuses it.
-            (3, 0x07, bytes([1, 0, 0, 0xC0, 0x3F, 0]), IIN.PARAMETER_ERROR, True),
-            (3, 0x17, bytes([1, 5, 0, 0, 0xC0, 0x3F, 0, 0]), IIN.PARAMETER_ERROR, False),
+            (3, 0x07, bytes([1, 0, 0, 0xC0, 0x3F, 0]), IIN.PARAMETER_ERROR),
+            (3, 0x17, bytes([1, 5, 0, 0, 0xC0, 0x3F, 0, 0]), IIN.PARAMETER_ERROR),
         ],
         ids=["unknown-variation", "count-without-index-qualifier", "left-over-octet"],
     )
     @pytest.mark.parametrize("function", ["select", "operate"])
     def test_malformed_block_flags_an_error(
-        self, function: str, variation: int, qualifier: int, data: bytes, error: IIN, echoed: bool
+        self, function: str, variation: int, qualifier: int, data: bytes, error: IIN
     ) -> None:
         outstation, handler = _outstation()
         block = ObjectBlock(header=ObjectHeader(group=41, variation=variation, qualifier=qualifier), data=data)
@@ -256,7 +261,7 @@ class TestMalformedAnalogOutputBlock:
         response = send(outstation, MASTER_A, block)
 
         assert response.header.iin & error
-        assert response.objects == ((block,) if echoed else ())
+        assert response.objects == ()
         assert handler.ao_selects == []
         assert handler.ao_operates == []
         assert outstation._state.selection_of(MASTER_A) is None
@@ -360,7 +365,7 @@ class TestOperateAnalogOutput:
         assert _objects_on_wire(response) == _echo(block, [NO_SELECT])
         assert handler.ao_operates == []
 
-    def test_operate_of_a_rejected_point_is_no_select_and_its_neighbour_operates(self) -> None:
+    def test_operate_after_a_partly_rejected_select_is_no_select_for_every_point(self) -> None:
         outstation, handler = _outstation()
         handler.statuses[("ao_select", 6)] = OUT_OF_RANGE
         block = _ao_block(3, "<f", [(5, 1.5), (6, 2.5)])
@@ -368,8 +373,8 @@ class TestOperateAnalogOutput:
 
         response = _operate(outstation, MASTER_A, block)
 
-        assert _objects_on_wire(response) == _echo(block, [SUCCESS, NO_SELECT])
-        assert handler.ao_operates == [(5, 1.5, 0)]
+        assert _objects_on_wire(response) == _echo(block, [NO_SELECT, NO_SELECT])
+        assert handler.ao_operates == []
 
 
 class TestGroupsDoNotSatisfyEachOther:

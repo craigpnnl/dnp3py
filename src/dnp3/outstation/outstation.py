@@ -610,14 +610,13 @@ def _parse_ao_block(block: ObjectBlock) -> tuple[list[tuple[int, float]], bool]:
         Var 4: double-precision float (8 bytes value + 1 byte status)
 
     Qualifiers follow the same 0x17/0x28 scheme as CROB (IEEE 1815-2012 Table 4-3).
-    Unknown qualifiers and unknown variations fail closed, matching the CROB path.
+    The block must have passed _control_block_error, which checks its qualifier and
+    that it holds exactly the declared count of objects.
 
     Returns:
-        Tuple of (points, has_parse_error). has_parse_error is True when the
-        frame is malformed (unknown variation, unknown qualifier, or truncated
-        buffer); callers must set IIN.PARAMETER_ERROR when it is True. The
-        objects before a truncation are still returned. A dummy-index sentinel
-        is never returned, so index 0 is not conflated with a parse error.
+        Tuple of (points, has_parse_error). has_parse_error is True, with no
+        points, for a variation other than 1-4; callers must set
+        IIN.PARAMETER_ERROR when it is True.
     """
     points: list[tuple[int, float]] = []
     variation = block.header.variation
@@ -626,25 +625,12 @@ def _parse_ao_block(block: ObjectBlock) -> tuple[list[tuple[int, float]], bool]:
     if value_size is None:
         return points, True
 
-    try:
-        count_bytes, index_bytes = _crob_count_index_sizes(block.header.qualifier)
-    except ValueError:
-        return points, True
-
+    count_bytes, index_bytes = _crob_count_index_sizes(block.header.qualifier)
     data = block.data
-    if len(data) < count_bytes:
-        return points, True
-
     count = int.from_bytes(data[0:count_bytes], "little")
     offset = count_bytes
 
-    # object size = index_bytes + value_size + 1 byte status
-    obj_size = index_bytes + value_size + 1
-
     for _ in range(count):
-        if offset + obj_size > len(data):
-            break
-
         index = int.from_bytes(data[offset : offset + index_bytes], "little")
         offset += index_bytes
 
@@ -659,7 +645,34 @@ def _parse_ao_block(block: ObjectBlock) -> tuple[list[tuple[int, float]], bool]:
         offset += value_size + 1  # skip request status byte
         points.append((index, value))
 
-    return points, len(points) < count
+    return points, False
+
+
+def _control_block_error(block: ObjectBlock) -> IIN | None:
+    """Return the IIN error bit a control request answers for ``block``, or None when it decodes.
+
+    The control objects are g12v1 and g41v1 to g41v4; any other object is one the control
+    path does not know (IIN2.1, IEEE 1815-2012 Table 4-14). A qualifier other than 0x17 or
+    0x28, or data that is not exactly the declared count of objects, is malformed (IIN2.2).
+    """
+    header = block.header
+    if header.group == GROUP_CROB and header.variation == 1:
+        object_size = _CROB_BODY_BYTES
+    elif header.group == GROUP_ANALOG_OUTPUT and header.variation in _AO_VALUE_SIZES:
+        object_size = _AO_VALUE_SIZES[header.variation] + 1
+    else:
+        return IIN.OBJECT_UNKNOWN
+    try:
+        count_bytes, index_bytes = _crob_count_index_sizes(header.qualifier)
+    except ValueError:
+        return IIN.PARAMETER_ERROR
+    data = block.data
+    if len(data) < count_bytes:
+        return IIN.PARAMETER_ERROR
+    count = int.from_bytes(data[:count_bytes], "little")
+    if len(data) != count_bytes + count * (index_bytes + object_size):
+        return IIN.PARAMETER_ERROR
+    return None
 
 
 @dataclass
@@ -807,7 +820,7 @@ class Outstation:
                 # A record with no response would swallow every retry, and its points were never answered.
                 self._state.terminate(peer)
                 raise
-            if selection.points:
+            if selection.points or selection.cancelled:
                 self._state.set_response(peer, response)
             else:
                 self._state.terminate(peer)
@@ -1357,12 +1370,28 @@ class Outstation:
             if bit_index == IIN_BIT_DEVICE_RESTART and bit_value == 0:
                 self._state.clear_restart()
 
+    def _refuse_undecodable(self, request: RequestFragment) -> ResponseFragment | None:
+        """Answer a control request carrying a block the control path cannot use, or return None.
+
+        Every block is checked before any point runs, and the answer carries no objects
+        (IEEE 1815-2012 4.4.4.3 Rule 6 item 1) and the IIN bit of the first failing block (Rule 7).
+        """
+        for block in request.objects:
+            error = _control_block_error(block)
+            if error is not None:
+                return build_null_response(iin=self.iin | error, seq=request.header.control.seq)
+        return None
+
     def _handle_select(self, request: RequestFragment, *, peer: PeerId = UNSPECIFIED_PEER) -> ResponseFragment:
         """Handle SELECT request."""
         results: list[tuple[int, CommandStatus]] = []
         seq = request.header.control.seq
 
         self._state.clear_expired_selects(self.config.select_timeout)
+
+        refusal = self._refuse_undecodable(request)
+        if refusal is not None:
+            return refusal
 
         ao_parse_error = False
 
@@ -1375,6 +1404,10 @@ class Outstation:
                 block_results, block_parse_error = self._process_ao_select(block, seq, peer=peer)
                 results.extend(block_results)
                 ao_parse_error = ao_parse_error or block_parse_error
+
+        if any(status != CommandStatus.SUCCESS for _, status in results):
+            # A non-zero status in any object cancels the entire selection (IEEE 1815-2012 4.4.4.3 Rule 3).
+            self._state.cancel_points(peer)
 
         # Build response with command status
         return self._build_control_response(request, results, ao_parse_error=ao_parse_error)
@@ -1434,6 +1467,10 @@ class Outstation:
 
         # Clear expired selects first
         self._state.clear_expired_selects(self.config.select_timeout)
+
+        refusal = self._refuse_undecodable(request)
+        if refusal is not None:
+            return refusal
 
         ao_parse_error = False
 
@@ -1555,6 +1592,10 @@ class Outstation:
 
     def _handle_direct_operate(self, request: RequestFragment) -> ResponseFragment:
         """Handle DIRECT_OPERATE request."""
+        refusal = self._refuse_undecodable(request)
+        if refusal is not None:
+            return refusal
+
         results: list[tuple[int, CommandStatus]] = []
         ao_parse_error = False
 
