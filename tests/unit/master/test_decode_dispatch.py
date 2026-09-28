@@ -1,7 +1,7 @@
 """Tests for how the master routes decoded blocks to handler callbacks.
 
 Each block is decoded by the point kind its (group, variation) layout names,
-and each kind's values reach exactly one callback. Expected object bytes follow
+and each kind's values reach that kind's callback. Expected object bytes follow
 the IEEE 1815-2012 Annex A formal structures (flag octet, little-endian value,
 optional 6-octet DNP3TIME), built here with ``struct`` rather than the library's
 encoders.
@@ -65,10 +65,9 @@ def _dispatch(*blocks: ObjectBlock) -> list[tuple[str, list[PointValue]]]:
 
 
 class TestRouting:
-    """Every delivered kind reaches its own callback, in a fixed order."""
+    """Every delivered kind reaches its own callback, in the order its block arrives."""
 
-    def test_each_kind_reaches_its_callback_in_fixed_order(self) -> None:
-        # Blocks arrive in the reverse of the callback order, which must not matter.
+    def test_each_kind_reaches_its_callback_in_block_order(self) -> None:
         calls = _dispatch(
             _block(21, 1, RANGE_8, bytes([4, 4, 0x01]) + struct.pack("<I", 21)),
             _block(20, 1, RANGE_8, bytes([3, 3, 0x01]) + struct.pack("<I", 20)),
@@ -79,19 +78,19 @@ class TestRouting:
         )
 
         assert calls == [
-            ("on_binary_input", [BinaryValue(index=5, value=False, quality=0x01)]),
-            ("on_binary_output", [BinaryValue(index=6, value=True, quality=0x01)]),
-            ("on_analog_input", [AnalogValue(index=1, value=30.0, quality=0x01)]),
-            ("on_analog_output", [AnalogValue(index=2, value=-40.0, quality=0x01)]),
-            ("on_counter", [CounterValue(index=3, value=20, quality=0x01)]),
             ("on_frozen_counter", [CounterValue(index=4, value=21, quality=0x01)]),
+            ("on_counter", [CounterValue(index=3, value=20, quality=0x01)]),
+            ("on_analog_output", [AnalogValue(index=2, value=-40.0, quality=0x01)]),
+            ("on_analog_input", [AnalogValue(index=1, value=30.0, quality=0x01)]),
+            ("on_binary_output", [BinaryValue(index=6, value=True, quality=0x01)]),
+            ("on_binary_input", [BinaryValue(index=5, value=False, quality=0x01)]),
         ]
 
     def test_static_and_event_blocks_of_one_kind_share_one_call_in_block_order(self) -> None:
         calls = _dispatch(
             _block(2, 1, COUNT_8_INDEX_8, bytes([1, 9, 0x81])),
-            _block(22, 1, COUNT_8_INDEX_8, bytes([1, 7, 0x01]) + struct.pack("<I", 700)),
             _block(1, 2, RANGE_8, bytes([0, 0, 0x01])),
+            _block(22, 1, COUNT_8_INDEX_8, bytes([1, 7, 0x01]) + struct.pack("<I", 700)),
             _block(20, 5, RANGE_8, bytes([2, 2]) + struct.pack("<I", 200)),
         )
 

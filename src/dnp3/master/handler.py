@@ -120,6 +120,10 @@ class SOEHandler(Protocol):
     """Protocol for handling Sequence of Events (SOE) data.
 
     Implement this to receive data from polling and unsolicited responses.
+
+    Callbacks run in fragment order, and one callback can run more than once per
+    response: each call carries the values of one run of consecutive blocks of its
+    kind, not every value of that kind in the response.
     """
 
     def on_binary_input(self, values: list[BinaryValue], info: ResponseInfo) -> None:
