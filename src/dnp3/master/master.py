@@ -27,6 +27,13 @@ from dnp3.master.commands import (
     SelectTask,
 )
 from dnp3.master.config import MasterConfig
+from dnp3.master.double_bit import (
+    DOUBLE_BIT_FLAGS_MASK,
+    DoubleBitValue,
+    deliver_double_bit_input,
+    double_bit_state,
+    unpack_double_bit_states,
+)
 from dnp3.master.handler import (
     AnalogValue,
     BinaryValue,
@@ -354,6 +361,35 @@ def _decode_counter(block: ObjectBlock, wire: WireLayout) -> list[CounterValue]:
     return values
 
 
+def _decode_double_bit(block: ObjectBlock, wire: WireLayout) -> list[DoubleBitValue]:
+    """Decode double-bit binary input points: packed states, or one flag octet per point."""
+    slots = _block_slots(block)
+    if slots is None:
+        return []
+    data = block.data
+    if wire.is_packed:
+        # A.4.1 packs states over a contiguous index range; a prefixed block has no bit layout.
+        # Every range decoded here sets count; the None test only narrows its optional type.
+        if slots.index_prefix_width or slots.count is None:
+            return []
+        states = unpack_double_bit_states(data[slots.data_offset :], slots.count)
+        # A.4.1.2.3: packed values carry no flags and are taken as online.
+        return [
+            DoubleBitValue(index=slots.first_index + ordinal, state=state, quality=QUALITY_ONLINE)
+            for ordinal, state in enumerate(states)
+        ]
+
+    return [
+        DoubleBitValue(
+            index=index,
+            state=double_bit_state(data[payload]),
+            quality=data[payload] & DOUBLE_BIT_FLAGS_MASK,
+            timestamp=_read_timestamp(data, payload, wire),
+        )
+        for index, payload in _iter_object_slots(slots, data, wire.width)
+    ]
+
+
 _V = TypeVar("_V")
 
 
@@ -404,10 +440,12 @@ class _KindBatch(Generic[_V]):
 
 
 # Point kinds the master decodes, in the order their callbacks run for a response.
-# A kind absent here (double-bit input, commands, time, class) is framed but not delivered.
+# A kind absent here (commands and command events, frozen analog, deadband, time, class)
+# is framed but not delivered. Double-bit values reach only a handler with that callback.
 _DELIVERIES: Mapping[PointKind, _Delivery] = MappingProxyType(
     {
         PointKind.BINARY_INPUT: _KindDelivery(_decode_binary, lambda h, v, i: h.on_binary_input(v, i)),
+        PointKind.DOUBLE_BIT_INPUT: _KindDelivery(_decode_double_bit, deliver_double_bit_input),
         PointKind.BINARY_OUTPUT: _KindDelivery(_decode_binary, lambda h, v, i: h.on_binary_output(v, i)),
         PointKind.ANALOG_INPUT: _KindDelivery(_decode_analog, lambda h, v, i: h.on_analog_input(v, i)),
         PointKind.ANALOG_OUTPUT: _KindDelivery(_decode_analog, lambda h, v, i: h.on_analog_output(v, i)),

@@ -6,10 +6,13 @@ static data, events, and command responses.
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from dnp3.core.enums import CommandStatus, FunctionCode
 from dnp3.core.flags import IIN
+
+if TYPE_CHECKING:
+    from dnp3.master.double_bit import DoubleBitValue
 
 
 @dataclass(frozen=True)
@@ -210,6 +213,7 @@ class DefaultSOEHandler:
         self._analog_outputs: dict[int, AnalogValue] = {}
         self._counters: dict[int, CounterValue] = {}
         self._frozen_counters: dict[int, CounterValue] = {}
+        self._double_bit_inputs: dict[int, DoubleBitValue] = {}
         self._last_response: ResponseInfo | None = None
 
     @property
@@ -241,6 +245,11 @@ class DefaultSOEHandler:
     def frozen_counters(self) -> dict[int, CounterValue]:
         """Get all frozen counter values by index."""
         return self._frozen_counters.copy()
+
+    @property
+    def double_bit_inputs(self) -> "dict[int, DoubleBitValue]":
+        """Get all double-bit binary input values by index."""
+        return self._double_bit_inputs.copy()
 
     @property
     def last_response(self) -> ResponseInfo | None:
@@ -283,6 +292,12 @@ class DefaultSOEHandler:
             self._frozen_counters[value.index] = value
         self._last_response = info
 
+    def on_double_bit_input(self, values: "list[DoubleBitValue]", info: ResponseInfo) -> None:
+        """Store double-bit binary input values."""
+        for value in values:
+            self._double_bit_inputs[value.index] = value
+        self._last_response = info
+
     def get_binary_input(self, index: int) -> BinaryValue | None:
         """Get a specific binary input value."""
         return self._binary_inputs.get(index)
@@ -307,6 +322,10 @@ class DefaultSOEHandler:
         """Get a specific frozen counter value."""
         return self._frozen_counters.get(index)
 
+    def get_double_bit_input(self, index: int) -> "DoubleBitValue | None":
+        """Get a specific double-bit binary input value."""
+        return self._double_bit_inputs.get(index)
+
     def clear(self) -> None:
         """Clear all stored values."""
         self._binary_inputs.clear()
@@ -315,4 +334,5 @@ class DefaultSOEHandler:
         self._analog_outputs.clear()
         self._counters.clear()
         self._frozen_counters.clear()
+        self._double_bit_inputs.clear()
         self._last_response = None
