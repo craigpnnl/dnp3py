@@ -28,10 +28,15 @@ class PointKind(Enum):
     DOUBLE_BIT_INPUT = "double_bit_input"
     BINARY_OUTPUT = "binary_output"
     BINARY_COMMAND = "binary_command"
+    BINARY_COMMAND_EVENT = "binary_command_event"
     COUNTER = "counter"
     FROZEN_COUNTER = "frozen_counter"
     ANALOG_INPUT = "analog_input"
     ANALOG_OUTPUT = "analog_output"
+    ANALOG_COMMAND = "analog_command"
+    ANALOG_COMMAND_EVENT = "analog_command_event"
+    FROZEN_ANALOG_INPUT = "frozen_analog_input"
+    ANALOG_DEADBAND = "analog_deadband"
     TIME = "time"
     TIME_DELAY = "time_delay"
     CLASS = "class"
@@ -124,16 +129,20 @@ def _octets(
 
 _BI = PointKind.BINARY_INPUT
 _BO = PointKind.BINARY_OUTPUT
+_DBI = PointKind.DOUBLE_BIT_INPUT
 _CT = PointKind.COUNTER
 _FC = PointKind.FROZEN_COUNTER
 _AI = PointKind.ANALOG_INPUT
 _AO = PointKind.ANALOG_OUTPUT
+_FAI = PointKind.FROZEN_ANALOG_INPUT
 _ABS = TimeKind.ABSOLUTE
+_REL = TimeKind.RELATIVE
 _INT = ValueCodec.INT
 _UINT = ValueCodec.UINT
 _F32 = ValueCodec.FLOAT32
 _F64 = ValueCodec.FLOAT64
 _STATE = ValueCodec.FLAG_STATE
+_REC = ValueCodec.RECORD
 
 # Keyed by (group, variation); the comment on each group names its Annex A clause.
 _TABLE: dict[tuple[int, int], WireLayout] = {
@@ -146,6 +155,11 @@ _TABLE: dict[tuple[int, int], WireLayout] = {
     (2, 3): _octets(_BI, 0, _STATE, time=TimeKind.RELATIVE),
     # A.4
     (3, 1): _packed(PointKind.DOUBLE_BIT_INPUT, 2),
+    (3, 2): _octets(_DBI, 0, _STATE),
+    # A.5
+    (4, 1): _octets(_DBI, 0, _STATE),
+    (4, 2): _octets(_DBI, 0, _STATE, time=_ABS),
+    (4, 3): _octets(_DBI, 0, _STATE, time=_REL),
     # A.6
     (10, 1): _packed(_BO, 1),
     (10, 2): _octets(_BO, 0, _STATE),
@@ -154,6 +168,9 @@ _TABLE: dict[tuple[int, int], WireLayout] = {
     (11, 2): _octets(_BO, 0, _STATE, time=_ABS),
     # A.8.1: control code, count, on-time, off-time, status.
     (12, 1): _octets(PointKind.BINARY_COMMAND, 11, ValueCodec.RECORD, flags=False),
+    # A.9: status code, commanded state.
+    (13, 1): _octets(PointKind.BINARY_COMMAND_EVENT, 1, _REC, flags=False),
+    (13, 2): _octets(PointKind.BINARY_COMMAND_EVENT, 1, _REC, flags=False, time=_ABS),
     # A.10
     (20, 1): _octets(_CT, 4, _UINT),
     (20, 2): _octets(_CT, 2, _UINT),
@@ -176,6 +193,15 @@ _TABLE: dict[tuple[int, int], WireLayout] = {
     (30, 4): _octets(_AI, 2, _INT, flags=False),
     (30, 5): _octets(_AI, 4, _F32),
     (30, 6): _octets(_AI, 8, _F64),
+    # A.15
+    (31, 1): _octets(_FAI, 4, _INT),
+    (31, 2): _octets(_FAI, 2, _INT),
+    (31, 3): _octets(_FAI, 4, _INT, time=_ABS),
+    (31, 4): _octets(_FAI, 2, _INT, time=_ABS),
+    (31, 5): _octets(_FAI, 4, _INT, flags=False),
+    (31, 6): _octets(_FAI, 2, _INT, flags=False),
+    (31, 7): _octets(_FAI, 4, _F32),
+    (31, 8): _octets(_FAI, 8, _F64),
     # A.16
     (32, 1): _octets(_AI, 4, _INT),
     (32, 2): _octets(_AI, 2, _INT),
@@ -185,11 +211,29 @@ _TABLE: dict[tuple[int, int], WireLayout] = {
     (32, 6): _octets(_AI, 8, _F64),
     (32, 7): _octets(_AI, 4, _F32, time=_ABS),
     (32, 8): _octets(_AI, 8, _F64, time=_ABS),
+    # A.17
+    (33, 1): _octets(_FAI, 4, _INT),
+    (33, 2): _octets(_FAI, 2, _INT),
+    (33, 3): _octets(_FAI, 4, _INT, time=_ABS),
+    (33, 4): _octets(_FAI, 2, _INT, time=_ABS),
+    (33, 5): _octets(_FAI, 4, _F32),
+    (33, 6): _octets(_FAI, 8, _F64),
+    (33, 7): _octets(_FAI, 4, _F32, time=_ABS),
+    (33, 8): _octets(_FAI, 8, _F64, time=_ABS),
+    # A.18: deadband value alone, no flags.
+    (34, 1): _octets(PointKind.ANALOG_DEADBAND, 2, _UINT, flags=False),
+    (34, 2): _octets(PointKind.ANALOG_DEADBAND, 4, _UINT, flags=False),
+    (34, 3): _octets(PointKind.ANALOG_DEADBAND, 4, _F32, flags=False),
     # A.19
     (40, 1): _octets(_AO, 4, _INT),
     (40, 2): _octets(_AO, 2, _INT),
     (40, 3): _octets(_AO, 4, _F32),
     (40, 4): _octets(_AO, 8, _F64),
+    # A.20: requested value plus control status octet, one 5/3/5/9-octet record.
+    (41, 1): _octets(PointKind.ANALOG_COMMAND, 5, _REC, flags=False),
+    (41, 2): _octets(PointKind.ANALOG_COMMAND, 3, _REC, flags=False),
+    (41, 3): _octets(PointKind.ANALOG_COMMAND, 5, _REC, flags=False),
+    (41, 4): _octets(PointKind.ANALOG_COMMAND, 9, _REC, flags=False),
     # A.21
     (42, 1): _octets(_AO, 4, _INT),
     (42, 2): _octets(_AO, 2, _INT),
@@ -199,6 +243,15 @@ _TABLE: dict[tuple[int, int], WireLayout] = {
     (42, 6): _octets(_AO, 8, _F64),
     (42, 7): _octets(_AO, 4, _F32, time=_ABS),
     (42, 8): _octets(_AO, 8, _F64, time=_ABS),
+    # A.22: status octet plus commanded value, one 5/3/5/9-octet record before time.
+    (43, 1): _octets(PointKind.ANALOG_COMMAND_EVENT, 5, _REC, flags=False),
+    (43, 2): _octets(PointKind.ANALOG_COMMAND_EVENT, 3, _REC, flags=False),
+    (43, 3): _octets(PointKind.ANALOG_COMMAND_EVENT, 5, _REC, flags=False, time=_ABS),
+    (43, 4): _octets(PointKind.ANALOG_COMMAND_EVENT, 3, _REC, flags=False, time=_ABS),
+    (43, 5): _octets(PointKind.ANALOG_COMMAND_EVENT, 5, _REC, flags=False),
+    (43, 6): _octets(PointKind.ANALOG_COMMAND_EVENT, 9, _REC, flags=False),
+    (43, 7): _octets(PointKind.ANALOG_COMMAND_EVENT, 5, _REC, flags=False, time=_ABS),
+    (43, 8): _octets(PointKind.ANALOG_COMMAND_EVENT, 9, _REC, flags=False, time=_ABS),
     # A.23 and A.24: a DNP3TIME (UINT48) is the whole object.
     (50, 1): _octets(PointKind.TIME, 6, _UINT, flags=False),
     (51, 1): _octets(PointKind.TIME, 6, _UINT, flags=False),

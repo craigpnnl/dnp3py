@@ -39,10 +39,12 @@ class TestRegistryConsistency:
 
 _BI = PointKind.BINARY_INPUT
 _BO = PointKind.BINARY_OUTPUT
+_DBI = PointKind.DOUBLE_BIT_INPUT
 _CT = PointKind.COUNTER
 _FC = PointKind.FROZEN_COUNTER
 _AI = PointKind.ANALOG_INPUT
 _AO = PointKind.ANALOG_OUTPUT
+_FAI = PointKind.FROZEN_ANALOG_INPUT
 _NO = TimeKind.NONE
 _ABS = TimeKind.ABSOLUTE
 _REL = TimeKind.RELATIVE
@@ -52,6 +54,7 @@ _INT = ValueCodec.INT
 _UINT = ValueCodec.UINT
 _F32 = ValueCodec.FLOAT32
 _F64 = ValueCodec.FLOAT64
+_REC = ValueCodec.RECORD
 
 # Every row, hand-derived from the Annex A formal structure named beside it:
 # (group, variation): (point kind, width, bits per point, flags, codec, time).
@@ -61,12 +64,18 @@ _EXPECTED_ROWS = {
     (2, 1): (_BI, 1, 0, True, _ST, _NO),  # A.3.1: flag octet
     (2, 2): (_BI, 7, 0, True, _ST, _ABS),  # A.3.2: flag, DNP3TIME
     (2, 3): (_BI, 3, 0, True, _ST, _REL),  # A.3.3: flag, UINT16 relative time
-    (3, 1): (PointKind.DOUBLE_BIT_INPUT, 0, 2, False, _PK, _NO),  # A.4.1: UINT2 per point
+    (3, 1): (_DBI, 0, 2, False, _PK, _NO),  # A.4.1: UINT2 per point
+    (3, 2): (_DBI, 1, 0, True, _ST, _NO),  # A.4.2: flag octet, UINT2 state
+    (4, 1): (_DBI, 1, 0, True, _ST, _NO),  # A.5.1: flag octet, UINT2 state
+    (4, 2): (_DBI, 7, 0, True, _ST, _ABS),  # A.5.2: flag, state, DNP3TIME
+    (4, 3): (_DBI, 3, 0, True, _ST, _REL),  # A.5.3: flag, state, UINT16 relative time
     (10, 1): (_BO, 0, 1, False, _PK, _NO),  # A.6.1: BSTRn
     (10, 2): (_BO, 1, 0, True, _ST, _NO),  # A.6.2: flag octet
     (11, 1): (_BO, 1, 0, True, _ST, _NO),  # A.7.1: flag octet
     (11, 2): (_BO, 7, 0, True, _ST, _ABS),  # A.7.2: flag, DNP3TIME
     (12, 1): (PointKind.BINARY_COMMAND, 11, 0, False, ValueCodec.RECORD, _NO),  # A.8.1: 1+1+4+4+1
+    (13, 1): (PointKind.BINARY_COMMAND_EVENT, 1, 0, False, _REC, _NO),  # A.9.1: UINT7 status, BSTR1 state
+    (13, 2): (PointKind.BINARY_COMMAND_EVENT, 7, 0, False, _REC, _ABS),  # A.9.2: status, state, DNP3TIME
     (20, 1): (_CT, 5, 0, True, _UINT, _NO),  # A.10.1: flag, UINT32
     (20, 2): (_CT, 3, 0, True, _UINT, _NO),  # A.10.2: flag, UINT16
     (20, 5): (_CT, 4, 0, False, _UINT, _NO),  # A.10.5: UINT32
@@ -85,6 +94,14 @@ _EXPECTED_ROWS = {
     (30, 4): (_AI, 2, 0, False, _INT, _NO),  # A.14.4: INT16
     (30, 5): (_AI, 5, 0, True, _F32, _NO),  # A.14.5: flag, FLT32
     (30, 6): (_AI, 9, 0, True, _F64, _NO),  # A.14.6: flag, FLT64
+    (31, 1): (_FAI, 5, 0, True, _INT, _NO),  # A.15.1: flag, INT32
+    (31, 2): (_FAI, 3, 0, True, _INT, _NO),  # A.15.2: flag, INT16
+    (31, 3): (_FAI, 11, 0, True, _INT, _ABS),  # A.15.3: flag, INT32, DNP3TIME
+    (31, 4): (_FAI, 9, 0, True, _INT, _ABS),  # A.15.4: flag, INT16, DNP3TIME
+    (31, 5): (_FAI, 4, 0, False, _INT, _NO),  # A.15.5: INT32
+    (31, 6): (_FAI, 2, 0, False, _INT, _NO),  # A.15.6: INT16
+    (31, 7): (_FAI, 5, 0, True, _F32, _NO),  # A.15.7: flag, FLT32
+    (31, 8): (_FAI, 9, 0, True, _F64, _NO),  # A.15.8: flag, FLT64
     (32, 1): (_AI, 5, 0, True, _INT, _NO),  # A.16.1: flag, INT32
     (32, 2): (_AI, 3, 0, True, _INT, _NO),  # A.16.2: flag, INT16
     (32, 3): (_AI, 11, 0, True, _INT, _ABS),  # A.16.3: flag, INT32, DNP3TIME
@@ -93,10 +110,25 @@ _EXPECTED_ROWS = {
     (32, 6): (_AI, 9, 0, True, _F64, _NO),  # A.16.6: flag, FLT64
     (32, 7): (_AI, 11, 0, True, _F32, _ABS),  # A.16.7: flag, FLT32, DNP3TIME
     (32, 8): (_AI, 15, 0, True, _F64, _ABS),  # A.16.8: flag, FLT64, DNP3TIME
+    (33, 1): (_FAI, 5, 0, True, _INT, _NO),  # A.17.1: flag, INT32
+    (33, 2): (_FAI, 3, 0, True, _INT, _NO),  # A.17.2: flag, INT16
+    (33, 3): (_FAI, 11, 0, True, _INT, _ABS),  # A.17.3: flag, INT32, DNP3TIME
+    (33, 4): (_FAI, 9, 0, True, _INT, _ABS),  # A.17.4: flag, INT16, DNP3TIME
+    (33, 5): (_FAI, 5, 0, True, _F32, _NO),  # A.17.5: flag, FLT32
+    (33, 6): (_FAI, 9, 0, True, _F64, _NO),  # A.17.6: flag, FLT64
+    (33, 7): (_FAI, 11, 0, True, _F32, _ABS),  # A.17.7: flag, FLT32, DNP3TIME
+    (33, 8): (_FAI, 15, 0, True, _F64, _ABS),  # A.17.8: flag, FLT64, DNP3TIME
+    (34, 1): (PointKind.ANALOG_DEADBAND, 2, 0, False, _UINT, _NO),  # A.18.1: UINT16
+    (34, 2): (PointKind.ANALOG_DEADBAND, 4, 0, False, _UINT, _NO),  # A.18.2: UINT32
+    (34, 3): (PointKind.ANALOG_DEADBAND, 4, 0, False, _F32, _NO),  # A.18.3: FLT32
     (40, 1): (_AO, 5, 0, True, _INT, _NO),  # A.19.1: flag, INT32
     (40, 2): (_AO, 3, 0, True, _INT, _NO),  # A.19.2: flag, INT16
     (40, 3): (_AO, 5, 0, True, _F32, _NO),  # A.19.3: flag, FLT32
     (40, 4): (_AO, 9, 0, True, _F64, _NO),  # A.19.4: flag, FLT64
+    (41, 1): (PointKind.ANALOG_COMMAND, 5, 0, False, _REC, _NO),  # A.20.1: INT32, status
+    (41, 2): (PointKind.ANALOG_COMMAND, 3, 0, False, _REC, _NO),  # A.20.2: INT16, status
+    (41, 3): (PointKind.ANALOG_COMMAND, 5, 0, False, _REC, _NO),  # A.20.3: FLT32, status
+    (41, 4): (PointKind.ANALOG_COMMAND, 9, 0, False, _REC, _NO),  # A.20.4: FLT64, status
     (42, 1): (_AO, 5, 0, True, _INT, _NO),  # A.21.1: flag, INT32
     (42, 2): (_AO, 3, 0, True, _INT, _NO),  # A.21.2: flag, INT16
     (42, 3): (_AO, 11, 0, True, _INT, _ABS),  # A.21.3: flag, INT32, DNP3TIME
@@ -105,6 +137,14 @@ _EXPECTED_ROWS = {
     (42, 6): (_AO, 9, 0, True, _F64, _NO),  # A.21.6: flag, FLT64
     (42, 7): (_AO, 11, 0, True, _F32, _ABS),  # A.21.7: flag, FLT32, DNP3TIME
     (42, 8): (_AO, 15, 0, True, _F64, _ABS),  # A.21.8: flag, FLT64, DNP3TIME
+    (43, 1): (PointKind.ANALOG_COMMAND_EVENT, 5, 0, False, _REC, _NO),  # A.22.1: status, INT32
+    (43, 2): (PointKind.ANALOG_COMMAND_EVENT, 3, 0, False, _REC, _NO),  # A.22.2: status, INT16
+    (43, 3): (PointKind.ANALOG_COMMAND_EVENT, 11, 0, False, _REC, _ABS),  # A.22.3: status, INT32, DNP3TIME
+    (43, 4): (PointKind.ANALOG_COMMAND_EVENT, 9, 0, False, _REC, _ABS),  # A.22.4: status, INT16, DNP3TIME
+    (43, 5): (PointKind.ANALOG_COMMAND_EVENT, 5, 0, False, _REC, _NO),  # A.22.5: status, FLT32
+    (43, 6): (PointKind.ANALOG_COMMAND_EVENT, 9, 0, False, _REC, _NO),  # A.22.6: status, FLT64
+    (43, 7): (PointKind.ANALOG_COMMAND_EVENT, 11, 0, False, _REC, _ABS),  # A.22.7: status, FLT32, DNP3TIME
+    (43, 8): (PointKind.ANALOG_COMMAND_EVENT, 15, 0, False, _REC, _ABS),  # A.22.8: status, FLT64, DNP3TIME
     (50, 1): (PointKind.TIME, 6, 0, False, _UINT, _NO),  # A.23.1: DNP3TIME
     (51, 1): (PointKind.TIME, 6, 0, False, _UINT, _NO),  # A.24.1: DNP3TIME
     (51, 2): (PointKind.TIME, 6, 0, False, _UINT, _NO),  # A.24.2: DNP3TIME
