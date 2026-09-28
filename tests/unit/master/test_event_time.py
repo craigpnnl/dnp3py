@@ -125,3 +125,37 @@ def test_time_field_beyond_datetime_range_yields_none_not_a_crash() -> None:
     value = handler.analog_inputs[1]
     assert value.value == -1500.0
     assert value.timestamp is None
+
+
+# The last millisecond datetime can represent (9999-12-31 23:59:59.999 UTC)
+# and the first one it cannot, one ms later.
+_MAX_MS = 253_402_300_799_999
+_OVER_MAX_MS = _MAX_MS + 1
+
+
+def test_time_field_at_max_datetime_value() -> None:
+    """The last representable millisecond decodes exactly, not just as non-None."""
+    handler = DefaultSOEHandler()
+    master = Master(handler=handler)
+    header = bytes([32, 3, 0x17])
+    body = bytes([0x01, 1, FLAGS]) + struct.pack("<i", -1500) + _MAX_MS.to_bytes(6, "little")
+    data = RESPONSE_HEADER + header + body
+
+    master.process_response(data)
+
+    assert handler.analog_inputs[1].timestamp == datetime(9999, 12, 31, 23, 59, 59, 999000, tzinfo=UTC)
+
+
+def test_time_field_one_ms_past_max_yields_none() -> None:
+    """One millisecond past the last representable one yields None, value still delivered."""
+    handler = DefaultSOEHandler()
+    master = Master(handler=handler)
+    header = bytes([32, 3, 0x17])
+    body = bytes([0x01, 1, FLAGS]) + struct.pack("<i", -1500) + _OVER_MAX_MS.to_bytes(6, "little")
+    data = RESPONSE_HEADER + header + body
+
+    master.process_response(data)
+
+    value = handler.analog_inputs[1]
+    assert value.value == -1500.0
+    assert value.timestamp is None

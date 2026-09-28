@@ -34,6 +34,12 @@ _TIME_MS = 1_700_000_000_123
 TIME_OCTETS = _TIME_MS.to_bytes(6, "little")
 EXPECTED_TIME = datetime(1970, 1, 1, tzinfo=UTC) + timedelta(milliseconds=_TIME_MS)
 
+# A second, distinct time for a block's second object, so a decoder that
+# reads one object's time field for every object in the block is caught.
+_TIME_MS_2 = _TIME_MS + 3_600_000
+TIME_OCTETS_2 = _TIME_MS_2.to_bytes(6, "little")
+EXPECTED_TIME_2 = datetime(1970, 1, 1, tzinfo=UTC) + timedelta(milliseconds=_TIME_MS_2)
+
 
 def _expected_timestamp(layout: WireLayout) -> datetime | None:
     """The timestamp a layout's decoded value must carry: real for absolute time, else None."""
@@ -251,15 +257,22 @@ class TestAnalogOutputValues:
         ],
     )
     def test_g42_events(self, variation: int, fmt: str, timed: bool, first: float, second: float) -> None:
-        time = TIME_OCTETS if timed else b""
+        time_1 = TIME_OCTETS if timed else b""
+        time_2 = TIME_OCTETS_2 if timed else b""
         data = (
-            bytes([2, 9, 0x01]) + struct.pack(fmt, first) + time + bytes([0x42, 0x21]) + struct.pack(fmt, second) + time
+            bytes([2, 9, 0x01])
+            + struct.pack(fmt, first)
+            + time_1
+            + bytes([0x42, 0x21])
+            + struct.pack(fmt, second)
+            + time_2
         )
 
         values = delivered(_block(42, variation, COUNT_8_INDEX_8, data), "on_analog_output")
 
-        expected_time = EXPECTED_TIME if timed else None
+        expected_time_1 = EXPECTED_TIME if timed else None
+        expected_time_2 = EXPECTED_TIME_2 if timed else None
         assert values == [
-            AnalogValue(index=9, value=first, quality=0x01, timestamp=expected_time),
-            AnalogValue(index=0x42, value=second, quality=0x21, timestamp=expected_time),
+            AnalogValue(index=9, value=first, quality=0x01, timestamp=expected_time_1),
+            AnalogValue(index=0x42, value=second, quality=0x21, timestamp=expected_time_2),
         ]
