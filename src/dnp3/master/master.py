@@ -239,22 +239,53 @@ def _decode_timestamp(raw: bytes) -> datetime | None:
     large, and the index, value and flags of the same object must still be
     delivered rather than lost to an exception from an unusable time field.
     """
+    return _after(_DNP3TIME_EPOCH, int.from_bytes(raw, "little", signed=False))
+
+
+def _after(base: datetime, milliseconds: int) -> datetime | None:
+    """`base` plus `milliseconds`, or None past Python's datetime range (year 9999)."""
     try:
-        return _DNP3TIME_EPOCH + timedelta(milliseconds=int.from_bytes(raw, "little", signed=False))
+        return base + timedelta(milliseconds=milliseconds)
     except OverflowError:
         return None
 
 
-def _read_timestamp(data: bytes, payload: int, wire: WireLayout) -> datetime | None:
-    """Decode a layout's trailing DNP3TIME field, or None when it carries no absolute time.
+def _read_timestamp(data: bytes, payload: int, wire: WireLayout, cto: datetime | None) -> datetime | None:
+    """Decode a layout's trailing time field, or None when it gives no absolute time.
 
     The time field is the last `wire.time.octets` octets of the object, after
-    any flag octet and value field.
+    any flag octet and value field. A relative time (A.3.3, A.5.3) is a UINT16
+    count of milliseconds after `cto`, the preceding common time of occurrence
+    in the fragment, and gives None when there is none.
     """
-    if wire.time is not TimeKind.ABSOLUTE:
-        return None
     offset = payload + wire.width - wire.time.octets
-    return _decode_timestamp(data[offset : offset + wire.time.octets])
+    raw = data[offset : offset + wire.time.octets]
+    if wire.time is TimeKind.ABSOLUTE:
+        return _decode_timestamp(raw)
+    if wire.time is TimeKind.RELATIVE and cto is not None:
+        return _after(cto, int.from_bytes(raw, "little", signed=False))
+    return None
+
+
+# A.24: group 51 objects are common times of occurrence, the base of later relative times.
+_CTO_GROUP = 51
+
+
+def _common_time_after(block: ObjectBlock, wire: WireLayout, preceding: datetime | None) -> datetime | None:
+    """The common time of occurrence in force after a group 51 block.
+
+    A relative time counts from the immediately preceding CTO object (A.24.1), so
+    the block's last object replaces `preceding`, and a block of no objects leaves
+    it. A block that cannot be read, or whose time is past year 9999, gives None:
+    a later relative time must not be counted from a CTO it does not follow.
+    """
+    slots = _block_slots(block)
+    if slots is None:
+        return None
+    payloads = [payload for _, payload in _iter_object_slots(slots, block.data, wire.width)]
+    if not payloads:
+        return preceding if slots.count == 0 else None
+    return _decode_timestamp(block.data[payloads[-1] : payloads[-1] + wire.width])
 
 
 def _parse_packed_binary(layout: ObjectLayout, data: bytes) -> list[BinaryValue]:
@@ -289,10 +320,10 @@ def _block_slots(block: ObjectBlock) -> ObjectLayout | None:
     return _decode_object_layout(block.header.qualifier, block.data)
 
 
-def _decode_binary(block: ObjectBlock, wire: WireLayout) -> list[BinaryValue]:
+def _decode_binary(block: ObjectBlock, wire: WireLayout, cto: datetime | None) -> list[BinaryValue]:
     """Decode binary input or output points: packed bits, or one flag octet per point.
 
-    A layout with absolute time also decodes the trailing DNP3TIME into `timestamp`.
+    A layout with a time field also decodes it into `timestamp`; see `_read_timestamp`.
     """
     slots = _block_slots(block)
     if slots is None:
@@ -312,16 +343,16 @@ def _decode_binary(block: ObjectBlock, wire: WireLayout) -> list[BinaryValue]:
                 index=index,
                 value=bool(flags & QUALITY_STATE),
                 quality=flags & ~QUALITY_STATE,
-                timestamp=_read_timestamp(data, payload, wire),
+                timestamp=_read_timestamp(data, payload, wire, cto),
             )
         )
     return values
 
 
-def _decode_analog(block: ObjectBlock, wire: WireLayout) -> list[AnalogValue]:
+def _decode_analog(block: ObjectBlock, wire: WireLayout, cto: datetime | None) -> list[AnalogValue]:
     """Decode analog input or output points.
 
-    A layout with absolute time also decodes the trailing DNP3TIME into `timestamp`.
+    A layout with a time field also decodes it into `timestamp`; see `_read_timestamp`.
     """
     decode = _ANALOG_DECODERS.get(wire.codec)
     slots = _block_slots(block)
@@ -337,16 +368,16 @@ def _decode_analog(block: ObjectBlock, wire: WireLayout) -> list[AnalogValue]:
                 index=index,
                 value=decode(data[value_offset : value_offset + wire.value_width]),
                 quality=quality,
-                timestamp=_read_timestamp(data, payload, wire),
+                timestamp=_read_timestamp(data, payload, wire, cto),
             )
         )
     return values
 
 
-def _decode_counter(block: ObjectBlock, wire: WireLayout) -> list[CounterValue]:
+def _decode_counter(block: ObjectBlock, wire: WireLayout, cto: datetime | None) -> list[CounterValue]:
     """Decode counter or frozen counter points.
 
-    A layout with absolute time also decodes the trailing DNP3TIME into `timestamp`.
+    A layout with a time field also decodes it into `timestamp`; see `_read_timestamp`.
     """
     slots = _block_slots(block)
     if wire.codec is not ValueCodec.UINT or slots is None:
@@ -362,14 +393,17 @@ def _decode_counter(block: ObjectBlock, wire: WireLayout) -> list[CounterValue]:
                 index=index,
                 value=raw,
                 quality=quality,
-                timestamp=_read_timestamp(data, payload, wire),
+                timestamp=_read_timestamp(data, payload, wire, cto),
             )
         )
     return values
 
 
-def _decode_double_bit(block: ObjectBlock, wire: WireLayout) -> list[DoubleBitValue]:
-    """Decode double-bit binary input points: packed states, or one flag octet per point."""
+def _decode_double_bit(block: ObjectBlock, wire: WireLayout, cto: datetime | None) -> list[DoubleBitValue]:
+    """Decode double-bit binary input points: packed states, or one flag octet per point.
+
+    A layout with a time field also decodes it into `timestamp`; see `_read_timestamp`.
+    """
     slots = _block_slots(block)
     if slots is None:
         return []
@@ -391,7 +425,7 @@ def _decode_double_bit(block: ObjectBlock, wire: WireLayout) -> list[DoubleBitVa
             index=index,
             state=double_bit_state(data[payload]),
             quality=data[payload] & DOUBLE_BIT_FLAGS_MASK,
-            timestamp=_read_timestamp(data, payload, wire),
+            timestamp=_read_timestamp(data, payload, wire, cto),
         )
         for index, payload in _iter_object_slots(slots, data, wire.width)
     ]
@@ -403,8 +437,8 @@ _V = TypeVar("_V")
 class _Batch(Protocol):
     """Values of one point kind gathered from one run of consecutive blocks of that kind."""
 
-    def add(self, block: ObjectBlock, wire: WireLayout) -> None:
-        """Decode a block into the batch."""
+    def add(self, block: ObjectBlock, wire: WireLayout, cto: datetime | None) -> int:
+        """Decode a block into the batch, timing relative objects from `cto`; return how many it held."""
 
     def deliver(self, handler: SOEHandler, info: ResponseInfo) -> None:
         """Hand the gathered values to the handler, if there are any."""
@@ -421,7 +455,7 @@ class _Delivery(Protocol):
 class _KindDelivery(Generic[_V]):
     """A point kind's decode function and the handler callback its values go to."""
 
-    decode: Callable[[ObjectBlock, WireLayout], list[_V]]
+    decode: Callable[[ObjectBlock, WireLayout, datetime | None], list[_V]]
     deliver: Callable[[SOEHandler, list[_V], ResponseInfo], None]
 
     def batch(self) -> "_KindBatch[_V]":
@@ -436,9 +470,11 @@ class _KindBatch(Generic[_V]):
     delivery: _KindDelivery[_V]
     values: list[_V] = field(default_factory=list)
 
-    def add(self, block: ObjectBlock, wire: WireLayout) -> None:
-        """Decode a block into the batch."""
-        self.values.extend(self.delivery.decode(block, wire))
+    def add(self, block: ObjectBlock, wire: WireLayout, cto: datetime | None) -> int:
+        """Decode a block into the batch, timing relative objects from `cto`; return how many it held."""
+        decoded = self.delivery.decode(block, wire, cto)
+        self.values.extend(decoded)
+        return len(decoded)
 
     def deliver(self, handler: SOEHandler, info: ResponseInfo) -> None:
         """Hand the gathered values to the handler, if there are any."""
@@ -762,16 +798,24 @@ class Master:
         A block of another kind ends a run even when the handler lacks that kind's callback.
         A block that decodes to no values still ends a run of another kind.
 
+        A relative-time object is timed from the last common time of occurrence (group 51)
+        before it in this fragment, and has no timestamp when there is none; those objects
+        are counted in `info.relative_time_without_cto`. A CTO block does not end a run.
+
         Args:
             objects: Object blocks from response.
             info: Response information.
         """
         run_kind: PointKind | None = None
         run: _Batch | None = None
+        cto: datetime | None = None
 
         for block in objects:
             wire = layout_for(block.header.group, block.header.variation)
             if wire is None:
+                continue
+            if block.header.group == _CTO_GROUP:
+                cto = _common_time_after(block, wire, cto)
                 continue
             delivery = _DELIVERIES.get(wire.point_kind)
             if delivery is None:
@@ -781,7 +825,9 @@ class Master:
                     run.deliver(self.handler, info)
                 run_kind = wire.point_kind
                 run = delivery.batch()
-            run.add(block, wire)
+            decoded = run.add(block, wire, cto)
+            if wire.time is TimeKind.RELATIVE and cto is None:
+                info.relative_time_without_cto += decoded
 
         if run is not None:
             run.deliver(self.handler, info)

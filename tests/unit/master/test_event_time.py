@@ -1,10 +1,11 @@
-"""Absolute event timestamps delivered through the master's shared decode path.
+"""Event timestamps delivered through the master's shared decode path.
 
 Refs #81. IEEE 1815-2012 11.3: DNP3TIME is a UINT48 count of milliseconds
 since 1970-01-01 00:00:00 UTC, little-endian. Every layout row whose time
 field is absolute carries the same trailing 6 octets after its flag and
 value fields, so one test per delivered pair exercises the shared decode
-path once, end to end through Master.process_response.
+path once, end to end through Master.process_response. Relative-time rows
+carry a UINT16 offset from the preceding common time of occurrence.
 """
 
 import struct
@@ -12,8 +13,10 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from dnp3.master.handler import DefaultSOEHandler
+from dnp3.core.flags import DoubleBitState
+from dnp3.master.handler import DefaultSOEHandler, ResponseInfo, SOEHandler
 from dnp3.master.master import Master
+from tests.unit.master.delivery import RecordingHandler
 
 # Response header: app control (FIR+FIN, seq 1), RESPONSE function, 2-byte IIN.
 RESPONSE_HEADER = bytes([0xC1, 0x81, 0x00, 0x00])
@@ -80,6 +83,7 @@ def test_absolute_time_delivered(
     assert info is not None
     values = getattr(handler, attr)
     assert values[1].timestamp == _EXPECTED, clause
+    assert info.relative_time_without_cto == 0
 
 
 def test_no_time_row_stays_none() -> None:
@@ -93,17 +97,143 @@ def test_no_time_row_stays_none() -> None:
     assert handler.binary_inputs[1].timestamp is None
 
 
-def test_relative_time_row_stays_none() -> None:
-    """g2v3 (A.3.3) carries relative time, not absolute: timestamp stays None."""
-    handler = DefaultSOEHandler()
-    master = Master(handler=handler)
-    header = bytes([2, 3, 0x17])
-    body = bytes([0x01, 1, FLAGS_ON]) + (1234).to_bytes(2, "little")
-    data = RESPONSE_HEADER + header + body
+# A.24.1 and A.24.2: a g51 common time of occurrence (CTO) is a DNP3TIME; each
+# later relative-time object adds its UINT16 milliseconds (A.3.3, A.5.3) to the
+# immediately preceding CTO. Qualifier 0x07 is a 1-octet count with no index
+# prefix; 0x17 adds a 1-octet index prefix.
+_EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
+_CTO_MS = 1_700_000_000_000
+_CTO = _EPOCH + timedelta(milliseconds=_CTO_MS)
 
-    master.process_response(data)
+
+def _cto(ms: int, variation: int = 1) -> bytes:
+    return bytes([51, variation, 0x07, 0x01]) + ms.to_bytes(6, "little")
+
+
+def _relative(group: int, events: list[tuple[int, int, int]]) -> bytes:
+    """A g2v3 or g4v3 block of (index, flags, relative ms) objects."""
+    body = b"".join(bytes([index, flags]) + offset.to_bytes(2, "little") for index, flags, offset in events)
+    return bytes([group, 3, 0x17, len(events)]) + body
+
+
+def _process(objects: bytes, handler: SOEHandler) -> ResponseInfo:
+    info = Master(handler=handler).process_response(RESPONSE_HEADER + objects)
+    assert info is not None
+    return info
+
+
+def test_cto_then_binary_relative_events() -> None:
+    """Each g2v3 object adds its own offset to the CTO; value and flags are untouched."""
+    handler = DefaultSOEHandler()
+    info = _process(_cto(_CTO_MS) + _relative(2, [(1, FLAGS_ON, 250), (2, 0x01, 1000)]), handler)
+
+    first, second = handler.binary_inputs[1], handler.binary_inputs[2]
+    assert (first.value, first.quality, first.timestamp) == (True, 0x01, _CTO + timedelta(milliseconds=250))
+    assert (second.value, second.quality, second.timestamp) == (False, 0x01, _CTO + timedelta(milliseconds=1000))
+    assert info.relative_time_without_cto == 0
+
+
+def test_cto_then_double_bit_relative_event() -> None:
+    """g4v3 (A.5.3): state in bits 7 and 6, flags in bits 0 to 5, then the offset."""
+    handler = DefaultSOEHandler()
+    info = _process(_cto(_CTO_MS) + _relative(4, [(3, 0x81, 42)]), handler)
+
+    value = handler.double_bit_inputs[3]
+    assert (value.state, value.quality) == (DoubleBitState.ON, 0x01)
+    assert value.timestamp == _CTO + timedelta(milliseconds=42)
+    assert info.relative_time_without_cto == 0
+
+
+def test_each_cto_applies_to_the_objects_after_it() -> None:
+    """A.24.1 figure: an object's time is relative to the immediately preceding CTO.
+
+    The second CTO is earlier in time, so an object timed from the wrong CTO fails.
+    A CTO between two same-kind blocks does not split their callback.
+    """
+    second_cto_ms = _CTO_MS - 60_000
+    objects = (
+        _cto(_CTO_MS) + _relative(2, [(1, FLAGS_ON, 10)]) + _cto(second_cto_ms) + _relative(2, [(2, FLAGS_ON, 20)])
+    )
+    recorder = RecordingHandler()
+
+    info = _process(objects, recorder)
+
+    assert [(name, [(v.index, v.timestamp) for v in values]) for name, values in recorder.calls] == [
+        (
+            "on_binary_input",
+            [
+                (1, _CTO + timedelta(milliseconds=10)),
+                (2, _EPOCH + timedelta(milliseconds=second_cto_ms + 20)),
+            ],
+        ),
+    ]
+    assert info.relative_time_without_cto == 0
+
+
+def test_relative_event_without_cto_has_no_timestamp_and_is_counted() -> None:
+    """No CTO precedes the objects: no time is synthesized, and the response counts them."""
+    handler = DefaultSOEHandler()
+    info = _process(_relative(2, [(1, FLAGS_ON, 1234), (2, 0x01, 5)]), handler)
 
     assert handler.binary_inputs[1].timestamp is None
+    assert handler.binary_inputs[2].timestamp is None
+    assert handler.binary_inputs[1].value is True
+    assert info.relative_time_without_cto == 2
+
+
+def test_cto_applies_only_to_objects_after_it() -> None:
+    """An object before the fragment's first CTO has no base; the one after it does."""
+    handler = DefaultSOEHandler()
+    objects = _relative(2, [(1, FLAGS_ON, 7)]) + _cto(_CTO_MS) + _relative(4, [(3, 0x81, 7)])
+
+    info = _process(objects, handler)
+
+    assert handler.binary_inputs[1].timestamp is None
+    assert handler.double_bit_inputs[3].timestamp == _CTO + timedelta(milliseconds=7)
+    assert info.relative_time_without_cto == 1
+
+
+def test_cto_does_not_carry_into_the_next_fragment() -> None:
+    """A CTO in one response is not the base for a relative object in the next."""
+    handler = DefaultSOEHandler()
+    master = Master(handler=handler)
+    first = master.process_response(RESPONSE_HEADER + _cto(_CTO_MS) + _relative(2, [(1, FLAGS_ON, 1)]))
+    second = master.process_response(RESPONSE_HEADER + _relative(2, [(2, FLAGS_ON, 1)]))
+
+    assert first is not None
+    assert second is not None
+    assert handler.binary_inputs[1].timestamp == _CTO + timedelta(milliseconds=1)
+    assert handler.binary_inputs[2].timestamp is None
+    assert (first.relative_time_without_cto, second.relative_time_without_cto) == (0, 1)
+
+
+def test_unsynchronized_cto_gives_the_same_arithmetic() -> None:
+    """A.24.2: g51v2 differs from g51v1 only in the outstation's synchronization state."""
+    handler = DefaultSOEHandler()
+    info = _process(_cto(_CTO_MS, variation=2) + _relative(2, [(1, FLAGS_ON, 250)]), handler)
+
+    assert handler.binary_inputs[1].timestamp == _CTO + timedelta(milliseconds=250)
+    assert info.relative_time_without_cto == 0
+
+
+def test_relative_offset_at_its_maximum() -> None:
+    """The UINT16 offset is unsigned: 0xFFFF is 65535 ms after the CTO, not 1 ms before it."""
+    handler = DefaultSOEHandler()
+    _process(_cto(_CTO_MS) + _relative(2, [(1, FLAGS_ON, 0xFFFF)]), handler)
+
+    assert handler.binary_inputs[1].timestamp == _CTO + timedelta(milliseconds=65535)
+
+
+def test_unrepresentable_cto_is_not_replaced_by_an_earlier_one() -> None:
+    """A CTO past year 9999 leaves its objects with no time, not the time of an older CTO."""
+    handler = DefaultSOEHandler()
+    past_year_9999 = int.from_bytes(bytes([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF]), "little")
+    objects = _cto(_CTO_MS) + _cto(past_year_9999) + _relative(2, [(1, FLAGS_ON, 5)])
+
+    info = _process(objects, handler)
+
+    assert handler.binary_inputs[1].timestamp is None
+    assert info.relative_time_without_cto == 1
 
 
 def test_time_field_beyond_datetime_range_yields_none_not_a_crash() -> None:
@@ -159,3 +289,16 @@ def test_time_field_one_ms_past_max_yields_none() -> None:
     value = handler.analog_inputs[1]
     assert value.value == -1500.0
     assert value.timestamp is None
+
+
+def test_cto_header_with_no_objects_keeps_the_preceding_cto() -> None:
+    """A g51 header with a count of 0 carries no CTO, so the one before it still applies."""
+    handler = DefaultSOEHandler()
+    empty_cto = bytes([51, 1, 0x07, 0x00])
+    objects = _cto(_CTO_MS) + empty_cto + _relative(2, [(1, FLAGS_ON, 5)])
+
+    info = _process(objects, handler)
+
+    assert info.truncation is None
+    assert handler.binary_inputs[1].timestamp == _CTO + timedelta(milliseconds=5)
+    assert info.relative_time_without_cto == 0

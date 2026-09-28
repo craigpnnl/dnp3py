@@ -103,6 +103,10 @@ class ResponseInfo:
         con: True if the outstation requested a CONFIRM for this fragment.
         truncation: Set when the object data was cut short. Values from the
             blocks before the stopping block are delivered; none from it or after.
+        relative_time_without_cto: Relative-time event objects in this fragment
+            delivered with no timestamp because no usable common time of
+            occurrence (group 51) preceded them in the fragment. Counted as
+            the objects are decoded, so a callback sees the count so far.
     """
 
     function: FunctionCode
@@ -113,6 +117,7 @@ class ResponseInfo:
     fin: bool = True
     con: bool = False
     truncation: Truncation | None = None
+    relative_time_without_cto: int = 0
 
 
 @runtime_checkable
