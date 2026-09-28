@@ -55,7 +55,7 @@ class ObjectBlock:
 
 
 class TruncationReason(Enum):
-    """Why response parsing stopped before the end of the object data."""
+    """Why object parsing stopped before the end of the object data."""
 
     # Gaps in this library: the frame may be valid, but this library cannot size it.
     UNKNOWN_WIDTH = "unknown_width"  # no layout row and no usable registered size
@@ -73,7 +73,7 @@ class TruncationReason(Enum):
 
 @dataclass(frozen=True, slots=True)
 class Truncation:
-    """Where and why response parsing stopped.
+    """Where and why object parsing stopped.
 
     The stopping block is not among the parsed blocks; the blocks before it are.
     An over-declared count whose data still fits inside the fragment frames as a
@@ -83,7 +83,7 @@ class Truncation:
     Attributes:
         reason: Why parsing stopped.
         offset: Index of the stopping block's first octet within the object data,
-            which starts after the response header.
+            which starts after the request or response header.
         group: The stopping block's group, or None for TRAILING_OCTETS.
         variation: The stopping block's variation, or None for TRAILING_OCTETS.
         qualifier: The stopping block's qualifier, or None for TRAILING_OCTETS.
@@ -103,10 +103,13 @@ class RequestFragment:
     Attributes:
         header: Request header (2 bytes).
         objects: List of object blocks.
+        truncation: Set when parsing stopped before the end of the object data.
+            ``to_bytes()`` then does not reproduce the parsed input.
     """
 
     header: RequestHeader
     objects: "Sequence[ObjectBlock]" = field(default_factory=tuple)
+    truncation: Truncation | None = None
 
     def to_bytes(self) -> bytes:
         """Serialize to bytes.

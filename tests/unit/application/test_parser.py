@@ -513,6 +513,7 @@ class TestResponseBlocksFramedFromLayout:
             (10, 1, 0, 1),  # A.6.1: 1 point, 1 bit
             (3, 1, 4, 2),  # A.4.1: 5 points, 2 bits each
             (3, 1, 3, 1),  # 4 points fill one octet exactly
+            (80, 1, 15, 2),  # A.28.1: 16 internal indications, 1 bit each
         ],
     )
     def test_packed_block_then_g30v1(self, group: int, variation: int, stop: int, octets: int) -> None:
@@ -760,3 +761,226 @@ class TestTruncationType:
 
         with pytest.raises(dataclasses.FrozenInstanceError):
             truncation.offset = 0  # type: ignore[misc]
+
+
+# Request object blocks, built from IEEE 1815-2012 Annex A rather than this library's encoders.
+# g12v1 (A.8.1), qualifier 0x17, one LATCH_ON object: code, count, on-time, off-time, status.
+_CROB_BODY = bytes.fromhex("03 01 00000000 00000000 00")
+
+
+def _crob(index: int, count: int = 1) -> bytes:
+    return bytes([0x0C, 0x01, 0x17, count, index]) + _CROB_BODY
+
+
+# g41v1 (A.20.1: INT32, status), index 4, value 1000.
+_G41V1 = bytes.fromhex("29 01 17 01 04 E8030000 00")
+# g41v2 (A.20.2: INT16, status), index 3, value 100.
+_G41V2 = bytes.fromhex("29 02 17 01 03 6400 00")
+# g41v4 (A.20.4: FLT64, status), index 5, value 0.5.
+_G41V4 = bytes.fromhex("29 04 17 01 05 000000000000E03F 00")
+# g80v1 (A.28.1: one bit per indication), start-stop 7..7, bit clear.
+_G80V1 = bytes.fromhex("50 01 00 07 07 00")
+# g50v1 (A.23.1: DNP3TIME), count 1.
+_G50V1 = bytes.fromhex("32 01 07 01 00E8764801 00")
+_G60V1_ALL = bytes.fromhex("3C 01 06")
+
+# Functions whose requests carry object headers but no object data (IEEE 1815-2012 4.4).
+_HEADER_ONLY = frozenset(
+    {
+        FunctionCode.CONFIRM,
+        FunctionCode.READ,
+        FunctionCode.IMMEDIATE_FREEZE,
+        FunctionCode.IMMEDIATE_FREEZE_NO_ACK,
+        FunctionCode.FREEZE_CLEAR,
+        FunctionCode.FREEZE_CLEAR_NO_ACK,
+        FunctionCode.COLD_RESTART,
+        FunctionCode.WARM_RESTART,
+        FunctionCode.ENABLE_UNSOLICITED,
+        FunctionCode.DISABLE_UNSOLICITED,
+        FunctionCode.ASSIGN_CLASS,
+        FunctionCode.DELAY_MEASURE,
+        FunctionCode.RECORD_CURRENT_TIME,
+    }
+)
+_REQUEST_FUNCTIONS = [fc for fc in FunctionCode if fc not in RESPONSE_FUNCTION_CODES]
+
+
+def _request(function: FunctionCode, objects: bytes, seq: int = 3) -> RequestFragment:
+    return parse_request(bytes([0xC0 | seq, function.value]) + objects)
+
+
+class TestRequestBlocksAreFramedSeparately:
+    """Each request object header gets its own block, sized by what the function carries."""
+
+    @pytest.mark.parametrize(
+        ("function", "wires"),
+        [
+            (FunctionCode.SELECT, [_crob(1), _crob(2)]),
+            (FunctionCode.SELECT, [_crob(1), _G41V2]),
+            (FunctionCode.OPERATE, [_G41V1, _G41V4]),
+            (FunctionCode.DIRECT_OPERATE, [_crob(1), _crob(2)]),
+            (FunctionCode.DIRECT_OPERATE_NO_ACK, [_G41V2, _crob(7)]),
+            (FunctionCode.WRITE, [_G80V1, _G50V1]),
+            (FunctionCode.WRITE, [_G50V1, _G80V1]),
+        ],
+        ids=[
+            "select-two-crobs",
+            "select-crob-and-g41v2",
+            "operate-g41v1-and-g41v4",
+            "direct-operate-two-crobs",
+            "direct-operate-no-ack-g41v2-and-crob",
+            "write-g80v1-then-g50v1",
+            "write-g50v1-then-g80v1",
+        ],
+    )
+    def test_object_blocks_are_each_sized_by_their_width(self, function: FunctionCode, wires: list[bytes]) -> None:
+        fragment = _request(function, b"".join(wires))
+
+        assert fragment.objects == tuple(_block(wire) for wire in wires)
+        assert fragment.truncation is None
+
+    def test_crob_block_data_is_its_count_index_and_eleven_octets(self) -> None:
+        fragment = _request(FunctionCode.SELECT, _crob(1) + _crob(2))
+
+        assert [block.data for block in fragment.objects] == [bytes([1, 1]) + _CROB_BODY, bytes([1, 2]) + _CROB_BODY]
+
+    def test_ranged_read_of_two_groups_gives_each_its_range(self) -> None:
+        fragment = _request(FunctionCode.READ, bytes.fromhex("01 02 00 00 01  1E 01 00 00 01"))
+
+        assert [(b.header.group, b.header.variation, b.data) for b in fragment.objects] == [
+            (1, 2, bytes([0x00, 0x01])),
+            (30, 1, bytes([0x00, 0x01])),
+        ]
+        assert fragment.truncation is None
+
+    def test_read_index_list_is_the_whole_block(self) -> None:
+        fragment = _request(FunctionCode.READ, bytes.fromhex("01 02 17 03 01 04 09") + _G60V1_ALL)
+
+        assert fragment.objects == (
+            ObjectBlock(header=ObjectHeader(1, 2, 0x17), data=bytes([0x03, 0x01, 0x04, 0x09])),
+            _block(_G60V1_ALL),
+        )
+        assert fragment.truncation is None
+
+    def test_read_two_octet_index_list_is_sized_by_its_prefix(self) -> None:
+        index_list = bytes.fromhex("1E 01 28 0200 0500 0001")
+
+        fragment = _request(FunctionCode.READ, index_list + _G60V1_ALL)
+
+        assert fragment.objects == (_block(index_list), _block(_G60V1_ALL))
+
+    @pytest.mark.parametrize("function", _REQUEST_FUNCTIONS, ids=lambda fc: fc.name)
+    def test_function_code_picks_header_only_or_object_framing(self, function: FunctionCode) -> None:
+        """g1v2 index 5 then g60v1: header-only framing gives two blocks, object framing reads 0x3C as a value."""
+        index_block = bytes.fromhex("01 02 17 01 05")
+
+        fragment = _request(function, index_block + _G60V1_ALL)
+
+        if function in _HEADER_ONLY:
+            assert fragment.objects == (_block(index_block), _block(_G60V1_ALL))
+            assert fragment.truncation is None
+        else:
+            assert fragment.objects == (_block(index_block + bytes([0x3C])),)
+            assert fragment.truncation == Truncation(TruncationReason.TRAILING_OCTETS, 6)
+
+    def test_header_only_start_stop_with_stop_below_start_is_its_range(self) -> None:
+        fragment = _request(FunctionCode.READ, bytes([0x1E, 0x00, 0x00, 0x05, 0x03]) + _G60V1_ALL)
+
+        assert fragment.objects == (_block(bytes([0x1E, 0x00, 0x00, 0x05, 0x03])), _block(_G60V1_ALL))
+        assert fragment.truncation is None
+
+    def test_header_only_index_prefixed_start_stop_below_start_consumes_its_range(self) -> None:
+        prefixed = bytes([0x01, 0x02, 0x10, 0x05, 0x03])
+
+        fragment = _request(FunctionCode.READ, prefixed + _G60V1_ALL)
+
+        assert fragment.objects == (_block(prefixed), _block(_G60V1_ALL))
+        assert fragment.truncation is None
+
+    def test_parse_object_headers_consumes_the_index_list_only(self) -> None:
+        assert parse_object_headers(bytes.fromhex("01 02 17 02 01 04") + _G60V1_ALL) == [
+            _block(bytes.fromhex("01 02 17 02 01 04")),
+            _block(_G60V1_ALL),
+        ]
+
+    def test_parse_object_headers_drops_what_cannot_be_framed(self) -> None:
+        assert parse_object_headers(_G60V1_ALL + bytes([0x01, 0x02, 0x00, 0x00])) == [_block(_G60V1_ALL)]
+
+    def test_request_with_no_objects_has_no_truncation(self) -> None:
+        fragment = _request(FunctionCode.COLD_RESTART, b"")
+
+        assert fragment.objects == ()
+        assert fragment.truncation is None
+
+
+class TestRequestFramingStops:
+    """A request block that cannot be framed is absent, and so is every block after it.
+
+    Offsets count from the first octet after the 2-octet request header.
+    """
+
+    def test_unknown_width_stops_at_the_unknown_block(self) -> None:
+        """IEEE 1815-2012 Table 4-14 names g12v2 as an object this outstation does not know."""
+        g12v2 = bytes([0x0C, 0x02, 0x17, 0x01, 0x02]) + _CROB_BODY
+
+        fragment = _request(FunctionCode.SELECT, _crob(1) + g12v2 + _crob(3))
+
+        assert fragment.objects == (_block(_crob(1)),)
+        assert fragment.truncation == Truncation(TruncationReason.UNKNOWN_WIDTH, 16, 12, 2, 0x17)
+
+    def test_last_block_declaring_more_objects_than_present_stops(self) -> None:
+        fragment = _request(FunctionCode.SELECT, _crob(1) + _crob(2, count=2))
+
+        assert fragment.objects == (_block(_crob(1)),)
+        assert fragment.truncation == Truncation(TruncationReason.DATA_SHORTER_THAN_DECLARED, 16, 12, 1, 0x17)
+
+    def test_reserved_qualifier_in_a_read_stops(self) -> None:
+        fragment = _request(FunctionCode.READ, bytes.fromhex("01 02 00 00 01  1E 01 0A") + _G60V1_ALL)
+
+        assert fragment.objects == (_block(bytes.fromhex("01 02 00 00 01")),)
+        assert fragment.truncation == Truncation(TruncationReason.RESERVED_QUALIFIER, 5, 30, 1, 0x0A)
+
+    def test_index_list_past_the_end_stops_a_read(self) -> None:
+        fragment = _request(FunctionCode.READ, _G60V1_ALL + bytes.fromhex("01 02 17 03 01 04"))
+
+        assert fragment.objects == (_block(_G60V1_ALL),)
+        assert fragment.truncation == Truncation(TruncationReason.DATA_SHORTER_THAN_DECLARED, 3, 1, 2, 0x17)
+
+    def test_range_field_cut_short_stops_a_read(self) -> None:
+        fragment = _request(FunctionCode.READ, bytes([0x01, 0x02, 0x00, 0x00]))
+
+        assert fragment.objects == ()
+        assert fragment.truncation == Truncation(TruncationReason.DATA_SHORTER_THAN_DECLARED, 0, 1, 2, 0x00)
+
+    @pytest.mark.parametrize("function", [FunctionCode.READ, FunctionCode.SELECT], ids=["read", "select"])
+    @pytest.mark.parametrize(
+        ("qualifier", "reason"),
+        [(0x03, TruncationReason.UNSUPPORTED_RANGE), (0x47, TruncationReason.SIZE_PREFIX)],
+        ids=["virtual-address-range", "size-prefix"],
+    )
+    def test_unsupported_qualifier_stops(
+        self, function: FunctionCode, qualifier: int, reason: TruncationReason
+    ) -> None:
+        fragment = _request(function, bytes([0x0C, 0x01, qualifier, 0x01, 0x01]) + _CROB_BODY)
+
+        assert fragment.objects == ()
+        assert fragment.truncation == Truncation(reason, 0, 12, 1, qualifier)
+
+    def test_object_start_stop_naming_no_object_stops(self) -> None:
+        fragment = _request(FunctionCode.SELECT, bytes([0x0C, 0x01, 0x00, 0x05, 0x04]) + _CROB_BODY)
+
+        assert fragment.objects == ()
+        assert fragment.truncation == Truncation(TruncationReason.RANGE_NAMES_NO_OBJECT, 0, 12, 1, 0x00)
+
+    def test_packed_object_with_index_prefix_stops(self) -> None:
+        fragment = _request(FunctionCode.WRITE, bytes.fromhex("50 01 17 01 07 00"))
+
+        assert fragment.objects == ()
+        assert fragment.truncation == Truncation(TruncationReason.PACKED_WITH_INDEX_PREFIX, 0, 80, 1, 0x17)
+
+    @pytest.mark.parametrize("trailing", [bytes([0x01]), bytes([0x01, 0x02])], ids=["one", "two"])
+    def test_trailing_octets_stop(self, trailing: bytes) -> None:
+        fragment = _request(FunctionCode.READ, _G60V1_ALL + trailing)
+
+        assert fragment.objects == (_block(_G60V1_ALL),)
+        assert fragment.truncation == Truncation(TruncationReason.TRAILING_OCTETS, 3)

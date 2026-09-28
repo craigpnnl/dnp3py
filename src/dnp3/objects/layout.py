@@ -40,6 +40,7 @@ class PointKind(Enum):
     TIME = "time"
     TIME_DELAY = "time_delay"
     CLASS = "class"
+    INTERNAL_INDICATION = "internal_indication"
 
 
 class ValueCodec(Enum):
@@ -295,6 +296,8 @@ _TABLE: dict[tuple[int, int], WireLayout] = {
     (60, 2): _octets(PointKind.CLASS, 0, ValueCodec.NONE, flags=False),
     (60, 3): _octets(PointKind.CLASS, 0, ValueCodec.NONE, flags=False),
     (60, 4): _octets(PointKind.CLASS, 0, ValueCodec.NONE, flags=False),
+    # A.28.1: one bit per internal indication, written to clear DEVICE_RESTART.
+    (80, 1): _packed(PointKind.INTERNAL_INDICATION, 1),
 }
 
 LAYOUTS: Mapping[tuple[int, int], WireLayout] = MappingProxyType(_TABLE)

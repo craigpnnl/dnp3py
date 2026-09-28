@@ -9,6 +9,7 @@ import math
 import struct
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from functools import partial
 from typing import Any
 
 from dnp3.application.builder import (
@@ -16,7 +17,7 @@ from dnp3.application.builder import (
     build_response,
     build_unsolicited_response,
 )
-from dnp3.application.fragment import ObjectBlock, RequestFragment, ResponseFragment
+from dnp3.application.fragment import ObjectBlock, RequestFragment, ResponseFragment, Truncation, TruncationReason
 from dnp3.application.header import MAX_APP_SEQUENCE, RESPONSE_HEADER_SIZE
 from dnp3.application.parser import parse_request
 from dnp3.application.qualifiers import (
@@ -143,6 +144,31 @@ QUALIFIER_CROB_2BYTE = 0x28
 
 # CROB body size in bytes: control_code(1) + op_count(1) + on_time(4) + off_time(4) + status(1)
 _CROB_BODY_BYTES = 11
+
+# IEEE 1815-2012 4.4.5 to 4.4.8: an outstation shall not respond to these functions.
+_NO_ACK_FUNCTIONS = frozenset(
+    {
+        FunctionCode.DIRECT_OPERATE_NO_ACK,
+        FunctionCode.IMMEDIATE_FREEZE_NO_ACK,
+        FunctionCode.FREEZE_CLEAR_NO_ACK,
+        FunctionCode.FREEZE_AT_TIME_NO_ACK,
+    }
+)
+
+# Runs a request's objects and returns what is sent back.
+_Executor = Callable[[RequestFragment], list[ResponseFragment]]
+
+
+def _answered(handle: Callable[[RequestFragment], ResponseFragment]) -> _Executor:
+    return lambda request: [handle(request)]
+
+
+def _unanswered(handle: Callable[[RequestFragment], object]) -> _Executor:
+    def execute(request: RequestFragment) -> list[ResponseFragment]:
+        handle(request)
+        return []
+
+    return execute
 
 
 def _split_response_objects(
@@ -763,11 +789,17 @@ class Outstation:
         self._state.clear_expired_selects(self.config.select_timeout)
         selection = self._state.selection_of(peer)
 
+        if function == FunctionCode.SELECT and selection is not None and seq == selection.sequence:
+            if selection.body == body and selection.response is not None:
+                return [selection.response]
+            return []
+
+        truncation = request.truncation
+        if truncation is not None and self._executes(function):
+            self._state.terminate(peer)
+            return self._refuse_unframed(request, truncation)
+
         if function == FunctionCode.SELECT:
-            if selection is not None and seq == selection.sequence:
-                if selection.body == body and selection.response is not None:
-                    return [selection.response]
-                return []
             selection = self._state.begin_selection(peer, seq, body)
             try:
                 response = self._handle_select(request, peer=peer)
@@ -800,45 +832,57 @@ class Outstation:
             self._state.terminate(peer)
         return self._dispatch(request)
 
+    def _refuse_unframed(self, request: RequestFragment, truncation: Truncation) -> list[ResponseFragment]:
+        """Answer a request with a block that could not be framed, having executed none of it.
+
+        Later block boundaries are unknown (IEEE 1815-2012 4.2.2.7), so nothing in the
+        request runs. An object of unknown width is one the outstation does not know,
+        IIN2.1 (Table 4-14); any other failure is a malformed request, IIN2.2 (4.5.11).
+        A NO_ACK function is never answered.
+        """
+        if request.header.function in _NO_ACK_FUNCTIONS:
+            return []
+        unknown = truncation.reason is TruncationReason.UNKNOWN_WIDTH
+        error = IIN.OBJECT_UNKNOWN if unknown else IIN.PARAMETER_ERROR
+        return [build_null_response(iin=self.iin | error, seq=request.header.control.seq)]
+
+    def _executes(self, function: FunctionCode) -> bool:
+        """Whether a request of this function runs the objects it carries.
+
+        CONFIRM runs none, and an unsupported function answers NO_FUNC_CODE_SUPPORT
+        whether or not its objects framed.
+        """
+        return function in (FunctionCode.SELECT, FunctionCode.OPERATE) or function in self._executors()
+
+    def _executors(self) -> dict[FunctionCode, _Executor]:
+        """The executor of every supported function other than SELECT, OPERATE and CONFIRM."""
+        return {
+            FunctionCode.READ: self._handle_read,
+            FunctionCode.WRITE: _answered(self._handle_write),
+            FunctionCode.DIRECT_OPERATE: _answered(self._handle_direct_operate),
+            FunctionCode.DIRECT_OPERATE_NO_ACK: _unanswered(self._handle_direct_operate),
+            FunctionCode.COLD_RESTART: _answered(self._handle_cold_restart),
+            FunctionCode.WARM_RESTART: _answered(self._handle_warm_restart),
+            FunctionCode.DELAY_MEASURE: _answered(self._handle_delay_measure),
+            FunctionCode.ENABLE_UNSOLICITED: _answered(self._handle_enable_unsolicited),
+            FunctionCode.DISABLE_UNSOLICITED: _answered(self._handle_disable_unsolicited),
+            FunctionCode.IMMEDIATE_FREEZE: _answered(partial(self._handle_freeze, clear=False)),
+            FunctionCode.FREEZE_CLEAR: _answered(partial(self._handle_freeze, clear=True)),
+            FunctionCode.IMMEDIATE_FREEZE_NO_ACK: _unanswered(partial(self._handle_freeze, clear=False)),
+            FunctionCode.FREEZE_CLEAR_NO_ACK: _unanswered(partial(self._handle_freeze, clear=True)),
+        }
+
     def _dispatch(self, request: RequestFragment) -> list[ResponseFragment]:
         """Dispatch a request that is neither SELECT nor OPERATE by function code."""
         header = request.header
         function = header.function
 
-        if function == FunctionCode.READ:
-            return self._handle_read(request)
-        if function == FunctionCode.WRITE:
-            return [self._handle_write(request)]
-        if function == FunctionCode.DIRECT_OPERATE:
-            return [self._handle_direct_operate(request)]
-        if function == FunctionCode.DIRECT_OPERATE_NO_ACK:
-            self._handle_direct_operate(request)
-            return []  # No response for NO_ACK
-        if function == FunctionCode.COLD_RESTART:
-            return [self._handle_cold_restart(request)]
-        if function == FunctionCode.WARM_RESTART:
-            return [self._handle_warm_restart(request)]
-        if function == FunctionCode.DELAY_MEASURE:
-            return [self._handle_delay_measure(request)]
-        if function == FunctionCode.ENABLE_UNSOLICITED:
-            return [self._handle_enable_unsolicited(request)]
-        if function == FunctionCode.DISABLE_UNSOLICITED:
-            return [self._handle_disable_unsolicited(request)]
         if function == FunctionCode.CONFIRM:
             result = self._handle_confirm(request)
             return [result] if result is not None else []
-        if function == FunctionCode.IMMEDIATE_FREEZE:
-            return [self._handle_freeze(request, clear=False)]
-        if function == FunctionCode.FREEZE_CLEAR:
-            return [self._handle_freeze(request, clear=True)]
-        if function == FunctionCode.IMMEDIATE_FREEZE_NO_ACK:
-            self._handle_freeze(request, clear=False)
-            return []  # No response for NO_ACK
-        if function == FunctionCode.FREEZE_CLEAR_NO_ACK:
-            self._handle_freeze(request, clear=True)
-            return []  # No response for NO_ACK
-
-        # Unsupported function code
+        execute = self._executors().get(function)
+        if execute is not None:
+            return execute(request)
         return [
             build_null_response(
                 iin=self.iin | IIN.NO_FUNC_CODE_SUPPORT,

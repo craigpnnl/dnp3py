@@ -181,6 +181,14 @@ class TestTruncationIsLogged:
 class TestValidFramesUnchanged:
     """Frames the parser reads to the end deliver every value and carry no truncation."""
 
+    def test_internal_indications_block_does_not_stop_the_response(self) -> None:
+        # g80v1 (A.28.1), start-stop 0..15, one bit per indication: DEVICE_RESTART (bit 7) set.
+        g80v1 = bytes([0x50, 0x01, 0x00, 0x00, 0x0F, 0x80, 0x00])
+        info, recorder = process(g80v1 + G7)
+
+        assert recorder.values == {"analog_input": [(7, 200.0, 0x01)]}
+        assert info.truncation is None
+
     def test_matching_count_delivers_both_blocks(self) -> None:
         matching = bytes([0x1E, 0x01, 0x17, 0x01, 0x05, 0x01, 0x64, 0x00, 0x00, 0x00])
         info, recorder = process(matching + G7)
