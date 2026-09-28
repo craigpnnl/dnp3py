@@ -20,7 +20,7 @@ import time
 import pytest
 
 from dnp3.application.builder import build_response
-from dnp3.application.fragment import ObjectBlock
+from dnp3.application.fragment import ObjectBlock, Truncation, TruncationReason
 from dnp3.application.qualifiers import ObjectHeader
 from dnp3.core.enums import FunctionCode, LinkFunctionCode
 from dnp3.datalink.builder import (
@@ -1857,3 +1857,31 @@ class TestTruncatedFragments:
         assert len(warnings) == 1
         assert "data_shorter_than_declared" in warnings[0].getMessage()
         assert "group 30" in warnings[0].getMessage()
+
+    async def test_truncated_solicited_fragment_is_confirmed_and_returns_its_truncation(self) -> None:
+        channel_a, channel_b = create_channel_pair()
+        await channel_a.open()
+        await channel_b.open()
+        runner, handler = make_runner(channel_a)
+        await runner.open()
+        peer = FakeOutstation(channel_b)
+        seq_holder: list[int] = []
+
+        async def respond() -> None:
+            seq = await peer.read_request_seq()
+            seq_holder.append(seq)
+            # FIR, FIN, CON.
+            header = bytes([0xE0 | seq, FunctionCode.RESPONSE.value, 0x00, 0x00])
+            await peer.send_fragment(header + OVER_DECLARED_G30V1 + G30V1_INDEX_7)
+
+        responder = asyncio.create_task(respond())
+        infos = await runner.integrity_poll()
+        await responder
+
+        assert [(i.fin, i.con) for i in infos] == [(True, True)]
+        assert infos[0].truncation == Truncation(
+            reason=TruncationReason.DATA_SHORTER_THAN_DECLARED, offset=0, group=30, variation=1, qualifier=0x17
+        )
+        assert handler.analog_inputs == {}
+        confirms = await peer.read_fragments(1, timeout=0.5)
+        assert confirms == [bytes([0xC0 | seq_holder[0], FunctionCode.CONFIRM.value])]
