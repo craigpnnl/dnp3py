@@ -14,6 +14,19 @@ from dnp3.outstation.handler import CommandResult, DefaultCommandHandler
 
 __all__ = ["MesaCommandHandler"]
 
+# IEEE 1815.2-2025 5.6.2: every binary output behaves as latched and pulse times
+# are ignored. Value is the latched state a code sets; None means no change.
+# A code absent from this map is not carried out and gets NOT_SUPPORTED.
+_LATCH_STATE: dict[int, bool | None] = {
+    ControlCode.NUL: None,
+    ControlCode.LATCH_ON: True,
+    ControlCode.PULSE_ON: True,
+    ControlCode.CLOSE_PULSE_ON: True,
+    ControlCode.LATCH_OFF: False,
+    ControlCode.PULSE_OFF: False,
+    ControlCode.TRIP_PULSE_ON: False,
+}
+
 
 class MesaCommandHandler(DefaultCommandHandler):
     """Command handler that applies MESA profile semantics.
@@ -45,16 +58,31 @@ class MesaCommandHandler(DefaultCommandHandler):
             return CommandResult.not_supported(f"Binary output {index} not found")
         return None
 
-    def _execute_binary_output(self, index: int, code: ControlCode) -> CommandResult:
-        """Validate and apply a binary output command."""
+    def _check_binary_output(self, index: int, code: ControlCode, count: int) -> CommandResult | None:
+        """Return an error result if the command would be refused, else None.
+
+        SELECT and OPERATE share this check so a SELECT is refused exactly
+        when the OPERATE would be.
+        """
         err = self._validate_binary_output(index)
         if err is not None:
             return err
+        if code not in _LATCH_STATE:
+            return CommandResult.not_supported(f"Control code 0x{int(code):02X} not supported")
+        # Count 0 is a no-op that reports the status execution would get (IEEE 1815-2012 A.8.1.2.2).
+        if count > 1:
+            return CommandResult.not_supported(f"Count {count} not supported")
+        return None
 
-        if code == ControlCode.LATCH_ON:
-            self._database.update_binary_output(index, value=True)
-        elif code == ControlCode.LATCH_OFF:
-            self._database.update_binary_output(index, value=False)
+    def _execute_binary_output(self, index: int, code: ControlCode, count: int) -> CommandResult:
+        """Validate and apply a binary output command."""
+        err = self._check_binary_output(index, code, count)
+        if err is not None:
+            return err
+
+        state = _LATCH_STATE[code]
+        if state is not None and count == 1:
+            self._database.update_binary_output(index, value=state)
 
         return CommandResult.success()
 
@@ -68,8 +96,8 @@ class MesaCommandHandler(DefaultCommandHandler):
         on_time: int,
         off_time: int,
     ) -> CommandResult:
-        """Validate that the binary output exists (no execution)."""
-        err = self._validate_binary_output(index)
+        """Validate the command without executing it."""
+        err = self._check_binary_output(index, code, count)
         if err is not None:
             return err
         return CommandResult.success()
@@ -84,7 +112,7 @@ class MesaCommandHandler(DefaultCommandHandler):
         select_sequence: int,
     ) -> CommandResult:
         """Execute a binary output command after prior SELECT."""
-        return self._execute_binary_output(index, code)
+        return self._execute_binary_output(index, code, count)
 
     def direct_operate_binary_output(
         self,
@@ -95,7 +123,7 @@ class MesaCommandHandler(DefaultCommandHandler):
         off_time: int,
     ) -> CommandResult:
         """Execute a binary output command without prior SELECT."""
-        return self._execute_binary_output(index, code)
+        return self._execute_binary_output(index, code, count)
 
     # -- Analog output helpers ------------------------------------------------
 
