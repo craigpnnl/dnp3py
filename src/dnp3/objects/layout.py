@@ -181,8 +181,8 @@ _TABLE: dict[tuple[int, int], WireLayout] = {
     (20, 6): _octets(_CT, 2, _UINT, flags=False),
     (20, 7): _octets(_CT, 4, _UINT, flags=False),
     (20, 8): _octets(_CT, 2, _UINT, flags=False),
-    # A.11: v5, v6 and v9-v12 carry no g20-style bare width; v5/v6/v7/v8 add flag and
-    # time, unlike g20v5/v6. v9-v12 are without-flag, unlike v1-v8.
+    # A.11: v1-v4 share g20v1-v4's flag/width shape; v5-v8 add a DNP3TIME field
+    # g20 never has; v9-v12 share g20v5-v8's without-flag, no-time shape.
     (21, 1): _octets(_FC, 4, _UINT),
     (21, 2): _octets(_FC, 2, _UINT),
     (21, 3): _octets(_FC, 4, _UINT),
