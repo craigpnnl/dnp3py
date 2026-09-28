@@ -264,6 +264,9 @@ def _decode_binary(block: ObjectBlock, wire: WireLayout) -> list[BinaryValue]:
         return []
     data = block.data
     if wire.is_packed:
+        # A.2.1 and A.6.1 pack bits over a contiguous index range; a prefixed block has no bit layout.
+        if slots.index_prefix_width:
+            return []
         return _parse_packed_binary(slots, data)
 
     values: list[BinaryValue] = []

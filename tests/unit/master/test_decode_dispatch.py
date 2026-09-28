@@ -131,6 +131,16 @@ class TestRouting:
         # A.7 defines g11v1 and g11v2 only, so a flag octet and relative time here is not a point.
         assert _dispatch(_block(11, 3, COUNT_8_INDEX_8, bytes([1, 3, 0x81, 0x12, 0x34]))) == []
 
+    @pytest.mark.parametrize("group", [1, 10], ids=["g1v1", "g10v1"])
+    def test_packed_block_with_index_prefix_delivers_nothing(self, group: int) -> None:
+        # A.2.1 and A.6.1 pack bits only over a contiguous range, so an index prefix leaves no bit layout.
+        handler = RecordingHandler()
+        master = Master(handler=handler)
+        body = bytes([group, 1, COUNT_8_INDEX_8, 1, 5, 0xFF])
+
+        assert master.process_response(RESPONSE_HEADER + body) is not None
+        assert handler.calls == []
+
 
 def _one_object(layout_width: int, *, has_flags: bool) -> bytes:
     """A single object of the given width: flag octet 0x01 if present, then zeros."""
