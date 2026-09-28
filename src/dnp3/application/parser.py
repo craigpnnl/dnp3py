@@ -52,6 +52,10 @@ _INDEX_PREFIX_CODES = frozenset(
 
 _START_STOP_CODES = frozenset({RangeCode.UINT8_START_STOP, RangeCode.UINT16_START_STOP, RangeCode.UINT32_START_STOP})
 
+# IEEE 1815-2012 Tables 4-4 and 4-5 reserve prefix code 7 and range codes 0xA and 0xC to 0xF.
+_RESERVED_PREFIX_CODE = 0x07
+_RESERVED_RANGE_CODES = frozenset({0x0A, 0x0C, 0x0D, 0x0E, 0x0F})
+
 
 # Response function codes (0x81-0x83)
 RESPONSE_FUNCTION_CODES = frozenset(
@@ -318,13 +322,9 @@ def _lookup_data_length(header: ObjectHeader) -> _DataLength | TruncationReason:
     its registered size and its index prefix.
 
     Raises:
-        ValueError: If the qualifier holds a reserved range or prefix code. Both
-            are enum lookups, so decoding them here means a reserved qualifier
-            fails in this call, where the caller guards for it, rather than
-            surfacing mid-block-parse.
+        ValueError: If the qualifier holds a prefix code or range code that is
+            not an enum member. Callers reject reserved codes first.
     """
-    # Decoded (not just validated) so a reserved qualifier raises here, and so
-    # the sizes below are keyed off codes this function has actually resolved.
     range_code = header.range_code
     prefix_code = header.prefix_code
     if get_range_size(range_code) == 0 and range_code != RangeCode.ALL_OBJECTS:
@@ -338,6 +338,10 @@ def _lookup_data_length(header: ObjectHeader) -> _DataLength | TruncationReason:
     if size is None:
         return TruncationReason.UNKNOWN_WIDTH
     return partial(_fixed_width_length, size)
+
+
+def _has_reserved_code(qualifier: int) -> bool:
+    return (qualifier >> 4) & 0x07 == _RESERVED_PREFIX_CODE or qualifier & 0x0F in _RESERVED_RANGE_CODES
 
 
 def parse_response_object_blocks(data: bytes) -> list[ObjectBlock]:
@@ -387,10 +391,9 @@ def frame_response_object_blocks(data: bytes) -> tuple[list[ObjectBlock], Trunca
             return blocks, Truncation(reason=TruncationReason.TRAILING_OCTETS, offset=offset)
 
         header = ObjectHeader.from_bytes(remaining)
-        try:
-            sized = _lookup_data_length(header)
-        except ValueError:
+        if _has_reserved_code(header.qualifier):
             return blocks, _stopped_at(TruncationReason.RESERVED_QUALIFIER, offset, header)
+        sized = _lookup_data_length(header)
 
         length_of: _DataLength | None = None
         if not isinstance(sized, TruncationReason):

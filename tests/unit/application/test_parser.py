@@ -650,12 +650,27 @@ class TestResponseFramingStops:
         assert fragment.objects == (_block(_B1),)
         assert fragment.truncation == Truncation(TruncationReason.SIZE_PREFIX, 6, 2, 1, 0x47)
 
-    @pytest.mark.parametrize("qualifier", [0x0C, 0x70], ids=["range-code-C", "prefix-code-7"])
+    @pytest.mark.parametrize(
+        "qualifier",
+        [0x0A, 0x0C, 0x0F, 0x70, 0x76],
+        ids=["range-code-A", "range-code-C", "range-code-F", "prefix-code-7", "prefix-code-7-all-objects"],
+    )
     def test_reserved_qualifier_stops(self, qualifier: int) -> None:
         fragment = self._parse(_B1 + bytes([0x01, 0x02, qualifier, 0x00, 0x00]))
 
         assert fragment.objects == (_block(_B1),)
         assert fragment.truncation == Truncation(TruncationReason.RESERVED_QUALIFIER, 6, 1, 2, qualifier)
+
+    def test_error_from_a_registered_size_is_not_reported_as_a_reserved_qualifier(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def broken_size(group: int, variation: int) -> int:
+            raise ValueError("registered size failed")
+
+        monkeypatch.setattr(parser.registry, "get_size", broken_size)
+
+        with pytest.raises(ValueError, match="registered size failed"):
+            self._parse(_B1 + bytes([0x63, 0x01, 0x00, 0x00, 0x00, 0xAB, 0xCD]))
 
     def test_packed_block_with_index_prefix_stops(self) -> None:
         """IEEE 1815-2012 A.2.1 packs bits only over a contiguous range, so an index-prefixed g1v1 has no length."""
