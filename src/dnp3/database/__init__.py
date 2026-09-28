@@ -18,6 +18,8 @@ from dnp3.database.event_buffer import (
 from dnp3.database.point import (
     AnalogInputConfig,
     AnalogInputPoint,
+    AnalogOutputConfig,
+    AnalogOutputPoint,
     BinaryInputConfig,
     BinaryInputPoint,
     BinaryOutputConfig,
@@ -35,6 +37,8 @@ __all__ = [
     # Points
     "AnalogInputConfig",
     "AnalogInputPoint",
+    "AnalogOutputConfig",
+    "AnalogOutputPoint",
     "BinaryEvent",
     "BinaryInputConfig",
     "BinaryInputPoint",

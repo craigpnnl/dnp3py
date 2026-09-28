@@ -8,6 +8,7 @@ Each point has:
 - Type-specific configuration (deadbands, etc.)
 """
 
+import math
 from dataclasses import dataclass, field
 from enum import IntEnum
 from typing import TypeVar
@@ -72,6 +73,21 @@ class AnalogInputConfig(PointConfig):
     """
 
     deadband: float = 0.0
+
+
+@dataclass
+class AnalogOutputConfig(PointConfig):
+    """Configuration for analog output points.
+
+    Attributes:
+        event_class: Overrides the base default to NONE: analog output
+            events (group 42) are not implemented yet.
+        track_commands: When True, the outstation updates this point after
+            a successful group 41 command completes.
+    """
+
+    event_class: EventClass = EventClass.NONE
+    track_commands: bool = True
 
 
 @dataclass
@@ -237,6 +253,64 @@ class AnalogInputPoint:
         if change >= self.config.deadband:
             self.last_event_value = value
             return True
+
+        return False
+
+    @property
+    def is_online(self) -> bool:
+        """Check if point is online."""
+        return bool(self.quality & AnalogQuality.ONLINE)
+
+
+@dataclass
+class AnalogOutputPoint:
+    """Analog output point state.
+
+    Clause 11.9.2.2: the status value represents the analog output value.
+
+    Attributes:
+        index: Point index.
+        value: Current analog output status value.
+        quality: Quality flags.
+        timestamp: Time of last update.
+        config: Point configuration.
+    """
+
+    index: int
+    value: float = 0.0
+    quality: AnalogQuality = field(default_factory=lambda: AnalogQuality.RESTART)
+    timestamp: DNP3Timestamp | None = None
+    config: AnalogOutputConfig = field(default_factory=AnalogOutputConfig)
+
+    def update(
+        self,
+        value: float,
+        quality: AnalogQuality | None = None,
+        timestamp: DNP3Timestamp | None = None,
+    ) -> bool:
+        """Update point value.
+
+        Args:
+            value: New analog output status value.
+            quality: New quality flags (defaults to ONLINE).
+            timestamp: Time of update (optional).
+
+        Returns:
+            False. Analog output points do not generate events in this issue.
+
+        Raises:
+            ValueError: If value is NaN.
+        """
+        if math.isnan(value):
+            msg = "Analog output value must not be NaN"
+            raise ValueError(msg)
+
+        if quality is None:
+            quality = AnalogQuality.ONLINE
+
+        self.value = value
+        self.quality = quality
+        self.timestamp = timestamp
 
         return False
 
