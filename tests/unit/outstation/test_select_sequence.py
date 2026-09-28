@@ -369,6 +369,18 @@ class TestHandlerRaises:
         assert _statuses(_operate(outstation, MASTER_A, 5, both)) == [(5, NO_SELECT), (6, NO_SELECT)]
         assert handler.operates == []
 
+    def test_raise_partway_through_operate_ends_the_selection(self) -> None:
+        outstation, handler = _outstation()
+        three = _crob_block((5, 1000), (6, 6000), (7, 7000))
+        assert _statuses(_select(outstation, MASTER_A, 2, three)) == [(5, SUCCESS), (6, SUCCESS), (7, SUCCESS)]
+        handler.raise_on_operate.add(6)
+        with pytest.raises(_HandlerFault):
+            _operate(outstation, MASTER_A, 3, three)
+        assert handler.operates == [(5, 1000, 2)]
+
+        assert _statuses(_operate(outstation, MASTER_A, 3, three)) == [(5, NO_SELECT), (6, NO_SELECT), (7, NO_SELECT)]
+        assert handler.operates == [(5, 1000, 2)]
+
 
 class TestSelectionWithoutARequest:
     """A selection stored directly, with no SELECT request seen, is never operated by one."""

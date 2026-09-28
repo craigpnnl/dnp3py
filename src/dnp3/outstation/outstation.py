@@ -665,9 +665,11 @@ class Outstation:
             if not follows_select:
                 # Ended first, so every object answers NO_SELECT and none reaches the handler.
                 self._state.terminate(peer)
-            responses = [self._handle_operate(request, peer=peer)]
-            self._state.terminate(peer)
-            return responses
+            try:
+                return [self._handle_operate(request, peer=peer)]
+            finally:
+                # Even if the handler raised, the points it never reached must not stay armed.
+                self._state.terminate(peer)
 
         if function != FunctionCode.CONFIRM:
             self._state.terminate(peer)
