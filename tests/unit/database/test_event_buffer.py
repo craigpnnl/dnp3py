@@ -711,3 +711,172 @@ class TestEventBufferPropertyBased:
             )
 
         assert buffer.class1.count == max_events
+
+
+class TestClassBufferSerials:
+    """Tests for per-event serials on ClassBuffer: read-with-serials, remove-by-serials."""
+
+    def test_serials_are_unique_and_increasing(self) -> None:
+        """Each add gets a strictly greater serial than the one before it."""
+        buffer = ClassBuffer()
+        for i in range(5):
+            buffer.add(BinaryEvent(index=i, value=True, quality=BinaryQuality.ONLINE))
+
+        serials = [serial for serial, _event in buffer.read_with_serials()]
+        assert serials == sorted(set(serials))
+        assert len(serials) == 5
+
+    def test_read_with_serials_does_not_remove(self) -> None:
+        """read_with_serials returns events and serials without removing them."""
+        buffer = ClassBuffer()
+        event = BinaryEvent(index=0, value=True, quality=BinaryQuality.ONLINE)
+        buffer.add(event)
+
+        entries = buffer.read_with_serials()
+        assert len(entries) == 1
+        serial, read_event = entries[0]
+        assert read_event is event
+        assert buffer.count == 1
+        # Reading again returns the same serial: nothing moved.
+        assert buffer.read_with_serials() == [(serial, event)]
+
+    def test_remove_by_serials_identity_not_value(self) -> None:
+        """Two equal-valued events in one buffer: removing the earlier serial
+        leaves the later one, proving removal is by identity, not by value.
+
+        BinaryEvent compares equal by field value with no timestamp (F1), so
+        a value-based removal (`==` or `deque.remove`) cannot tell these two
+        apart and could delete the wrong one.
+        """
+        buffer = ClassBuffer()
+        first = BinaryEvent(index=7, value=True, quality=BinaryQuality.ONLINE)
+        second = BinaryEvent(index=7, value=True, quality=BinaryQuality.ONLINE)
+        assert first == second  # Precondition: value-equal, distinct objects.
+
+        buffer.add(first)
+        buffer.add(second)
+        first_serial, _ = buffer.read_with_serials()[0]
+
+        removed = buffer.remove_by_serials([first_serial])
+
+        assert removed == 1
+        remaining = buffer.read_with_serials()
+        assert len(remaining) == 1
+        assert remaining[0][1] is second
+
+    def test_remove_by_serials_removes_exactly_named_serials(self) -> None:
+        """remove_by_serials removes only the named serials, in order."""
+        buffer = ClassBuffer()
+        events = [BinaryEvent(index=i, value=True, quality=BinaryQuality.ONLINE) for i in range(5)]
+        for event in events:
+            buffer.add(event)
+        entries = buffer.read_with_serials()
+        serials_to_remove = [entries[1][0], entries[3][0]]
+
+        removed = buffer.remove_by_serials(serials_to_remove)
+
+        assert removed == 2
+        remaining_indices = [event.index for _serial, event in buffer.read_with_serials()]
+        assert remaining_indices == [0, 2, 4]
+
+    def test_remove_by_serials_unknown_serial_is_harmless(self) -> None:
+        """Removing a serial dropped by overflow, or never issued, does nothing."""
+        buffer = ClassBuffer()
+        buffer.add(BinaryEvent(index=0, value=True, quality=BinaryQuality.ONLINE))
+
+        removed = buffer.remove_by_serials([99999])
+
+        assert removed == 0
+        assert buffer.count == 1
+
+    def test_remove_by_serials_empty_input_is_harmless(self) -> None:
+        """Removing an empty serial set does nothing."""
+        buffer = ClassBuffer()
+        buffer.add(BinaryEvent(index=0, value=True, quality=BinaryQuality.ONLINE))
+
+        removed = buffer.remove_by_serials([])
+
+        assert removed == 0
+        assert buffer.count == 1
+
+    def test_overflow_drop_then_remove_dropped_serial_is_harmless(self) -> None:
+        """A serial already dropped by overflow is a no-op to remove, and the
+        surviving event's serial still removes it correctly afterward."""
+        buffer = ClassBuffer(max_size=2)
+        buffer.add(BinaryEvent(index=0, value=True, quality=BinaryQuality.ONLINE))
+        dropped_serial, _ = buffer.read_with_serials()[0]
+        buffer.add(BinaryEvent(index=1, value=True, quality=BinaryQuality.ONLINE))
+        buffer.add(BinaryEvent(index=2, value=True, quality=BinaryQuality.ONLINE))  # drops index=0
+
+        removed = buffer.remove_by_serials([dropped_serial])
+        assert removed == 0
+        assert buffer.count == 2
+
+        surviving_serial, _ = buffer.read_with_serials()[0]
+        removed_again = buffer.remove_by_serials([surviving_serial])
+        assert removed_again == 1
+        assert [event.index for _serial, event in buffer.read_with_serials()] == [2]
+
+
+class TestEventBufferSerials:
+    """Tests for EventBuffer-level serial read and cross-class remove."""
+
+    def test_serials_are_unique_across_classes(self) -> None:
+        """A serial assigned in one class is never reused in another class."""
+        buffer = EventBuffer()
+        buffer.add_binary_event(event_class=EventClass.CLASS_1, index=0, value=True, quality=BinaryQuality.ONLINE)
+        buffer.add_binary_event(event_class=EventClass.CLASS_2, index=0, value=True, quality=BinaryQuality.ONLINE)
+        buffer.add_binary_event(event_class=EventClass.CLASS_1, index=1, value=True, quality=BinaryQuality.ONLINE)
+
+        class1_serials = [serial for serial, _e in buffer.read_class_events_with_serials(EventClass.CLASS_1)]
+        class2_serials = [serial for serial, _e in buffer.read_class_events_with_serials(EventClass.CLASS_2)]
+        assert set(class1_serials).isdisjoint(class2_serials)
+
+    def test_remove_events_by_serials_does_not_cross_classes(self) -> None:
+        """The plan's proof: queue A (class 1) and queue B (class 2) hold a
+        value-equal event each. Removing A's serial removes only A; B stays,
+        proving the removal is by identity, not by value or by position.
+        """
+        buffer = EventBuffer()
+        buffer.add_binary_event(event_class=EventClass.CLASS_1, index=3, value=True, quality=BinaryQuality.ONLINE)
+        buffer.add_binary_event(event_class=EventClass.CLASS_2, index=3, value=True, quality=BinaryQuality.ONLINE)
+        queue_a = buffer.read_class_events_with_serials(EventClass.CLASS_1)
+        queue_b_before = buffer.read_class_events_with_serials(EventClass.CLASS_2)
+        assert queue_a[0][1] == queue_b_before[0][1]  # Precondition: equal in value.
+
+        a_serial = queue_a[0][0]
+        removed = buffer.remove_events_by_serials([a_serial])
+
+        assert removed == 1
+        assert buffer.get_class_count(EventClass.CLASS_1) == 0
+        queue_b_after = buffer.read_class_events_with_serials(EventClass.CLASS_2)
+        assert len(queue_b_after) == 1
+        assert queue_b_after[0][1] is queue_b_before[0][1]
+
+    def test_read_class_events_with_serials_none_returns_empty(self) -> None:
+        """read_class_events_with_serials with NONE returns empty list."""
+        buffer = EventBuffer()
+        assert buffer.read_class_events_with_serials(EventClass.NONE) == []
+
+    def test_remove_events_by_serials_unknown_is_harmless(self) -> None:
+        """Removing an unknown serial across the whole buffer does nothing."""
+        buffer = EventBuffer()
+        buffer.add_binary_event(event_class=EventClass.CLASS_1, index=0, value=True, quality=BinaryQuality.ONLINE)
+
+        removed = buffer.remove_events_by_serials([424242])
+
+        assert removed == 0
+        assert buffer.total_count == 1
+
+    def test_existing_get_and_pop_class_events_unaffected_by_serials(self) -> None:
+        """Adding serial bookkeeping does not change the existing read/pop API."""
+        buffer = EventBuffer()
+        buffer.add_binary_event(event_class=EventClass.CLASS_1, index=0, value=True, quality=BinaryQuality.ONLINE)
+
+        events = buffer.get_class_events(EventClass.CLASS_1)
+        assert len(events) == 1
+        assert isinstance(events[0], BinaryEvent)
+
+        popped = buffer.pop_class_events(EventClass.CLASS_1)
+        assert len(popped) == 1
+        assert buffer.get_class_count(EventClass.CLASS_1) == 0
