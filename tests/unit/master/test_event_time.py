@@ -13,10 +13,12 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
+from dnp3.application.fragment import ObjectBlock
+from dnp3.application.qualifiers import ObjectHeader
 from dnp3.core.flags import DoubleBitState
-from dnp3.master.handler import DefaultSOEHandler, ResponseInfo, SOEHandler
+from dnp3.master.handler import AnalogValue, BinaryValue, DefaultSOEHandler, ResponseInfo, SOEHandler
 from dnp3.master.master import Master
-from tests.unit.master.delivery import RecordingHandler
+from tests.unit.master.delivery import RecordingHandler, response_info
 
 # Response header: app control (FIR+FIN, seq 1), RESPONSE function, 2-byte IIN.
 RESPONSE_HEADER = bytes([0xC1, 0x81, 0x00, 0x00])
@@ -302,3 +304,81 @@ def test_cto_header_with_no_objects_keeps_the_preceding_cto() -> None:
     assert info.truncation is None
     assert handler.binary_inputs[1].timestamp == _CTO + timedelta(milliseconds=5)
     assert info.relative_time_without_cto == 0
+
+
+def test_last_cto_of_a_multi_object_header_applies() -> None:
+    """A g51 header of two objects: the second is the immediately preceding CTO.
+
+    The second CTO is earlier in time, so an object timed from the first fails.
+    """
+    handler = DefaultSOEHandler()
+    second_cto_ms = _CTO_MS - 60_000
+    two_ctos = bytes([51, 1, 0x07, 0x02]) + _CTO_MS.to_bytes(6, "little") + second_cto_ms.to_bytes(6, "little")
+
+    info = _process(two_ctos + _relative(2, [(1, FLAGS_ON, 5)]), handler)
+
+    assert info.truncation is None
+    assert handler.binary_inputs[1].timestamp == _EPOCH + timedelta(milliseconds=second_cto_ms + 5)
+    assert info.relative_time_without_cto == 0
+
+
+def test_unreadable_cto_is_not_replaced_by_an_earlier_one() -> None:
+    """A g51 header whose range cannot be decoded (qualifier 0x06, no range) clears the CTO."""
+    handler = DefaultSOEHandler()
+    unreadable = bytes([51, 1, 0x06])
+    objects = _cto(_CTO_MS) + unreadable + _relative(2, [(1, FLAGS_ON, 5)])
+
+    info = _process(objects, handler)
+
+    assert info.truncation is None
+    assert handler.binary_inputs[1].timestamp is None
+    assert info.relative_time_without_cto == 1
+
+
+def test_cto_block_shorter_than_its_count_is_not_replaced_by_an_earlier_one() -> None:
+    """A g51 block declaring one object with no data clears the CTO.
+
+    The parser never frames such a block, so this builds the blocks directly.
+    """
+    recorder = RecordingHandler()
+    blocks = [
+        ObjectBlock(header=ObjectHeader(group=51, variation=1, qualifier=0x07), data=_cto(_CTO_MS)[3:]),
+        ObjectBlock(header=ObjectHeader(group=51, variation=1, qualifier=0x07), data=bytes([0x01])),
+        ObjectBlock(
+            header=ObjectHeader(group=2, variation=3, qualifier=0x17), data=_relative(2, [(1, FLAGS_ON, 5)])[3:]
+        ),
+    ]
+    info = response_info()
+
+    Master(handler=recorder)._parse_response_objects(blocks, info)
+
+    assert [(name, [(v.index, v.timestamp) for v in values]) for name, values in recorder.calls] == [
+        ("on_binary_input", [(1, None)]),
+    ]
+    assert info.relative_time_without_cto == 1
+
+
+class _CountAtCallback(RecordingHandler):
+    """Records the relative_time_without_cto a callback sees when it runs."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.seen: list[tuple[str, int]] = []
+
+    def on_binary_input(self, values: list[BinaryValue], info: ResponseInfo) -> None:
+        self.seen.append(("on_binary_input", info.relative_time_without_cto))
+
+    def on_analog_input(self, values: list[AnalogValue], info: ResponseInfo) -> None:
+        self.seen.append(("on_analog_input", info.relative_time_without_cto))
+
+
+def test_callback_sees_the_count_so_far() -> None:
+    """Each callback sees the objects counted up to and including its own run."""
+    analog = bytes([30, 1, 0x17, 0x01, 0x07, 0x01]) + struct.pack("<i", 200)
+    objects = _relative(2, [(1, FLAGS_ON, 5)]) + analog + _relative(2, [(2, FLAGS_ON, 5), (3, FLAGS_ON, 6)])
+    handler = _CountAtCallback()
+
+    info = _process(objects, handler)
+
+    assert handler.seen == [("on_binary_input", 1), ("on_analog_input", 1), ("on_binary_input", 3)]
+    assert info.relative_time_without_cto == 3
