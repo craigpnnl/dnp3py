@@ -35,6 +35,7 @@ from dnp3.objects.binary_output import BinaryOutputFlags
 from dnp3.objects.counter import Counter32, CounterEvent32Time, FrozenCounter32
 from dnp3.outstation.config import OutstationConfig
 from dnp3.outstation.handler import CommandHandler, DefaultCommandHandler
+from dnp3.outstation.peer import UNSPECIFIED_PEER, PeerId
 from dnp3.outstation.state import (
     OutstationState,
     OutstationStateManager,
@@ -547,11 +548,15 @@ class Outstation:
         if buffer.has_overflow:
             self._state.set_event_overflow()
 
-    def process_request(self, data: bytes) -> list[ResponseFragment]:
+    def process_request(self, data: bytes, *, peer: PeerId | None = None) -> list[ResponseFragment]:
         """Process a request and generate response fragment(s).
 
         Args:
             data: Raw request bytes (application layer fragment).
+            peer: Identifies the master this request came from. A transport
+                serving more than one master must pass this; the default
+                (None, mapped to UNSPECIFIED_PEER) is correct for a
+                single-master deployment and for every pre-#72 caller.
 
         Returns:
             List of response fragments. Empty list if no response needed.
@@ -564,13 +569,17 @@ class Outstation:
             # Parse error - return null response with PARAMETER_ERROR
             return [build_null_response(iin=self.iin | IIN.PARAMETER_ERROR)]
 
-        return self._process_request_fragment(request)
+        resolved_peer = peer if peer is not None else UNSPECIFIED_PEER
+        return self._process_request_fragment(request, resolved_peer, data[2:])
 
-    def _process_request_fragment(self, request: RequestFragment) -> list[ResponseFragment]:
+    def _process_request_fragment(self, request: RequestFragment, peer: PeerId, body: bytes) -> list[ResponseFragment]:
         """Process a parsed request fragment.
 
         Args:
             request: Parsed request fragment.
+            peer: The peer that sent this request (see process_request).
+            body: Raw octets after the function code, for the Table 4-9
+                octet-equality test (#72 slice 3); unused before then.
 
         Returns:
             List of response fragments. Empty list if no response needed.
