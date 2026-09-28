@@ -5,6 +5,7 @@ and accepting connections from DNP3 masters.
 """
 
 import asyncio
+import logging
 import socket
 from dataclasses import dataclass, field
 
@@ -17,6 +18,8 @@ from dnp3.transport_io.channel import (
     TcpConfig,
     TcpServerConfig,
 )
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -107,7 +110,8 @@ class TcpServerChannel:
             self.writer.transport.abort()
             raise
         except (OSError, ConnectionError):
-            pass  # Ignore errors during close
+            # The peer may already be gone; the channel is closing regardless.
+            pass
         finally:
             # Runs on every path, including a re-raised cancellation, so the
             # channel always ends CLOSED with the disconnect counted once.
@@ -383,16 +387,35 @@ class TcpServer:
 
         self._state = ChannelState.CLOSING
 
-        # Close all connections concurrently: closing them one at a time would
-        # let a single stalled peer multiply its close_timeout bound across
-        # every other connection.
-        if self._connections:
-            await asyncio.gather(*(conn.close() for conn in self._connections), return_exceptions=True)
-        self._connections.clear()
-
-        # Stop the server
+        # Stop accepting new connections first, synchronously: this closes
+        # the listening socket immediately, so a connection that arrives
+        # while we are closing a stalled peer below gets refused instead of
+        # being accepted, appended after the gather() snapshot, and then
+        # dropped by clear() without ever being closed.
         if self._server is not None:
             self._server.close()
+
+        # Close every tracked connection concurrently: closing them one at a
+        # time would let a single stalled peer multiply its close_timeout
+        # bound across every other connection. Loop while the list is
+        # non-empty in case a connection already in flight when the listener
+        # closed still reaches _handle_connection after this point. Each
+        # close() already handles its own protocol-level errors; anything
+        # else it raises is a bug in that connection's close(), so log it
+        # rather than let return_exceptions=True discard it silently.
+        while self._connections:
+            pending = list(self._connections)
+            results = await asyncio.gather(*(conn.close() for conn in pending), return_exceptions=True)
+            for conn, result in zip(pending, results, strict=True):
+                if isinstance(result, Exception):
+                    logger.error("Unexpected error closing a connection during stop()", exc_info=result)
+                self.remove_connection(conn)
+
+        # Now that every connection this server ever accepted has had its
+        # transport closed, wait_closed() can complete: it waits for both
+        # the listener to be closed and every accepted connection to be
+        # dropped, in either order.
+        if self._server is not None:
             await self._server.wait_closed()
             self._server = None
 
