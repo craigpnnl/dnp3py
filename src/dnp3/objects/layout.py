@@ -16,7 +16,7 @@ __all__ = [
     "ValueCodec",
     "WireLayout",
     "data_length",
-    "lookup",
+    "layout_for",
     "object_width",
 ]
 
@@ -84,6 +84,9 @@ class WireLayout:
 
     def __post_init__(self) -> None:
         """Refuse a layout no Annex A object could have."""
+        if self.bits_per_point < 0:
+            msg = f"bits per point must be non-negative, got {self.bits_per_point}"
+            raise ValueError(msg)
         if self.bits_per_point:
             if self.width or self.has_flags or self.time is not TimeKind.NONE:
                 msg = "a packed layout has no octet width, flags or time"
@@ -197,14 +200,14 @@ _TABLE: dict[tuple[int, int], WireLayout] = {
 LAYOUTS: Mapping[tuple[int, int], WireLayout] = MappingProxyType(_TABLE)
 
 
-def lookup(group: int, variation: int) -> WireLayout | None:
+def layout_for(group: int, variation: int) -> WireLayout | None:
     """Return the layout of a group and variation, or None if it has none."""
     return LAYOUTS.get((group, variation))
 
 
 def object_width(group: int, variation: int) -> int | None:
     """Octets per object excluding any index prefix, or None if unknown or packed."""
-    layout = lookup(group, variation)
+    layout = layout_for(group, variation)
     if layout is None or layout.is_packed:
         return None
     return layout.width
@@ -213,8 +216,9 @@ def object_width(group: int, variation: int) -> int | None:
 def data_length(layout: WireLayout, count: int, prefix_width: int) -> int | None:
     """Octets of object data for ``count`` objects, each led by a ``prefix_width`` index.
 
-    Returns None for a packed layout with an index prefix: IEEE 1815-2012 A.2.1
-    and A.4.1 define packing only over a contiguous index range.
+    A packed layout with an index prefix gives None, checked before the count, so
+    even a count of 0 gives None: IEEE 1815-2012 A.2.1 and A.4.1 define packing
+    only over a contiguous index range. Otherwise a count of 0 gives 0.
     """
     if count < 0 or prefix_width < 0:
         msg = f"count and prefix width must be non-negative, got {count} and {prefix_width}"
