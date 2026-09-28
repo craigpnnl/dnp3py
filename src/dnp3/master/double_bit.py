@@ -50,7 +50,10 @@ class DoubleBitInputHandler(Protocol):
     """A handler that accepts double-bit binary input values.
 
     Separate from ``SOEHandler`` so existing handlers need no new method; a
-    handler without this callback is not given double-bit values.
+    handler without this callback is not given double-bit values, and nothing
+    reports the drop yet (#111). On Python 3.12 and later the callback must be
+    found without ``__getattr__``, so a handler that forwards calls that way
+    also receives none.
     """
 
     def on_double_bit_input(self, values: list[DoubleBitValue], info: ResponseInfo) -> None:
