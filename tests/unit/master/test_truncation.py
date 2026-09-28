@@ -2,17 +2,19 @@
 
 Object bytes are composed from IEEE 1815-2012, not from this library's encoders:
 g30v1 from A.14.1 (flag, INT32), g1v2 from A.2.2 (flag octet, state bit 7),
-g22v1 from A.12.1 (flag, UINT32), little-endian per 11.3.4, and qualifiers from
-Tables 4-3 and 4-5.
+g22v1 from A.12.1 (flag, UINT32), g3v1 from A.4.1 (packed 2-bit states),
+little-endian per 11.3.4, and qualifiers from Tables 4-3 and 4-5.
 """
 
 import pytest
 
 from dnp3.application.fragment import ObjectBlock, Truncation, TruncationReason
 from dnp3.application.qualifiers import ObjectHeader
+from dnp3.core.flags import DoubleBitState
+from dnp3.master.double_bit import DoubleBitValue
 from dnp3.master.handler import AnalogValue, BinaryValue, CounterValue, ResponseInfo
 from dnp3.master.master import Master
-from tests.unit.master.delivery import delivered
+from tests.unit.master.delivery import RecordingHandler, delivered, response_info
 
 # FIR+FIN, seq 0, RESPONSE, IIN 00 00.
 RESPONSE_HEADER = bytes([0xC0, 0x81, 0x00, 0x00])
@@ -171,6 +173,24 @@ class TestValidFramesUnchanged:
         assert info.truncation is None
 
 
+class DoubleBitCollector(RecordingHandler):
+    """Records double-bit callbacks, which only a handler with that method receives."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.double_bits: list[DoubleBitValue] = []
+
+    def on_double_bit_input(self, values: list[DoubleBitValue], info: ResponseInfo) -> None:
+        self.double_bits.extend(values)
+
+
+def double_bits_delivered(block: ObjectBlock) -> list[DoubleBitValue]:
+    handler = DoubleBitCollector()
+    Master(handler=handler)._parse_response_objects([block], response_info())
+    assert handler.calls == []
+    return handler.double_bits
+
+
 class TestShortBlockRefusedByDecoder:
     """A block handed to the master with less data than it declares delivers nothing.
 
@@ -206,3 +226,20 @@ class TestShortBlockRefusedByDecoder:
         packed = delivered(packed_block, "on_binary_input")
         assert [v.index for v in packed] == list(range(16))
         assert [v.value for v in packed] == [True] * 4 + [False] * 4 + [False, True] * 4
+
+    def test_packed_double_bit_block_short_by_one_octet(self) -> None:
+        # g3v1, start-stop 0..7: 8 two-bit points need 2 octets, 1 present.
+        block = ObjectBlock(header=ObjectHeader(group=3, variation=1, qualifier=0x00), data=bytes([0x00, 0x07, 0xE4]))
+
+        assert double_bits_delivered(block) == []
+
+    def test_complete_packed_double_bit_block_delivers(self) -> None:
+        # 0xE4 = 11 10 01 00: points in bits 1 and 0 first (A.4.1.2.2), so states 0, 1, 2, 3.
+        block = ObjectBlock(
+            header=ObjectHeader(group=3, variation=1, qualifier=0x00), data=bytes([0x00, 0x07, 0xE4, 0xE4])
+        )
+
+        states = [DoubleBitState(n) for n in (0, 1, 2, 3)] * 2
+        assert double_bits_delivered(block) == [
+            DoubleBitValue(index=index, state=state, quality=0x01) for index, state in enumerate(states)
+        ]
