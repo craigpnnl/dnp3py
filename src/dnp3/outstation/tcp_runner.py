@@ -44,9 +44,6 @@ class OutstationTcpRunner:
     _server: TcpServer | None = field(default=None, init=False, repr=False)
     _shutdown: asyncio.Event = field(default_factory=asyncio.Event, init=False, repr=False)
     _connection_task: asyncio.Task | None = field(default=None, init=False, repr=False)
-    # Counts accepted connections so PeerId(source, connection) tells apart
-    # two masters sharing one source address on separate connections (#72).
-    _connection_counter: int = field(default=0, init=False, repr=False)
 
     @property
     def is_running(self) -> bool:
@@ -151,8 +148,7 @@ class OutstationTcpRunner:
         outstation_addr = self.outstation.config.address
         master_addr = self.outstation.config.master_address  # 0 = learn from first frame
         learned_master_addr = 0
-        self._connection_counter += 1
-        conn_id = self._connection_counter
+        conn_id = self.outstation.new_connection_id()
 
         try:
             while not self._shutdown.is_set():

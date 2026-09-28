@@ -527,6 +527,7 @@ class Outstation:
     database: Database = field(default_factory=Database)
     handler: CommandHandler = field(default_factory=DefaultCommandHandler)
     _state: OutstationStateManager = field(default_factory=OutstationStateManager, init=False)
+    _connections_opened: int = field(default=0, init=False, repr=False)
 
     def __post_init__(self) -> None:
         """Initialize outstation state."""
@@ -578,6 +579,18 @@ class Outstation:
 
         resolved_peer = peer if peer is not None else UNSPECIFIED_PEER
         return self._process_request_fragment(request, resolved_peer, data[2:])
+
+    def new_connection_id(self) -> int:
+        """Return a connection id no transport on this outstation has used yet.
+
+        Selections live on the outstation, so ids must be unique across every
+        transport serving it, not only within one.
+
+        Returns:
+            The id to put in each PeerId for the new connection.
+        """
+        self._connections_opened += 1
+        return self._connections_opened
 
     def release_connection(self, connection: int) -> None:
         """Release every SELECT made on a transport connection.

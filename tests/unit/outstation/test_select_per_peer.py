@@ -350,3 +350,43 @@ class TestRunnerReleasesSelectionsOnDisconnect:
         assert outstation._state.get_select(5, peer=MASTER_A) is None
         assert _select(outstation, MASTER_B, (5, 5000)) == [(5, SUCCESS)]
         assert outstation._state.get_select(6, peer=other_connection) is not None
+
+
+class TestTwoRunnersOverOneOutstation:
+    """Connection ids stay unique when several runners serve one outstation."""
+
+    @pytest.mark.asyncio
+    async def test_same_source_on_another_runner_cannot_touch_the_selection(self) -> None:
+        handler = _RecordingHandler()
+        config = OutstationConfig(address=OUTSTATION_ADDR, master_address=MASTER_A.source)
+        outstation = Outstation(config=config, database=Database(), handler=handler)
+        outstation.database.add_binary_output(5)
+        first_master, first_task = await _connect(OutstationTcpRunner(outstation=outstation))
+        second_master, second_task = await _connect(OutstationTcpRunner(outstation=outstation))
+
+        select = build_select_request(objects=(_crob_block((5, 1000)),), seq=0)
+        await first_master.write_all(_frame(MASTER_A.source, select.to_bytes()))
+        await _drain(first_master)
+        operate = build_operate_request(objects=(_crob_block((5, 1000)),), seq=1)
+        await second_master.write_all(_frame(MASTER_A.source, operate.to_bytes()))
+        await _drain(second_master)
+
+        assert handler.operates == []
+
+        await second_master.close()
+        await asyncio.wait_for(second_task, timeout=2.0)
+
+        assert _select(outstation, MASTER_B, (5, 5000)) == [(5, BLOCKED)]
+        await first_master.write_all(_frame(MASTER_A.source, operate.to_bytes()))
+        await _drain(first_master)
+        assert handler.operates == [(5, 1000)]
+
+        await first_master.close()
+        await asyncio.wait_for(first_task, timeout=2.0)
+
+
+async def _connect(runner: OutstationTcpRunner) -> tuple[SimulatorChannel, asyncio.Task[None]]:
+    master_ch, outstation_ch = create_channel_pair()
+    await master_ch.open()
+    await outstation_ch.open()
+    return master_ch, asyncio.create_task(runner._handle_connection(outstation_ch))
