@@ -205,7 +205,8 @@ _TABLE: dict[tuple[int, int], WireLayout] = {
     (22, 7): _octets(_CT, 4, _UINT, time=_ABS),
     (22, 8): _octets(_CT, 2, _UINT, time=_ABS),
     # A.13: v3/v4/v7/v8 are the delta variations (obsolete per A.13.3.2.3); the
-    # standard gives them the same flag, width and time fields as v1/v2/v5/v6.
+    # standard gives them the same field widths and time field as v1/v2/v5/v6.
+    # Bit 6 of the flag octet differs: DISCONTINUITY on v1/v5/v6, reserved on v3/v7.
     (23, 1): _octets(_FC, 4, _UINT),
     (23, 2): _octets(_FC, 2, _UINT),
     (23, 3): _octets(_FC, 4, _UINT),
