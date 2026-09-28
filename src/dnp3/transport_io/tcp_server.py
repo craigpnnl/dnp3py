@@ -317,6 +317,14 @@ class TcpServer:
             reader: Stream reader for the connection.
             writer: Stream writer for the connection.
         """
+        # Refuse a connection that reaches here while not OPEN: stop() sets
+        # CLOSING before it closes tracked connections, and this can still
+        # run after that point for a connection already in flight.
+        if self._state != ChannelState.OPEN:
+            writer.close()
+            await writer.wait_closed()
+            return
+
         # Check max connections
         if self.config.max_connections > 0 and len(self._connections) >= self.config.max_connections:
             writer.close()
@@ -387,15 +395,15 @@ class TcpServer:
 
         self._state = ChannelState.CLOSING
 
-        # Stop accepting first: with the listener closed, a connection
-        # arriving during the bounded close below is refused, not accepted
-        # and then dropped by clear().
+        # Stop accepting first: with the listener closed and
+        # _handle_connection() refusing while state is not OPEN, a
+        # connection arriving during the bounded close below is refused.
         if self._server is not None:
             self._server.close()
 
         # Close concurrently so one stalled peer cannot multiply the bound
-        # across every connection; loop because a connection already in
-        # flight when the listener closed can still arrive here.
+        # across every connection. _handle_connection() refuses anything
+        # else that arrives, so this loop runs once in practice.
         while self._connections:
             pending = list(self._connections)
             results = await asyncio.gather(*(conn.close() for conn in pending), return_exceptions=True)

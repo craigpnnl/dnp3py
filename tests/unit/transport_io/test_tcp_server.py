@@ -1,6 +1,7 @@
 """Tests for TCP server channel."""
 
 import asyncio
+import contextlib
 
 import pytest
 
@@ -289,6 +290,65 @@ class TestTcpServerWithClient:
         finally:
             writer.close()
             await writer.wait_closed()
+
+
+class TestHandleConnectionRefusesWhenNotOpen:
+    """_handle_connection() must not track a connection while stop() is running."""
+
+    @pytest.mark.asyncio
+    async def test_handle_connection_refuses_when_not_open(self) -> None:
+        """A connection reaching _handle_connection while the server is not OPEN
+        (the state stop() sets before it closes connections) must be refused:
+        closed, not appended, and not put on the accept queue."""
+        config = TcpServerConfig(host="127.0.0.1", port=0, close_timeout=0.5)
+        server = TcpServer(config=config)
+        await server.start()
+
+        # Get a genuine accepted (reader, writer) pair via a side-channel
+        # listener, so _handle_connection can be driven directly and
+        # deterministically instead of racing the real listener during stop().
+        captured: list[tuple[asyncio.StreamReader, asyncio.StreamWriter]] = []
+        ready = asyncio.Event()
+
+        async def capture(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+            captured.append((reader, writer))
+            ready.set()
+
+        side_server = await asyncio.start_server(capture, host="127.0.0.1", port=0)
+        side_addr = side_server.sockets[0].getsockname()
+        _client_reader, client_writer = await asyncio.open_connection(side_addr[0], side_addr[1])
+        await asyncio.wait_for(ready.wait(), timeout=2.0)
+        server_reader, server_writer = captured[0]
+
+        try:
+            server._state = ChannelState.CLOSING
+            assert server.connection_count == 0
+
+            await asyncio.wait_for(server._handle_connection(server_reader, server_writer), timeout=2.0)
+
+            assert server.connection_count == 0, "a connection arriving while not OPEN must not be tracked"
+
+            sock = server_writer.get_extra_info("socket")
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + 2.0
+            while sock.fileno() != -1 and loop.time() < deadline:
+                await asyncio.sleep(0.01)
+            assert sock.fileno() == -1, "a refused connection must have its transport closed"
+
+            await asyncio.wait_for(server.stop(), timeout=config.close_timeout + 1.0)
+            assert server.state == ChannelState.CLOSED
+            assert server.connection_count == 0
+        finally:
+            # A refusal closes server_writer itself; before that fix lands,
+            # nothing does, and side_server.wait_closed() below would hang
+            # on it regardless of the assertions above, so close it here too.
+            server_writer.close()
+            with contextlib.suppress(OSError, ConnectionError):
+                await asyncio.wait_for(server_writer.wait_closed(), timeout=2.0)
+            client_writer.close()
+            await client_writer.wait_closed()
+            side_server.close()
+            await asyncio.wait_for(side_server.wait_closed(), timeout=2.0)
 
 
 class TestTcpServerChannel:
