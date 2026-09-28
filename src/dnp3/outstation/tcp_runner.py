@@ -11,6 +11,7 @@ from dnp3.core.enums import LinkFunctionCode
 from dnp3.datalink.builder import build_ack, build_link_status, build_unconfirmed_user_data
 from dnp3.datalink.parser import FrameParser
 from dnp3.outstation.outstation import Outstation
+from dnp3.outstation.peer import PeerId
 from dnp3.transport.reassembler import Reassembler
 from dnp3.transport.segment import TransportSegment
 from dnp3.transport.segmenter import Segmenter
@@ -31,6 +32,9 @@ class OutstationTcpRunner:
     _server: TcpServer | None = field(default=None, init=False, repr=False)
     _shutdown: asyncio.Event = field(default_factory=asyncio.Event, init=False, repr=False)
     _connection_task: asyncio.Task | None = field(default=None, init=False, repr=False)
+    # Counts accepted connections so PeerId(source, connection) tells apart
+    # two masters sharing one source address on separate connections (#72).
+    _connection_counter: int = field(default=0, init=False, repr=False)
 
     @property
     def is_running(self) -> bool:
@@ -104,6 +108,8 @@ class OutstationTcpRunner:
         outstation_addr = self.outstation.config.address
         master_addr = self.outstation.config.master_address  # 0 = learn from first frame
         learned_master_addr = 0
+        self._connection_counter += 1
+        conn_id = self._connection_counter
 
         try:
             while not self._shutdown.is_set():
@@ -163,7 +169,8 @@ class OutstationTcpRunner:
 
                     if result is not None:
                         # Complete application fragment received
-                        responses = self.outstation.process_request(result.data)
+                        peer = PeerId(source=frame.header.source, connection=conn_id)
+                        responses = self.outstation.process_request(result.data, peer=peer)
                         is_multi = len(responses) > 1
 
                         for i, response in enumerate(responses):
