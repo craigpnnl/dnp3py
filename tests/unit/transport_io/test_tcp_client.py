@@ -584,7 +584,9 @@ class TestCloseIsBounded:
             await self._stop(server, writers)
 
     async def test_close_cancelled_mid_wait_still_aborts_transport(self) -> None:
-        """Cancelling close() during the bounded wait still aborts the socket."""
+        """Cancelling close() during the bounded wait still aborts the socket
+        and still reaches CLOSED with the writer, reader and counter cleaned up.
+        """
         server, port, writers = await self._peer_that_never_reads()
         try:
             channel = TcpClientChannel(config=TcpConfig(host="127.0.0.1", port=port, close_timeout=5.0))
@@ -601,11 +603,42 @@ class TestCloseIsBounded:
             with pytest.raises(asyncio.CancelledError):
                 await close_task
 
+            assert channel.state == ChannelState.CLOSED
+            assert channel._writer is None
+            assert channel._reader is None
+            assert channel.statistics.disconnect_count == 1
+
             loop = asyncio.get_running_loop()
             deadline = loop.time() + 1.0
             while sock.fileno() != -1 and loop.time() < deadline:
                 await asyncio.sleep(0.01)
             assert sock.fileno() == -1, "a cancelled close must still abort the transport"
+        finally:
+            await self._stop(server, writers)
+
+    async def test_close_after_cancelled_close_is_a_noop(self) -> None:
+        """A second close() after a cancelled close() raises nothing and stays CLOSED."""
+        server, port, writers = await self._peer_that_never_reads()
+        try:
+            channel = TcpClientChannel(config=TcpConfig(host="127.0.0.1", port=port, close_timeout=5.0))
+            await channel.open()
+            with pytest.raises(TimeoutError):
+                await asyncio.wait_for(channel.write_all(self.STUFFING), timeout=0.3)
+
+            close_task = asyncio.create_task(channel.close())
+            await asyncio.sleep(0.05)
+            close_task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await close_task
+
+            assert channel.state == ChannelState.CLOSED
+
+            # The second close() must be the no-op guard's job: it must not
+            # raise, and must not touch an already-cleared writer/reader.
+            await channel.close()
+
+            assert channel.state == ChannelState.CLOSED
+            assert channel.statistics.disconnect_count == 1
         finally:
             await self._stop(server, writers)
 
