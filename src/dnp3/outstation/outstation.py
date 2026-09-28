@@ -106,9 +106,8 @@ IIN_BIT_DEVICE_RESTART = 7  # Bit 7 of IIN byte 1
 # Minimum data sizes
 MIN_IIN_WRITE_DATA = 2  # start + stop bytes
 
-# Analog output value sizes in bytes, keyed by variation number.
-# Used by both _parse_ao_block and _echo_ao_block so the mapping
-# is defined exactly once (parallel to _CROB_BODY_BYTES for CROB).
+# Analog output value sizes in bytes, keyed by variation number
+# (parallel to _CROB_BODY_BYTES for CROB).
 _AO_VALUE_SIZES: dict[int, int] = {
     AO_VAR_INT32: 4,  # Group 41 Var 1: 32-bit signed integer
     AO_VAR_INT16: 2,  # Group 41 Var 2: 16-bit signed integer
@@ -144,6 +143,13 @@ QUALIFIER_CROB_2BYTE = 0x28
 
 # CROB body size in bytes: control_code(1) + op_count(1) + on_time(4) + off_time(4) + status(1)
 _CROB_BODY_BYTES = 11
+
+# Octets of each control object after its index prefix, keyed by (group, variation); the
+# status octet is the last. The control gate and the echo share it so they frame alike.
+_CONTROL_OBJECT_BYTES: dict[tuple[int, int], int] = {
+    (GROUP_CROB, 1): _CROB_BODY_BYTES,
+    **{(GROUP_ANALOG_OUTPUT, variation): size + 1 for variation, size in _AO_VALUE_SIZES.items()},
+}
 
 # IEEE 1815-2012 4.4.5 to 4.4.8: an outstation shall not respond to these functions.
 _NO_ACK_FUNCTIONS = frozenset(
@@ -600,8 +606,8 @@ def _parse_crob_block(block: ObjectBlock) -> list[ParsedCrob]:
     return parsed
 
 
-def _parse_ao_block(block: ObjectBlock) -> tuple[list[tuple[int, float]], bool]:
-    """Parse an Analog Output block (Group 41) into (index, value) pairs.
+def _parse_ao_block(block: ObjectBlock) -> list[tuple[int, float]]:
+    """Parse an Analog Output block (Group 41) into (index, value) pairs, in wire order.
 
     Supports variations 1-4:
         Var 1: 32-bit signed integer (4 bytes value + 1 byte status)
@@ -610,21 +616,12 @@ def _parse_ao_block(block: ObjectBlock) -> tuple[list[tuple[int, float]], bool]:
         Var 4: double-precision float (8 bytes value + 1 byte status)
 
     Qualifiers follow the same 0x17/0x28 scheme as CROB (IEEE 1815-2012 Table 4-3).
-    The block must have passed _control_block_error, which checks its qualifier and
-    that it holds exactly the declared count of objects.
-
-    Returns:
-        Tuple of (points, has_parse_error). has_parse_error is True, with no
-        points, for a variation other than 1-4; callers must set
-        IIN.PARAMETER_ERROR when it is True.
+    The block must have passed _control_block_error, which checks its variation, its
+    qualifier and that it holds exactly the declared count of objects.
     """
     points: list[tuple[int, float]] = []
     variation = block.header.variation
-
-    value_size = _AO_VALUE_SIZES.get(variation)
-    if value_size is None:
-        return points, True
-
+    value_size = _AO_VALUE_SIZES[variation]
     count_bytes, index_bytes = _crob_count_index_sizes(block.header.qualifier)
     data = block.data
     count = int.from_bytes(data[0:count_bytes], "little")
@@ -645,7 +642,7 @@ def _parse_ao_block(block: ObjectBlock) -> tuple[list[tuple[int, float]], bool]:
         offset += value_size + 1  # skip request status byte
         points.append((index, value))
 
-    return points, False
+    return points
 
 
 def _control_block_error(block: ObjectBlock) -> IIN | None:
@@ -656,11 +653,8 @@ def _control_block_error(block: ObjectBlock) -> IIN | None:
     0x28, or data that is not exactly the declared count of objects, is malformed (IIN2.2).
     """
     header = block.header
-    if header.group == GROUP_CROB and header.variation == 1:
-        object_size = _CROB_BODY_BYTES
-    elif header.group == GROUP_ANALOG_OUTPUT and header.variation in _AO_VALUE_SIZES:
-        object_size = _AO_VALUE_SIZES[header.variation] + 1
-    else:
+    object_size = _CONTROL_OBJECT_BYTES.get((header.group, header.variation))
+    if object_size is None:
         return IIN.OBJECT_UNKNOWN
     try:
         count_bytes, index_bytes = _crob_count_index_sizes(header.qualifier)
@@ -673,6 +667,36 @@ def _control_block_error(block: ObjectBlock) -> IIN | None:
     if len(data) != count_bytes + count * (index_bytes + object_size):
         return IIN.PARAMETER_ERROR
     return None
+
+
+def _echo_control_block(block: ObjectBlock, results: list[tuple[int, CommandStatus]]) -> tuple[ObjectBlock, bool]:
+    """Echo a control block with object j's status octet set from ``results[j]``.
+
+    The block must have passed _control_block_error. An object whose entry is missing
+    or names another index is echoed FORMAT_ERROR rather than given a status that may
+    be another object's (each object carries its own status, IEEE 1815-2012 4.4.4.3 Rule 7).
+
+    Returns:
+        The echoed block, and True when ``results`` does not match the block's objects.
+    """
+    count_bytes, index_bytes = _crob_count_index_sizes(block.header.qualifier)
+    object_size = index_bytes + _CONTROL_OBJECT_BYTES[(block.header.group, block.header.variation)]
+    data = block.data
+    count = int.from_bytes(data[:count_bytes], "little")
+    echoed = bytearray(data)
+    misaligned = len(results) != count
+
+    for position in range(count):
+        start = count_bytes + position * object_size
+        index = int.from_bytes(data[start : start + index_bytes], "little")
+        if position < len(results) and results[position][0] == index:
+            status = results[position][1]
+        else:
+            status = CommandStatus.FORMAT_ERROR
+            misaligned = True
+        echoed[start + object_size - 1] = int(status)
+
+    return ObjectBlock(header=block.header, data=bytes(echoed)), misaligned
 
 
 @dataclass
@@ -1384,7 +1408,7 @@ class Outstation:
 
     def _handle_select(self, request: RequestFragment, *, peer: PeerId = UNSPECIFIED_PEER) -> ResponseFragment:
         """Handle SELECT request."""
-        results: list[tuple[int, CommandStatus]] = []
+        block_results: list[list[tuple[int, CommandStatus]]] = []
         seq = request.header.control.seq
 
         self._state.clear_expired_selects(self.config.select_timeout)
@@ -1393,24 +1417,17 @@ class Outstation:
         if refusal is not None:
             return refusal
 
-        ao_parse_error = False
-
         for block in request.objects:
             if block.header.group == GROUP_CROB and block.header.variation == 1:
-                # CROB - Control Relay Output Block
-                block_results = self._process_crob_select(block, seq, peer=peer)
-                results.extend(block_results)
+                block_results.append(self._process_crob_select(block, seq, peer=peer))
             elif block.header.group == GROUP_ANALOG_OUTPUT:
-                block_results, block_parse_error = self._process_ao_select(block, seq, peer=peer)
-                results.extend(block_results)
-                ao_parse_error = ao_parse_error or block_parse_error
+                block_results.append(self._process_ao_select(block, seq, peer=peer))
 
-        if any(status != CommandStatus.SUCCESS for _, status in results):
+        if any(status != CommandStatus.SUCCESS for results in block_results for _, status in results):
             # A non-zero status in any object cancels the entire selection (IEEE 1815-2012 4.4.4.3 Rule 3).
             self._state.cancel_points(peer)
 
-        # Build response with command status
-        return self._build_control_response(request, results, ao_parse_error=ao_parse_error)
+        return self._build_control_response(request, block_results)
 
     def _process_crob_select(
         self, block: ObjectBlock, seq: int, *, peer: PeerId = UNSPECIFIED_PEER
@@ -1462,7 +1479,7 @@ class Outstation:
 
     def _handle_operate(self, request: RequestFragment, *, peer: PeerId = UNSPECIFIED_PEER) -> ResponseFragment:
         """Handle OPERATE request."""
-        results: list[tuple[int, CommandStatus]] = []
+        block_results: list[list[tuple[int, CommandStatus]]] = []
         seq = request.header.control.seq
 
         # Clear expired selects first
@@ -1472,18 +1489,13 @@ class Outstation:
         if refusal is not None:
             return refusal
 
-        ao_parse_error = False
-
         for block in request.objects:
             if block.header.group == GROUP_CROB and block.header.variation == 1:
-                block_results = self._process_crob_operate(block, seq, peer=peer)
-                results.extend(block_results)
+                block_results.append(self._process_crob_operate(block, seq, peer=peer))
             elif block.header.group == GROUP_ANALOG_OUTPUT:
-                block_results, block_parse_error = self._process_ao_operate(block, peer=peer)
-                results.extend(block_results)
-                ao_parse_error = ao_parse_error or block_parse_error
+                block_results.append(self._process_ao_operate(block, peer=peer))
 
-        return self._build_control_response(request, results, ao_parse_error=ao_parse_error)
+        return self._build_control_response(request, block_results)
 
     def _process_crob_operate(
         self, block: ObjectBlock, seq: int, *, peer: PeerId = UNSPECIFIED_PEER
@@ -1530,18 +1542,15 @@ class Outstation:
 
     def _process_ao_select(
         self, block: ObjectBlock, seq: int, *, peer: PeerId = UNSPECIFIED_PEER
-    ) -> tuple[list[tuple[int, CommandStatus]], bool]:
+    ) -> list[tuple[int, CommandStatus]]:
         """Process Analog Output SELECT (Group 41).
 
         A point another peer holds returns BLOCKED_OTHER_MASTER without reaching
         the handler. Other points are dispatched to the handler and, on success,
         stored as this peer's pending SELECT state under group 41, so a CROB
         selection at the same index is a separate point.
-
-        Returns:
-            Tuple of (results, has_parse_error), has_parse_error as from _parse_ao_block.
         """
-        points, has_parse_error = _parse_ao_block(block)
+        points = _parse_ao_block(block)
         results: list[tuple[int, CommandStatus]] = []
 
         for index, value in points:
@@ -1557,21 +1566,18 @@ class Outstation:
 
             results.append((index, result.status))
 
-        return results, has_parse_error
+        return results
 
     def _process_ao_operate(
         self, block: ObjectBlock, *, peer: PeerId = UNSPECIFIED_PEER
-    ) -> tuple[list[tuple[int, CommandStatus]], bool]:
+    ) -> list[tuple[int, CommandStatus]]:
         """Process Analog Output OPERATE (Group 41).
 
         Each point is checked against this peer's group 41 selection only; a
         missing or mismatched selection returns NO_SELECT without reaching the
         handler.
-
-        Returns:
-            Tuple of (results, has_parse_error), has_parse_error as from _parse_ao_block.
         """
-        points, has_parse_error = _parse_ao_block(block)
+        points = _parse_ao_block(block)
         results: list[tuple[int, CommandStatus]] = []
 
         for index, value in points:
@@ -1588,7 +1594,7 @@ class Outstation:
             self._state.remove_select(index, peer=peer, group=GROUP_ANALOG_OUTPUT)
             results.append((index, result.status))
 
-        return results, has_parse_error
+        return results
 
     def _handle_direct_operate(self, request: RequestFragment) -> ResponseFragment:
         """Handle DIRECT_OPERATE request."""
@@ -1596,20 +1602,15 @@ class Outstation:
         if refusal is not None:
             return refusal
 
-        results: list[tuple[int, CommandStatus]] = []
-        ao_parse_error = False
+        block_results: list[list[tuple[int, CommandStatus]]] = []
 
         for block in request.objects:
             if block.header.group == GROUP_CROB and block.header.variation == 1:
-                block_results = self._process_crob_direct_operate(block)
-                results.extend(block_results)
+                block_results.append(self._process_crob_direct_operate(block))
             elif block.header.group == GROUP_ANALOG_OUTPUT:
-                block_results, block_parse_error = self._process_ao_direct_operate(block)
-                results.extend(block_results)
-                if block_parse_error:
-                    ao_parse_error = True
+                block_results.append(self._process_ao_direct_operate(block))
 
-        return self._build_control_response(request, results, ao_parse_error=ao_parse_error)
+        return self._build_control_response(request, block_results)
 
     def _process_crob_direct_operate(self, block: ObjectBlock) -> list[tuple[int, CommandStatus]]:
         """Process CROB DIRECT_OPERATE.
@@ -1637,24 +1638,20 @@ class Outstation:
 
         return results
 
-    def _process_ao_direct_operate(self, block: ObjectBlock) -> tuple[list[tuple[int, CommandStatus]], bool]:
+    def _process_ao_direct_operate(self, block: ObjectBlock) -> list[tuple[int, CommandStatus]]:
         """Process Analog Output DIRECT_OPERATE (Group 41).
 
         Each object _parse_ao_block returns is dispatched immediately to the
         handler with no prior SELECT required.
-
-        Returns:
-            Tuple of (results, has_parse_error), has_parse_error as from
-            _parse_ao_block; callers must set IIN.PARAMETER_ERROR when it is True.
         """
-        points, has_parse_error = _parse_ao_block(block)
+        points = _parse_ao_block(block)
         results: list[tuple[int, CommandStatus]] = []
         for index, value in points:
             result = self.handler.direct_operate_analog_output(index=index, value=value)
             if result.is_success:
                 self._track_ao_command(index, value)
             results.append((index, result.status))
-        return results, has_parse_error
+        return results
 
     def _track_ao_command(self, index: int, value: float) -> None:
         """Store a commanded analog output value as its status (clause 11.9.2.2).
@@ -1676,50 +1673,33 @@ class Outstation:
     def _build_control_response(
         self,
         request: RequestFragment,
-        results: list[tuple[int, CommandStatus]],
-        ao_parse_error: bool = False,
+        block_results: list[list[tuple[int, CommandStatus]]],
     ) -> ResponseFragment:
         """Build response for control operations.
 
-        Per IEEE 1815-2012, the response must echo back the same object
-        headers with each command object's status field set to the result.
-        Any FORMAT_ERROR result or parse error also sets IIN.PARAMETER_ERROR
-        in the response header, signaling a malformed request to the master.
+        The response echoes the request's object headers and objects, which the master
+        compares octet for octet (IEEE 1815-2012 4.4.4.3 Rule 8), with each object's
+        status octet set to its own result (Rule 7).
+        Any FORMAT_ERROR status, or a result list that does not match its block, also
+        sets IIN.PARAMETER_ERROR in the response header.
 
         Args:
-            request: The original control request.
-            results: List of (index, status) pairs from processing.
-            ao_parse_error: True when the AO parse path detected a frame error
-                (unknown variation, unknown qualifier, or truncated buffer).
-                Carried separately so no dummy index-0 sentinel pollutes results.
+            request: The original control request; every block passed _control_block_error.
+            block_results: One list per block of request.objects, holding one
+                (index, status) per object of that block in wire order.
         """
-        # Build a lookup from index to status
-        status_map: dict[int, CommandStatus] = {}
-        has_format_error = ao_parse_error
-        for index, status in results:
-            status_map[index] = status
-            if status == CommandStatus.FORMAT_ERROR:
-                has_format_error = True
-
+        parameter_error = len(block_results) != len(request.objects)
         objects: list[ObjectBlock] = []
 
-        for block in request.objects:
-            if block.header.group == GROUP_CROB and block.header.variation == 1:
-                echoed, truncated = self._echo_crob_block(block, status_map)
-                objects.append(echoed)
-                if truncated:
-                    has_format_error = True
-            elif block.header.group == GROUP_ANALOG_OUTPUT:
-                echoed, ao_truncated = self._echo_ao_block(block, status_map)
-                objects.append(echoed)
-                if ao_truncated:
-                    has_format_error = True
-            else:
-                # For unsupported object types, echo the block as-is
-                objects.append(block)
+        for position, block in enumerate(request.objects):
+            results = block_results[position] if position < len(block_results) else []
+            echoed, misaligned = _echo_control_block(block, results)
+            objects.append(echoed)
+            parameter_error = parameter_error or misaligned
+            parameter_error = parameter_error or any(status == CommandStatus.FORMAT_ERROR for _, status in results)
 
         iin = self.iin
-        if has_format_error:
+        if parameter_error:
             iin = iin | IIN.PARAMETER_ERROR
 
         return build_response(
@@ -1727,141 +1707,6 @@ class Outstation:
             iin=iin,
             seq=request.header.control.seq,
         )
-
-    def _echo_crob_block(
-        self,
-        block: ObjectBlock,
-        status_map: dict[int, CommandStatus],
-    ) -> tuple[ObjectBlock, bool]:
-        """Echo a CROB block with status bytes set from results.
-
-        Derives count-field and index-field widths from the qualifier byte
-        using _crob_count_index_sizes, mirroring _parse_crob_block's framing
-        so 0x17 (1-byte) and 0x28 (2-byte) qualifiers are both handled
-        correctly.
-
-        Returns a tuple of (echoed_block, truncation_detected). When
-        truncation_detected is True the buffer was too short to echo all
-        objects declared by the count field; the caller must surface
-        IIN.PARAMETER_ERROR so the master knows the frame was malformed.
-        If the qualifier is unrecognised the original block is returned with
-        truncation_detected=False; the parse path already produced FORMAT_ERROR
-        for that case.
-
-        Args:
-            block: Original request CROB block.
-            status_map: Map of point index to command status.
-
-        Returns:
-            Tuple of (ObjectBlock with status bytes updated, truncation flag).
-        """
-        data = block.data
-        try:
-            count_bytes, index_bytes = _crob_count_index_sizes(block.header.qualifier)
-        except ValueError:
-            # Unrecognised qualifier: parse path already produced FORMAT_ERROR;
-            # return the block unmodified so the echo is at least not silently wrong.
-            return block, False
-
-        if len(data) < count_bytes:
-            return block, True
-
-        count = int.from_bytes(data[0:count_bytes], "little")
-        offset = count_bytes
-        result_data = bytearray(data[0:count_bytes])
-
-        body_without_status = _CROB_BODY_BYTES - 1
-
-        echoed = 0
-        for _ in range(count):
-            if offset + index_bytes + _CROB_BODY_BYTES > len(data):
-                # Buffer too short: remaining objects cannot be echoed.
-                break
-
-            # IEEE 1815-2012: echo echoes the request verbatim except the per-object
-            # status byte, which is replaced with the handler result.
-            index = int.from_bytes(data[offset : offset + index_bytes], "little")
-            result_data.extend(data[offset : offset + index_bytes])
-            offset += index_bytes
-
-            result_data.extend(data[offset : offset + body_without_status])
-            offset += body_without_status + 1  # advance past original status byte
-
-            status = status_map.get(index, CommandStatus.NOT_SUPPORTED)
-            result_data.append(int(status))
-            echoed += 1
-
-        truncation_detected = echoed < count
-        return ObjectBlock(header=block.header, data=bytes(result_data)), truncation_detected
-
-    def _echo_ao_block(
-        self,
-        block: ObjectBlock,
-        status_map: dict[int, CommandStatus],
-    ) -> tuple[ObjectBlock, bool]:
-        """Echo an Analog Output block with status bytes set from results.
-
-        Mirrors _echo_crob_block: derives count/index widths from the qualifier
-        so 0x17 (1-byte) and 0x28 (2-byte) frames are both echoed correctly.
-
-        Returns a tuple of (echoed_block, truncation_detected). When
-        truncation_detected is True the buffer was shorter than the declared count;
-        the caller must surface IIN.PARAMETER_ERROR. An unrecognised qualifier
-        returns the original block with truncation_detected=False because the
-        parse path already produced FORMAT_ERROR for that case.
-
-        Args:
-            block: Original request AO block.
-            status_map: Map of point index to command status.
-
-        Returns:
-            Tuple of (ObjectBlock with status bytes updated, truncation flag).
-        """
-        variation = block.header.variation
-        # Unknown variations are returned unchanged; _parse_ao_block
-        # already produced no results for them, so there is nothing meaningful
-        # to echo. No silent size default: a wrong size would corrupt the wire frame.
-        value_size = _AO_VALUE_SIZES.get(variation)
-        if value_size is None:
-            return block, False
-
-        try:
-            count_bytes, index_bytes = _crob_count_index_sizes(block.header.qualifier)
-        except ValueError:
-            # Unrecognised qualifier: parse path already produced FORMAT_ERROR.
-            return block, False
-
-        data = block.data
-        if len(data) < count_bytes:
-            return block, True
-
-        count = int.from_bytes(data[0:count_bytes], "little")
-        offset = count_bytes
-        result_data = bytearray(data[0:count_bytes])
-
-        obj_size = index_bytes + value_size + 1  # index + value + status
-
-        echoed = 0
-        for _ in range(count):
-            if offset + obj_size > len(data):
-                # Buffer too short: remaining objects cannot be echoed.
-                break
-
-            # IEEE 1815-2012: echo echoes the request verbatim except the per-object
-            # status byte, which is replaced with the handler result.
-            index = int.from_bytes(data[offset : offset + index_bytes], "little")
-            result_data.extend(data[offset : offset + index_bytes])
-            offset += index_bytes
-
-            result_data.extend(data[offset : offset + value_size])
-            offset += value_size + 1  # advance past original status byte
-
-            status = status_map.get(index, CommandStatus.NOT_SUPPORTED)
-            result_data.append(int(status))
-            echoed += 1
-
-        truncation_detected = echoed < count
-        return ObjectBlock(header=block.header, data=bytes(result_data)), truncation_detected
 
     def _build_delay_response(
         self,

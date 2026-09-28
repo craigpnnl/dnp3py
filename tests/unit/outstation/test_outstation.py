@@ -947,8 +947,7 @@ class TestCROBUnknownQualifier:
         raw_request = build_direct_operate_request(objects=(valid_block,))
         request = parse_request(raw_request.to_bytes())
 
-        results = [(0, CommandStatus.FORMAT_ERROR)]
-        response = outstation._build_control_response(request, results)
+        response = outstation._build_control_response(request, [[(0, CommandStatus.FORMAT_ERROR)]])
 
         assert IIN.PARAMETER_ERROR in response.header.iin, (
             f"FORMAT_ERROR result must produce IIN.PARAMETER_ERROR, got IIN=0x{int(response.header.iin):04X}"
@@ -1594,10 +1593,9 @@ class TestDirectOperateResponse:
     def test_direct_operate_crob_0x28_echoes_correct_index(self) -> None:
         """DIRECT_OPERATE with 0x28 CROB echoes the 2-byte index verbatim.
 
-        Index 300 does not fit in one byte (300 % 256 = 44). The prior
-        hardcoded 1-byte read in _echo_crob_block would echo index 44.
-        This test confirms the fixed implementation echoes the full 2-byte
-        little-endian index 300 at wire level.
+        Index 300 does not fit in one byte (300 % 256 = 44); a 1-byte index
+        read in the echo would echo index 44. The echo must carry the full
+        2-byte little-endian index 300 at wire level.
         """
 
         class AcceptHandler(DefaultCommandHandler):
@@ -2010,7 +2008,7 @@ class TestAnalogOutputVariations:
 
 
 class TestEchoCrobBlockHardenPass:
-    """Harden-pass tests for _echo_crob_block short-buffer and unknown-qualifier paths."""
+    """A FORMAT_ERROR result, or a CROB block shorter than its count, sets IIN.PARAMETER_ERROR."""
 
     def test_unknown_qualifier_via_handler_sets_parameter_error(self) -> None:
         """An unknown-qualifier CROB sets IIN.PARAMETER_ERROR end-to-end.
@@ -2041,8 +2039,7 @@ class TestEchoCrobBlockHardenPass:
 
         # Inject an unknown-qualifier FORMAT_ERROR result directly (as the parse
         # path would produce for a real unknown-qualifier block).
-        results = [(0, CommandStatus.FORMAT_ERROR)]
-        response = outstation._build_control_response(request, results)
+        response = outstation._build_control_response(request, [[(0, CommandStatus.FORMAT_ERROR)]])
 
         assert IIN.PARAMETER_ERROR in response.header.iin, (
             f"FORMAT_ERROR result must set IIN.PARAMETER_ERROR, got IIN=0x{int(response.header.iin):04X}"
