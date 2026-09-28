@@ -144,8 +144,25 @@ class TestReadRequests:
         _STATE_BIT = 0x80
         assert event_data[2] & _STATE_BIT, f"expected STATE bit set (value=True), flags=0x{event_data[2]:02X}"
 
-        # This slice does not change solicited responses: CON stays clear
-        # even though the fragment carries event data (Rule 1 is a later slice).
+        # Solicited responses keep CON clear for now, even when the fragment
+        # carries event data; setting it there is tracked in #77.
+        assert response.header.control.con is False
+        assert response.header.control.to_byte() & 0x20 == 0
+
+    def test_empty_class_poll_response_con_clear(self) -> None:
+        """A class poll with no pending events yields an empty response with CON clear.
+
+        IEEE 1815-2012 4.2.2.4.3 Rule 3 NOTE: an outstation with no events to
+        report is encouraged to clear CON rather than request a confirmation
+        that serves no purpose.
+        """
+        outstation = Outstation()
+        request = build_class_poll(class_1=True, class_2=False, class_3=False)
+        responses = outstation.process_request(request.to_bytes())
+
+        assert len(responses) == 1
+        response = responses[0]
+        assert len(response.objects) == 0
         assert response.header.control.con is False
         assert response.header.control.to_byte() & 0x20 == 0
 
@@ -300,7 +317,7 @@ class TestGenerateUnsolicited:
         assert response is None
 
     def test_unsolicited_response_sets_con(self) -> None:
-        """Every unsolicited fragment sets CON (IEEE 1815-2012 4.6.6 Rule 3)."""
+        """Every unsolicited fragment sets CON (IEEE 1815-2012 4.2.2.4.3 Rule 3)."""
         outstation = Outstation()
         config = BinaryInputConfig(event_class=EventClass.CLASS_1)
         outstation.database.add_binary_input(0, config=config)
