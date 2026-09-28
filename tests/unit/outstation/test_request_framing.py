@@ -8,6 +8,8 @@ answers a null response with IIN2.1 for an object of unknown width and IIN2.2 ot
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 import pytest
 
 from dnp3.application.fragment import ResponseFragment
@@ -45,8 +47,34 @@ _G50V1 = bytes.fromhex("32 01 07 01 00E8764801 00")
 _G50V2 = bytes.fromhex("32 02 07 01 00E8764801 00 10270000")
 # g20v0 all counters.
 _G20_ALL = bytes.fromhex("14 00 06")
+# g60v1 (class 0) and g60v2 (class 1), all objects.
+_G60V1_ALL = bytes.fromhex("3C 01 06")
+_G60V2_ALL = bytes.fromhex("3C 02 06")
+# One octet after a block: too few for an object header.
+_TRAILING = bytes([0x14])
 
 _IIN1_RESTART = 0x80
+
+# Every function this outstation executes, each with a request whose first block frames
+# and whose later part does not.
+_EXECUTED = [
+    (FunctionCode.READ, _G60V1_ALL + _TRAILING),
+    (FunctionCode.WRITE, _G80V1_CLEAR_RESTART + _G50V1[:-1]),
+    (FunctionCode.SELECT, _crob(1) + _crob(2, count=2)),
+    (FunctionCode.OPERATE, _crob(1) + _crob(2, count=2)),
+    (FunctionCode.DIRECT_OPERATE, _crob(1) + _crob(2, count=2)),
+    (FunctionCode.DIRECT_OPERATE_NO_ACK, _crob(1) + _crob(2, count=2)),
+    (FunctionCode.IMMEDIATE_FREEZE, _G20_ALL + _TRAILING),
+    (FunctionCode.IMMEDIATE_FREEZE_NO_ACK, _G20_ALL + _TRAILING),
+    (FunctionCode.FREEZE_CLEAR, _G20_ALL + _TRAILING),
+    (FunctionCode.FREEZE_CLEAR_NO_ACK, _G20_ALL + _TRAILING),
+    (FunctionCode.COLD_RESTART, _G60V1_ALL + _TRAILING),
+    (FunctionCode.WARM_RESTART, _G60V1_ALL + _TRAILING),
+    (FunctionCode.ENABLE_UNSOLICITED, _G60V2_ALL + _TRAILING),
+    (FunctionCode.DISABLE_UNSOLICITED, _G60V2_ALL + _TRAILING),
+    (FunctionCode.DELAY_MEASURE, _G60V1_ALL + _TRAILING),
+]
+_NO_ACK = {FunctionCode.DIRECT_OPERATE_NO_ACK, FunctionCode.IMMEDIATE_FREEZE_NO_ACK, FunctionCode.FREEZE_CLEAR_NO_ACK}
 
 
 class _RecordingHandler(DefaultCommandHandler):
@@ -106,6 +134,23 @@ def _send(
     outstation: Outstation, function: FunctionCode, objects: bytes, seq: int, peer: PeerId = MASTER_A
 ) -> list[ResponseFragment]:
     return outstation.process_request(bytes([0xC0 | seq, function.value]) + objects, peer=peer)
+
+
+def _spy_on_function_handlers(outstation: Outstation, monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Record the name of every Outstation._handle_* method the outstation calls."""
+    called: list[str] = []
+
+    def recording(name: str, handle: Callable[..., object]) -> Callable[..., object]:
+        def record(*args: object, **kwargs: object) -> object:
+            called.append(name)
+            return handle(*args, **kwargs)
+
+        return record
+
+    for name in dir(Outstation):
+        if name.startswith("_handle_"):
+            monkeypatch.setattr(outstation, name, recording(name, getattr(outstation, name)))
+    return called
 
 
 def _only(responses: list[ResponseFragment]) -> ResponseFragment:
@@ -181,6 +226,22 @@ class TestEveryBlockReachesTheOutstation:
 
 class TestUnframeableRequestRunsNothing:
     """A block that cannot be framed refuses the whole request."""
+
+    @pytest.mark.parametrize(("function", "objects"), _EXECUTED, ids=[function.name for function, _ in _EXECUTED])
+    def test_framed_first_block_does_not_run_when_a_later_part_fails(
+        self, function: FunctionCode, objects: bytes, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        outstation, handler = _outstation()
+        called = _spy_on_function_handlers(outstation, monkeypatch)
+
+        responses = _send(outstation, function, objects, seq=3)
+
+        expected = [] if function in _NO_ACK else [_null_response(3, 0x04)]
+        assert [response.to_bytes() for response in responses] == expected
+        assert called == []
+        assert handler.calls == 0
+        assert outstation.iin & IIN.DEVICE_RESTART
+        assert outstation._state.selection_of(MASTER_A) is None
 
     def test_select_whose_last_block_is_short_arms_nothing(self) -> None:
         outstation, handler = _outstation()
