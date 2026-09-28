@@ -28,6 +28,8 @@ from dnp3.application.fragment import (
     ObjectBlock,
     RequestFragment,
     ResponseFragment,
+    Truncation,
+    TruncationReason,
 )
 from dnp3.application.header import (
     MAX_APP_SEQUENCE,
@@ -71,6 +73,8 @@ __all__ = [
     "ResponseFragment",
     "ResponseHeader",
     "StartStopRange",
+    "Truncation",
+    "TruncationReason",
     "build_all_objects_request",
     "build_class_poll",
     "build_cold_restart_request",

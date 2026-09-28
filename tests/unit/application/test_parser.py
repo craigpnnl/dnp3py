@@ -1,14 +1,24 @@
 """Tests for application layer parser."""
 
+import dataclasses
+
 import pytest
 
+import dnp3.application
 from dnp3.application import parser
-from dnp3.application.fragment import ObjectBlock, RequestFragment, ResponseFragment
+from dnp3.application.fragment import (
+    ObjectBlock,
+    RequestFragment,
+    ResponseFragment,
+    Truncation,
+    TruncationReason,
+)
 from dnp3.application.header import RequestHeader, ResponseHeader
 from dnp3.application.parser import (
     RESPONSE_FUNCTION_CODES,
     ParsedRange,
     ParseError,
+    frame_response_object_blocks,
     is_request,
     is_response,
     parse_object_headers,
@@ -21,6 +31,18 @@ from dnp3.application.parser import (
 from dnp3.application.qualifiers import ObjectHeader, PrefixCode, RangeCode
 from dnp3.core.enums import FunctionCode
 from dnp3.core.flags import IIN
+
+# Object bytes from IEEE 1815-2012, not from this library's encoders.
+# g1v2 (A.2.2: flag octet, state in bit 7), start-stop 9..9, on.
+_B1 = bytes.fromhex("01 02 00 09 09 81")
+# g30v1 (A.14.1: flag, INT32 little-endian), count 1, index 7, value 200.
+_G7 = bytes.fromhex("1E 01 17 01 07 01 C8 00 00 00")
+_RESPONSE_HEADER = bytes([0xC0, 0x81, 0x00, 0x00])
+
+
+def _block(wire: bytes) -> ObjectBlock:
+    """The block a correct parser frames from exactly these wire bytes."""
+    return ObjectBlock(header=ObjectHeader.from_bytes(wire), data=wire[3:])
 
 
 class TestResponseFunctionCodes:
@@ -234,12 +256,13 @@ class TestParseResponse:
 
     def test_parse_with_objects(self) -> None:
         """Parse response with object data."""
-        # RESPONSE + Group 1 Var 2 (binary with flags), start=0, stop=0
-        data = b"\xc0\x81\x00\x00\x01\x02\x00\x00\x00"
+        # RESPONSE + Group 1 Var 2 (binary with flags), start=0, stop=0, one flag octet
+        data = b"\xc0\x81\x00\x00\x01\x02\x00\x00\x00\x81"
         fragment = parse_response(data)
         assert fragment.header.function == FunctionCode.RESPONSE
         assert len(fragment.objects) == 1
         assert fragment.objects[0].header.group == 1
+        assert fragment.objects[0].data == b"\x00\x00\x81"
 
     def test_unsolicited_properties(self) -> None:
         """Unsolicited response properties work."""
@@ -342,7 +365,8 @@ class TestRoundtrip:
             prefix=PrefixCode.NONE,
             range_code=RangeCode.UINT8_START_STOP,
         )
-        block = ObjectBlock(header=obj_header, data=b"\x00\x04")
+        # Range 0..4 and one g1v2 flag octet per point.
+        block = ObjectBlock(header=obj_header, data=b"\x00\x04" + bytes([0x81, 0x01, 0x81, 0x01, 0x81]))
         original = ResponseFragment(header=header, objects=(block,))
 
         data = original.to_bytes()
@@ -351,7 +375,8 @@ class TestRoundtrip:
         assert parsed.header.function == original.header.function
         assert parsed.header.iin == original.header.iin
         assert parsed.header.control.seq == original.header.control.seq
-        assert len(parsed.objects) == len(original.objects)
+        assert parsed.objects == original.objects
+        assert parsed.truncation is None
 
 
 class TestParseResponseObjectBlocks:
@@ -371,51 +396,38 @@ class TestParseResponseObjectBlocks:
 
         assert [(b.header.group, b.header.variation) for b in blocks] == [(1, 2), (30, 1)]
 
-    def test_unknown_group_absorbs_remainder(self) -> None:
-        """A group/variation with no known width consumes the rest of the fragment.
-
-        IEEE 1815-2012 A.14 defines g30v1 to g30v6 only, so g30v99 has no width; it
-        takes the remaining bytes rather than guessing a boundary.
-        """
-        data = bytes([0x1E, 0x63, 0x00, 0x00, 0x00, 0x01, 0x09, 0x03]) + bytes([0x01, 0x02, 0x00, 0x00, 0x00, 0x81])
-        blocks = parse_response_object_blocks(data)
-
-        assert len(blocks) == 1
-        assert (blocks[0].header.group, blocks[0].header.variation) == (30, 99)
-        assert blocks[0].data == data[3:]
-
-    def test_reserved_qualifier_stops_parsing_without_raising(self) -> None:
-        """A reserved range code has no decodable width.
-
-        Parsing stops and returns the blocks already found, rather than raising
-        and discarding the whole response.
-        """
-        data = bytes([0x01, 0x02, 0x00, 0x00, 0x00, 0x81]) + bytes([0x01, 0x02, 0x0C, 0x00, 0x00])
-        blocks = parse_response_object_blocks(data)
-
-        assert len(blocks) == 1
-        assert blocks[0].header.group == 1
-
     def test_leading_reserved_qualifier_returns_empty(self) -> None:
-        """A reserved qualifier in the first block yields no blocks, not an error."""
-        assert parse_response_object_blocks(bytes([0x01, 0x02, 0x0C, 0x00, 0x00])) == []
+        """A reserved qualifier in the first block yields no blocks and a reason, not an error."""
+        data = bytes([0x01, 0x02, 0x0C, 0x00, 0x00])
 
-    def test_short_object_data_keeps_block_and_stops(self) -> None:
-        """A block declaring more points than it carries is kept, then parsing stops."""
+        assert frame_response_object_blocks(data) == (
+            [],
+            Truncation(TruncationReason.RESERVED_QUALIFIER, 0, 1, 2, 0x0C),
+        )
+
+    def test_short_object_data_drops_the_block_and_stops(self) -> None:
+        """A block declaring more points than it carries is not returned, and parsing stops."""
         # g1v2 start=0 stop=4 declares 5 points but supplies 2 bytes.
         data = bytes([0x01, 0x02, 0x00, 0x00, 0x04, 0x81, 0x01])
-        blocks = parse_response_object_blocks(data)
 
-        assert len(blocks) == 1
-        assert blocks[0].header.group == 1
-        assert blocks[0].data == bytes([0x00, 0x04, 0x81, 0x01])
+        assert frame_response_object_blocks(data) == (
+            [],
+            Truncation(TruncationReason.DATA_SHORTER_THAN_DECLARED, 0, 1, 2, 0x00),
+        )
 
-    def test_partial_trailing_header_is_ignored(self) -> None:
-        """Fewer than 3 trailing bytes cannot be a header and are dropped."""
+    def test_partial_trailing_header_is_reported(self) -> None:
+        """Fewer than 3 trailing bytes cannot be a header: they are not framed, and the stop is reported."""
         data = bytes([0x01, 0x02, 0x00, 0x00, 0x00, 0x81]) + bytes([0x1E, 0x01])
-        blocks = parse_response_object_blocks(data)
 
-        assert len(blocks) == 1
+        assert frame_response_object_blocks(data) == (
+            [ObjectBlock(header=ObjectHeader(1, 2, 0x00), data=bytes([0x00, 0x00, 0x81]))],
+            Truncation(TruncationReason.TRAILING_OCTETS, 6),
+        )
+
+    def test_blocks_match_the_framed_blocks(self) -> None:
+        data = _B1 + bytes([0x1E, 0x63, 0x00, 0x00, 0x00, 0x01, 0x64, 0x00, 0x00, 0x00]) + _G7
+
+        assert parse_response_object_blocks(data) == frame_response_object_blocks(data)[0] == [_block(_B1)]
 
     def test_empty_data_returns_empty(self) -> None:
         assert parse_response_object_blocks(b"") == []
@@ -427,21 +439,24 @@ class TestParseResponseObjectBlocks:
         assert len(blocks) == 1
         assert blocks[0].header.group == 60
 
-    def test_virtual_address_range_absorbs_remainder(self) -> None:
-        """A range specifier with no defined width cannot bound the block."""
-        data = bytes([0x01, 0x02, 0x0B, 0x00, 0x00, 0x81]) + bytes([0x1E, 0x01, 0x00, 0x00, 0x00])
-        blocks = parse_response_object_blocks(data)
+    @pytest.mark.parametrize(("group", "variation"), [(30, 1), (200, 0)], ids=["g30v1-known", "g200v0-unknown"])
+    def test_all_objects_block_with_index_prefix_frames_as_its_header(self, group: int, variation: int) -> None:
+        header = bytes([group, variation, 0x16])
 
-        assert len(blocks) == 1
-        assert blocks[0].header.group == 1
+        assert frame_response_object_blocks(header + _G7) == ([_block(header), _block(_G7)], None)
 
-    def test_size_prefix_absorbs_remainder(self) -> None:
-        """Size-prefixed (variable-format) objects have no registry width."""
-        data = bytes([0x02, 0x01, 0x47, 0x01, 0x01, 0x81]) + bytes([0x1E, 0x01, 0x00, 0x00, 0x00])
-        blocks = parse_response_object_blocks(data)
+    def test_all_objects_packed_block_with_index_prefix_stops(self) -> None:
+        """IEEE 1815-2012 A.2.1 packs bits only over a contiguous range, so g1v1 with an index prefix has no length."""
+        assert frame_response_object_blocks(bytes([0x01, 0x01, 0x16]) + _G7) == (
+            [],
+            Truncation(TruncationReason.PACKED_WITH_INDEX_PREFIX, 0, 1, 1, 0x16),
+        )
 
-        assert len(blocks) == 1
-        assert blocks[0].header.group == 2
+    def test_all_objects_block_of_unknown_width_frames_as_its_header(self) -> None:
+        """An ALL_OBJECTS block has no objects to size, so an unknown width does not stop framing."""
+        data = bytes([0x1E, 0x63, 0x06]) + _G7
+
+        assert frame_response_object_blocks(data) == ([_block(bytes([0x1E, 0x63, 0x06])), _block(_G7)], None)
 
 
 # A g30v1 block (A.14.1: flag, INT32) at index 0, placed after the block under test.
@@ -510,16 +525,6 @@ class TestResponseBlocksFramedFromLayout:
         assert blocks[0].data == bytes([0x00, stop]) + packed
         assert blocks[1].data == _G30V1_BLOCK[3:]
 
-    def test_packed_block_with_index_prefix_absorbs_remainder(self) -> None:
-        """A.2.1 packs bits only over a contiguous range, so an index-prefixed g1v1 block has no length."""
-        data = bytes([0x01, 0x01, 0x17, 0x02, 0x05, 0x81, 0x06, 0x01]) + _G30V1_BLOCK
-
-        blocks = parse_response_object_blocks(data)
-
-        assert len(blocks) == 1
-        assert (blocks[0].header.group, blocks[0].header.variation) == (1, 1)
-        assert blocks[0].data == data[3:]
-
     @pytest.mark.parametrize(
         "framing",
         [
@@ -574,17 +579,184 @@ class TestStartStopRangeBelowOneObject:
         _register_g99v1_width_2(monkeypatch)
         data = _G30V1_BLOCK + bytes([group, variation, 0x00, 0x05, stop]) + tail + _G30V1_BLOCK
 
-        blocks = parse_response_object_blocks(data)
+        blocks, truncation = frame_response_object_blocks(data)
 
-        assert (blocks[0].header.group, blocks[0].header.variation) == (30, 1)
-        assert blocks[0].data == _G30V1_BLOCK[3:]
-        assert {(b.header.group, b.header.variation) for b in blocks[1:]} <= {(group, variation)}
-        assert len(blocks) <= 2
+        assert blocks == [_block(_G30V1_BLOCK)]
+        assert truncation == Truncation(TruncationReason.RANGE_NAMES_NO_OBJECT, 10, group, variation, 0x00)
 
     def test_registry_length_refuses_a_negative_count(self) -> None:
         with pytest.raises(ValueError, match="non-negative"):
             parser._fixed_width_length(2, -1, 0)
 
+    def test_registry_length_refuses_a_negative_width(self) -> None:
+        with pytest.raises(ValueError, match="non-negative"):
+            parser._fixed_width_length(-1, 1, 0)
+
     def test_registry_length_refuses_a_negative_prefix_width(self) -> None:
         with pytest.raises(ValueError, match="non-negative"):
             parser._fixed_width_length(2, 1, -1)
+
+
+class TestResponseFramingStops:
+    """Where a block cannot be framed, the blocks before it are returned, it is not, and the reason is given.
+
+    Driven through `parse_response`, the path the master reads by. Offsets count from the first octet
+    after the 4-octet response header.
+    """
+
+    @staticmethod
+    def _parse(objects: bytes) -> ResponseFragment:
+        return parse_response(_RESPONSE_HEADER + objects)
+
+    def test_over_declared_count_returns_no_block_from_the_following_bytes(self) -> None:
+        """Count 3 with one object present: the next block's bytes are never read as its objects (#103)."""
+        fragment = self._parse(bytes.fromhex("1E 01 17 03 05 01 64 00 00 00") + _G7)
+
+        assert fragment.objects == ()
+        assert fragment.truncation == Truncation(TruncationReason.DATA_SHORTER_THAN_DECLARED, 0, 30, 1, 0x17)
+
+    def test_over_declared_count_keeps_the_block_before(self) -> None:
+        fragment = self._parse(_B1 + bytes.fromhex("1E 01 17 03 05 01 64 00 00 00") + _G7)
+
+        assert fragment.objects == (_block(_B1),)
+        assert fragment.truncation == Truncation(TruncationReason.DATA_SHORTER_THAN_DECLARED, 6, 30, 1, 0x17)
+
+    def test_misaligned_next_header_stops_at_the_unsizable_header(self) -> None:
+        """Count 2 with one object present fits inside the fragment, so it frames; the named limit.
+
+        The first block takes 12 octets of objects, the second object being the next block's
+        first 6 octets, and the header found at offset 16 (g200v0) has no width.
+        """
+        objects = bytes.fromhex("1E 01 17 02 05 01 64 00 00 001E 01 17 01 07 01 C8 00 00 0001 02 00 09 09 81")
+
+        fragment = self._parse(objects)
+
+        assert fragment.objects == (_block(objects[:16]),)
+        assert len(fragment.objects[0].data) == 1 + 12
+        assert fragment.truncation == Truncation(TruncationReason.UNKNOWN_WIDTH, 16, 200, 0, 0x00)
+
+    @pytest.mark.parametrize("stop", [0x04, 0x03], ids=["stop-is-start-minus-1", "stop-is-start-minus-2"])
+    def test_start_stop_range_naming_no_object_is_dropped(self, stop: int) -> None:
+        fragment = self._parse(_B1 + bytes([0x1E, 0x01, 0x00, 0x05, stop, 0x01, 0x10, 0x00, 0x00, 0x00]) + _G7)
+
+        assert fragment.objects == (_block(_B1),)
+        assert fragment.truncation == Truncation(TruncationReason.RANGE_NAMES_NO_OBJECT, 6, 30, 1, 0x00)
+
+    def test_count_of_zero_is_not_refused(self) -> None:
+        """Only a start-stop range can name no object; a count of 0 is a valid empty block."""
+        empty = bytes([0x1E, 0x01, 0x17, 0x00])
+
+        fragment = self._parse(empty + _G7)
+
+        assert fragment.objects == (_block(empty), _block(_G7))
+        assert fragment.truncation is None
+
+    def test_request_headers_with_stop_below_start_do_not_raise(self) -> None:
+        """A request carries no object data, so a start-stop range there is not checked for a length."""
+        assert parse_object_headers(bytes([0x1E, 0x00, 0x00, 0x05, 0x03])) == [
+            ObjectBlock(header=ObjectHeader(30, 0, 0x00), data=bytes([0x05, 0x03]))
+        ]
+
+    @pytest.mark.parametrize("qualifier", [0x03, 0x0B], ids=["virtual-address-1", "variable-format"])
+    def test_unsupported_range_code_stops(self, qualifier: int) -> None:
+        fragment = self._parse(_B1 + bytes([0x1E, 0x01, qualifier, 0x00, 0x00, 0x01, 0x64, 0x00, 0x00, 0x00]) + _G7)
+
+        assert fragment.objects == (_block(_B1),)
+        assert fragment.truncation == Truncation(TruncationReason.UNSUPPORTED_RANGE, 6, 30, 1, qualifier)
+
+    def test_size_prefix_stops(self) -> None:
+        fragment = self._parse(_B1 + bytes([0x02, 0x01, 0x47, 0x01, 0x01, 0x81]) + _G7)
+
+        assert fragment.objects == (_block(_B1),)
+        assert fragment.truncation == Truncation(TruncationReason.SIZE_PREFIX, 6, 2, 1, 0x47)
+
+    @pytest.mark.parametrize(
+        "qualifier",
+        [0x0A, 0x0C, 0x0F, 0x70, 0x76],
+        ids=["range-code-A", "range-code-C", "range-code-F", "prefix-code-7", "prefix-code-7-all-objects"],
+    )
+    def test_reserved_qualifier_stops(self, qualifier: int) -> None:
+        fragment = self._parse(_B1 + bytes([0x01, 0x02, qualifier, 0x00, 0x00]))
+
+        assert fragment.objects == (_block(_B1),)
+        assert fragment.truncation == Truncation(TruncationReason.RESERVED_QUALIFIER, 6, 1, 2, qualifier)
+
+    def test_error_from_a_registered_size_is_not_reported_as_a_reserved_qualifier(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def broken_size(group: int, variation: int) -> int:
+            raise ValueError("registered size failed")
+
+        monkeypatch.setattr(parser.registry, "get_size", broken_size)
+
+        with pytest.raises(ValueError, match="registered size failed"):
+            self._parse(_B1 + bytes([0x63, 0x01, 0x00, 0x00, 0x00, 0xAB, 0xCD]))
+
+    @pytest.mark.parametrize("size", [-1, -10])
+    def test_negative_registered_size_stops(self, monkeypatch: pytest.MonkeyPatch, size: int) -> None:
+        """A negative width gives no usable length, so no bytes are framed with the block."""
+        monkeypatch.setattr(parser.registry, "get_size", lambda group, variation: size if group == 99 else None)
+
+        fragment = self._parse(_B1 + bytes([0x63, 0x01, 0x00, 0x00, 0x00, 0xAB, 0xCD]) + _G7)
+
+        assert fragment.objects == (_block(_B1),)
+        assert fragment.truncation == Truncation(TruncationReason.UNKNOWN_WIDTH, 6, 99, 1, 0x00)
+
+    def test_packed_block_with_index_prefix_stops(self) -> None:
+        """IEEE 1815-2012 A.2.1 packs bits only over a contiguous range, so an index-prefixed g1v1 has no length."""
+        fragment = self._parse(bytes([0x01, 0x01, 0x17, 0x02, 0x05, 0x81, 0x06, 0x01]) + _G7)
+
+        assert fragment.objects == ()
+        assert fragment.truncation == Truncation(TruncationReason.PACKED_WITH_INDEX_PREFIX, 0, 1, 1, 0x17)
+
+    def test_unknown_variation_stops(self) -> None:
+        """IEEE 1815-2012 A.14 defines g30v1 to g30v6 only, so g30v99 has no width."""
+        fragment = self._parse(_B1 + bytes([0x1E, 0x63, 0x00, 0x00, 0x00, 0x01, 0x64, 0x00, 0x00, 0x00]) + _G7)
+
+        assert fragment.objects == (_block(_B1),)
+        assert fragment.truncation == Truncation(TruncationReason.UNKNOWN_WIDTH, 6, 30, 99, 0x00)
+
+    def test_short_last_block_is_dropped(self) -> None:
+        """Start-stop 0..2 declares three g30v1 objects and one is present."""
+        fragment = self._parse(_B1 + bytes([0x1E, 0x01, 0x00, 0x00, 0x02, 0x01, 0x64, 0x00, 0x00, 0x00]))
+
+        assert fragment.objects == (_block(_B1),)
+        assert fragment.truncation == Truncation(TruncationReason.DATA_SHORTER_THAN_DECLARED, 6, 30, 1, 0x00)
+
+    def test_block_short_by_one_octet_is_dropped(self) -> None:
+        fragment = self._parse(_B1 + bytes([0x1E, 0x01, 0x00, 0x00, 0x00, 0x01, 0x64, 0x00, 0x00]))
+
+        assert fragment.objects == (_block(_B1),)
+        assert fragment.truncation == Truncation(TruncationReason.DATA_SHORTER_THAN_DECLARED, 6, 30, 1, 0x00)
+
+    def test_range_field_cut_short_stops(self) -> None:
+        fragment = self._parse(bytes([0x01, 0x02, 0x00, 0x00]))
+
+        assert fragment.objects == ()
+        assert fragment.truncation == Truncation(TruncationReason.DATA_SHORTER_THAN_DECLARED, 0, 1, 2, 0x00)
+
+    def test_trailing_octet_stops(self) -> None:
+        fragment = self._parse(_B1 + bytes([0x1E]))
+
+        assert fragment.objects == (_block(_B1),)
+        assert fragment.truncation == Truncation(TruncationReason.TRAILING_OCTETS, 6)
+        assert fragment.truncation.group is None
+
+    def test_fully_framed_response_has_no_truncation(self) -> None:
+        fragment = self._parse(_B1 + _G7)
+
+        assert fragment.objects == (_block(_B1), _block(_G7))
+        assert fragment.truncation is None
+
+
+class TestTruncationType:
+    def test_exported_from_the_application_package(self) -> None:
+        assert dnp3.application.Truncation is Truncation
+        assert dnp3.application.TruncationReason is TruncationReason
+        assert {"Truncation", "TruncationReason"} <= set(dnp3.application.__all__)
+
+    def test_is_frozen(self) -> None:
+        truncation = Truncation(TruncationReason.TRAILING_OCTETS, 6)
+
+        with pytest.raises(dataclasses.FrozenInstanceError):
+            truncation.offset = 0  # type: ignore[misc]
