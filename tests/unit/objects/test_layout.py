@@ -78,16 +78,32 @@ _EXPECTED_ROWS = {
     (13, 2): (PointKind.BINARY_COMMAND_EVENT, 7, 0, False, _REC, _ABS),  # A.9.2: status, state, DNP3TIME
     (20, 1): (_CT, 5, 0, True, _UINT, _NO),  # A.10.1: flag, UINT32
     (20, 2): (_CT, 3, 0, True, _UINT, _NO),  # A.10.2: flag, UINT16
+    (20, 3): (_CT, 5, 0, True, _UINT, _NO),  # A.10.3: flag, UINT32, delta
+    (20, 4): (_CT, 3, 0, True, _UINT, _NO),  # A.10.4: flag, UINT16, delta
     (20, 5): (_CT, 4, 0, False, _UINT, _NO),  # A.10.5: UINT32
     (20, 6): (_CT, 2, 0, False, _UINT, _NO),  # A.10.6: UINT16
+    (20, 7): (_CT, 4, 0, False, _UINT, _NO),  # A.10.7: UINT32, delta
+    (20, 8): (_CT, 2, 0, False, _UINT, _NO),  # A.10.8: UINT16, delta
     (21, 1): (_FC, 5, 0, True, _UINT, _NO),  # A.11.1: flag, UINT32
     (21, 2): (_FC, 3, 0, True, _UINT, _NO),  # A.11.2: flag, UINT16
+    (21, 3): (_FC, 5, 0, True, _UINT, _NO),  # A.11.3: flag, UINT32, delta
+    (21, 4): (_FC, 3, 0, True, _UINT, _NO),  # A.11.4: flag, UINT16, delta
     (21, 5): (_FC, 11, 0, True, _UINT, _ABS),  # A.11.5: flag, UINT32, DNP3TIME
     (21, 6): (_FC, 9, 0, True, _UINT, _ABS),  # A.11.6: flag, UINT16, DNP3TIME
+    (21, 7): (_FC, 11, 0, True, _UINT, _ABS),  # A.11.7: flag, UINT32, DNP3TIME, delta
+    (21, 8): (_FC, 9, 0, True, _UINT, _ABS),  # A.11.8: flag, UINT16, DNP3TIME, delta
+    (21, 9): (_FC, 4, 0, False, _UINT, _NO),  # A.11.9: UINT32
+    (21, 10): (_FC, 2, 0, False, _UINT, _NO),  # A.11.10: UINT16
+    (21, 11): (_FC, 4, 0, False, _UINT, _NO),  # A.11.11: UINT32, delta
+    (21, 12): (_FC, 2, 0, False, _UINT, _NO),  # A.11.12: UINT16, delta
     (22, 1): (_CT, 5, 0, True, _UINT, _NO),  # A.12.1: flag, UINT32
     (22, 2): (_CT, 3, 0, True, _UINT, _NO),  # A.12.2: flag, UINT16
+    (22, 3): (_CT, 5, 0, True, _UINT, _NO),  # A.12.3: flag, UINT32, delta
+    (22, 4): (_CT, 3, 0, True, _UINT, _NO),  # A.12.4: flag, UINT16, delta
     (22, 5): (_CT, 11, 0, True, _UINT, _ABS),  # A.12.5: flag, UINT32, DNP3TIME
     (22, 6): (_CT, 9, 0, True, _UINT, _ABS),  # A.12.6: flag, UINT16, DNP3TIME
+    (22, 7): (_CT, 11, 0, True, _UINT, _ABS),  # A.12.7: flag, UINT32, DNP3TIME, delta
+    (22, 8): (_CT, 9, 0, True, _UINT, _ABS),  # A.12.8: flag, UINT16, DNP3TIME, delta
     (23, 1): (_FC, 5, 0, True, _UINT, _NO),  # A.13.1: flag, UINT32
     (23, 2): (_FC, 3, 0, True, _UINT, _NO),  # A.13.2: flag, UINT16
     (23, 3): (_FC, 5, 0, True, _UINT, _NO),  # A.13.3: flag, UINT32, delta (obsolete)

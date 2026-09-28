@@ -171,23 +171,42 @@ _TABLE: dict[tuple[int, int], WireLayout] = {
     # A.9: status code, commanded state.
     (13, 1): _octets(PointKind.BINARY_COMMAND_EVENT, 1, _REC, flags=False),
     (13, 2): _octets(PointKind.BINARY_COMMAND_EVENT, 1, _REC, flags=False, time=_ABS),
-    # A.10
+    # A.10. v3, v4, v7, v8 are delta variations, obsolete per the standard but still
+    # on the wire; each has the same flag/width/time shape as its plain sibling.
     (20, 1): _octets(_CT, 4, _UINT),
     (20, 2): _octets(_CT, 2, _UINT),
+    (20, 3): _octets(_CT, 4, _UINT),
+    (20, 4): _octets(_CT, 2, _UINT),
     (20, 5): _octets(_CT, 4, _UINT, flags=False),
     (20, 6): _octets(_CT, 2, _UINT, flags=False),
-    # A.11: v5 and v6 carry flag and time, unlike g20v5 and g20v6.
+    (20, 7): _octets(_CT, 4, _UINT, flags=False),
+    (20, 8): _octets(_CT, 2, _UINT, flags=False),
+    # A.11: v1-v4 share g20v1-v4's flag/width shape; v5-v8 add a DNP3TIME field
+    # g20 never has; v9-v12 share g20v5-v8's without-flag, no-time shape.
     (21, 1): _octets(_FC, 4, _UINT),
     (21, 2): _octets(_FC, 2, _UINT),
+    (21, 3): _octets(_FC, 4, _UINT),
+    (21, 4): _octets(_FC, 2, _UINT),
     (21, 5): _octets(_FC, 4, _UINT, time=_ABS),
     (21, 6): _octets(_FC, 2, _UINT, time=_ABS),
-    # A.12
+    (21, 7): _octets(_FC, 4, _UINT, time=_ABS),
+    (21, 8): _octets(_FC, 2, _UINT, time=_ABS),
+    (21, 9): _octets(_FC, 4, _UINT, flags=False),
+    (21, 10): _octets(_FC, 2, _UINT, flags=False),
+    (21, 11): _octets(_FC, 4, _UINT, flags=False),
+    (21, 12): _octets(_FC, 2, _UINT, flags=False),
+    # A.12: v3, v4, v7, v8 are delta variations of v1, v2, v5, v6.
     (22, 1): _octets(_CT, 4, _UINT),
     (22, 2): _octets(_CT, 2, _UINT),
+    (22, 3): _octets(_CT, 4, _UINT),
+    (22, 4): _octets(_CT, 2, _UINT),
     (22, 5): _octets(_CT, 4, _UINT, time=_ABS),
     (22, 6): _octets(_CT, 2, _UINT, time=_ABS),
+    (22, 7): _octets(_CT, 4, _UINT, time=_ABS),
+    (22, 8): _octets(_CT, 2, _UINT, time=_ABS),
     # A.13: v3/v4/v7/v8 are the delta variations (obsolete per A.13.3.2.3); the
-    # standard gives them the same flag, width and time fields as v1/v2/v5/v6.
+    # standard gives them the same field widths and time field as v1/v2/v5/v6.
+    # Bit 6 of the flag octet differs: DISCONTINUITY on v1/v5/v6, reserved on v3/v7.
     (23, 1): _octets(_FC, 4, _UINT),
     (23, 2): _octets(_FC, 2, _UINT),
     (23, 3): _octets(_FC, 4, _UINT),
