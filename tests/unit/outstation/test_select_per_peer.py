@@ -161,13 +161,17 @@ def _statuses(responses: list[ResponseFragment]) -> list[tuple[int, CommandStatu
     return [(data[1 + 12 * i], CommandStatus(data[12 + 12 * i])) for i in range(data[0])]
 
 
-def _select(outstation: Outstation, peer: PeerId | None, *points: tuple[int, int]) -> list[tuple[int, CommandStatus]]:
-    request = build_select_request(objects=(_crob_block(*points),), seq=0)
+def _select(
+    outstation: Outstation, peer: PeerId | None, *points: tuple[int, int], seq: int = 0
+) -> list[tuple[int, CommandStatus]]:
+    request = build_select_request(objects=(_crob_block(*points),), seq=seq)
     return _statuses(outstation.process_request(request.to_bytes(), peer=peer))
 
 
-def _operate(outstation: Outstation, peer: PeerId | None, *points: tuple[int, int]) -> list[tuple[int, CommandStatus]]:
-    request = build_operate_request(objects=(_crob_block(*points),), seq=1)
+def _operate(
+    outstation: Outstation, peer: PeerId | None, *points: tuple[int, int], seq: int = 1
+) -> list[tuple[int, CommandStatus]]:
+    request = build_operate_request(objects=(_crob_block(*points),), seq=seq)
     return _statuses(outstation.process_request(request.to_bytes(), peer=peer))
 
 
@@ -285,11 +289,12 @@ class TestSelectOnPointAnotherPeerHolds:
         assert outstation._state.get_select(5, peer=live) is not None
 
     def test_the_holder_may_select_its_own_point_again(self) -> None:
+        # A new sequence number: at the same one, other octets are discarded (Table 4-9).
         outstation, handler = _outstation()
         _select(outstation, MASTER_A, (5, 1000))
 
-        assert _select(outstation, MASTER_A, (5, 2000)) == [(5, SUCCESS)]
-        assert _operate(outstation, MASTER_A, (5, 2000)) == [(5, SUCCESS)]
+        assert _select(outstation, MASTER_A, (5, 2000), seq=1) == [(5, SUCCESS)]
+        assert _operate(outstation, MASTER_A, (5, 2000), seq=2) == [(5, SUCCESS)]
         assert handler.operates == [(5, 2000)]
 
 
@@ -324,11 +329,12 @@ class TestSingleMasterUnchanged:
     def test_reselect_without_a_peer_replaces_the_selection(self) -> None:
         outstation, handler = _outstation()
 
+        # Each SELECT at a new sequence number: at the same one, other octets are discarded (Table 4-9).
         assert _select(outstation, None, (5, 1000)) == [(5, SUCCESS)]
-        assert _select(outstation, None, (5, 2000)) == [(5, SUCCESS)]
-        assert _operate(outstation, None, (5, 1000)) == [(5, NO_SELECT)]
-        assert _select(outstation, None, (5, 3000)) == [(5, SUCCESS)]
-        assert _operate(outstation, None, (5, 3000)) == [(5, SUCCESS)]
+        assert _select(outstation, None, (5, 2000), seq=1) == [(5, SUCCESS)]
+        assert _operate(outstation, None, (5, 1000), seq=2) == [(5, NO_SELECT)]
+        assert _select(outstation, None, (5, 3000), seq=3) == [(5, SUCCESS)]
+        assert _operate(outstation, None, (5, 3000), seq=4) == [(5, SUCCESS)]
 
         assert handler.selects == [(5, 1000), (5, 2000), (5, 3000)]
         assert handler.operates == [(5, 3000)]

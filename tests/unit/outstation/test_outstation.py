@@ -1024,8 +1024,8 @@ class TestCROBSelectOperate2ByteQualifier:
         sel_request = build_select_request(objects=(block,))
         outstation.process_request(sel_request.to_bytes())
 
-        # Then OPERATE.
-        op_request = build_operate_request(objects=(block,))
+        # Then OPERATE, at the SELECT's sequence plus one (IEEE 1815-2012 Table 4-9).
+        op_request = build_operate_request(objects=(block,), seq=1)
         outstation.process_request(op_request.to_bytes())
 
         assert operated == [300], f"Expected index 300 operated, got {operated}. Truncation to 1 byte would produce 44."
@@ -2551,7 +2551,7 @@ class TestCROBFullControlCode:
         outstation, handler = self._outstation()
         block = _make_crob_block_raw(0x17, _crob_payload(5, 0x81))
         outstation.process_request(build_select_request(objects=(block,)).to_bytes())
-        responses = outstation.process_request(build_operate_request(objects=(block,)).to_bytes())
+        responses = outstation.process_request(build_operate_request(objects=(block,), seq=1).to_bytes())
 
         assert _crob_status(responses) == CommandStatus.SUCCESS
         assert handler.calls == [

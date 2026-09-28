@@ -5,6 +5,7 @@ processes them according to the DNP3 protocol, and generates responses.
 """
 
 import struct
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
@@ -609,28 +610,72 @@ class Outstation:
         Args:
             request: Parsed request fragment.
             peer: The peer that sent this request (see process_request).
-            body: Raw octets after the function code, for a later change to
-                #72 adding a Table 4-9 octet-equality check; unused before
-                then.
+            body: Raw octets after the function code, compared with the
+                SELECT's under IEEE 1815-2012 Table 4-9.
 
         Returns:
             List of response fragments. Empty list if no response needed.
         """
         header = request.header
-        function = header.function
 
         # Track request sequence
         self._state.sequences.last_request_seq = header.control.seq
 
-        # Dispatch based on function code
+        return self._apply_select_sequence_rules(request, peer, body)
+
+    def _apply_select_sequence_rules(
+        self, request: RequestFragment, peer: PeerId, body: bytes
+    ) -> list[ResponseFragment]:
+        """Judge a request against the peer's selection in effect (IEEE 1815-2012 Table 4-9).
+
+        Only the requesting peer's selection is read or ended. A CONFIRM leaves
+        it in effect: it acknowledges an earlier response rather than following
+        the SELECT as a request.
+        """
+        function = request.header.function
+        seq = request.header.control.seq
+        self._state.clear_expired_selects(self.config.select_timeout)
+        selection = self._state.selection_of(peer)
+
+        if function == FunctionCode.SELECT:
+            if selection is not None and seq == selection.sequence:
+                if selection.body == body and selection.response is not None:
+                    return [selection.response]
+                return []
+            selection = self._state.begin_selection(peer, seq, body)
+            response = self._handle_select(request, peer=peer)
+            if selection.points:
+                self._state.set_response(peer, response)
+            else:
+                self._state.terminate(peer)
+            return [response]
+
+        if function == FunctionCode.OPERATE:
+            follows_select = (
+                selection is not None
+                and seq == (selection.sequence + 1) % (MAX_APP_SEQUENCE + 1)
+                and selection.body == body
+            )
+            if not follows_select:
+                # Ended first, so every object answers NO_SELECT and none reaches the handler.
+                self._state.terminate(peer)
+            responses = [self._handle_operate(request, peer=peer)]
+            self._state.terminate(peer)
+            return responses
+
+        if function != FunctionCode.CONFIRM:
+            self._state.terminate(peer)
+        return self._dispatch(request)
+
+    def _dispatch(self, request: RequestFragment) -> list[ResponseFragment]:
+        """Dispatch a request that is neither SELECT nor OPERATE by function code."""
+        header = request.header
+        function = header.function
+
         if function == FunctionCode.READ:
             return self._handle_read(request)
         if function == FunctionCode.WRITE:
             return [self._handle_write(request)]
-        if function == FunctionCode.SELECT:
-            return [self._handle_select(request, peer=peer)]
-        if function == FunctionCode.OPERATE:
-            return [self._handle_operate(request, peer=peer)]
         if function == FunctionCode.DIRECT_OPERATE:
             return [self._handle_direct_operate(request)]
         if function == FunctionCode.DIRECT_OPERATE_NO_ACK:
@@ -1143,6 +1188,8 @@ class Outstation:
             )
 
             if result.is_success:
+                # Every point shares the selection's timer, which a retry never restarts.
+                selection = self._state.selection_of(peer)
                 select_state = SelectState(
                     index=crob.index,
                     is_binary=True,
@@ -1151,6 +1198,7 @@ class Outstation:
                     on_time=crob.on_time,
                     off_time=crob.off_time,
                     sequence=seq,
+                    timestamp=selection.started if selection is not None else time.monotonic(),
                 )
                 self._state.add_select(select_state, peer=peer)
 
