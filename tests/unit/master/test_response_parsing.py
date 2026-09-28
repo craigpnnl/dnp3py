@@ -42,6 +42,7 @@ class CollectingHandler(SOEHandler):
         self.binary_inputs: dict[int, bool] = {}
         self.binary_outputs: dict[int, bool] = {}
         self.analog_inputs: dict[int, float] = {}
+        self.analog_outputs: dict[int, float] = {}
         self.counters: dict[int, int] = {}
         self.frozen_counters: dict[int, int] = {}
 
@@ -53,6 +54,9 @@ class CollectingHandler(SOEHandler):
 
     def on_analog_input(self, values, info: ResponseInfo) -> None:
         self.analog_inputs.update({v.index: v.value for v in values})
+
+    def on_analog_output(self, values, info: ResponseInfo) -> None:
+        self.analog_outputs.update({v.index: v.value for v in values})
 
     def on_counter(self, values, info: ResponseInfo) -> None:
         self.counters.update({v.index: v.value for v in values})
@@ -549,4 +553,81 @@ class TestFrozenCounterLayout:
         master.process_response(RESPONSE_HEADER + body)
 
         assert handler.frozen_counters == {0: 0x12345678}
+        assert handler.analog_inputs == {0: 2401.0}
+
+
+class TestBlockFollowingALayoutFramedBlock:
+    """A packed or analog output block is bounded by its own length, so the block after it is delivered.
+
+    Refs #74.
+    """
+
+    def test_ex_4_10_g1v1_then_ex_4_9_g30v4(self) -> None:
+        """IEEE 1815-2012 EX 4-10 then EX 4-9 (p. 43), in one fragment.
+
+        EX 4-10 prints qualifier 01 with the 2-octet range 00 11. Qualifier 01 needs a
+        4-octet range, and only qualifier 00 gives 18 points in 3 data octets, so the
+        test uses 00. Binary values are the EX 4-10 prose: indexes 0-3 are 1, 4-7 are
+        0, 8-15 alternate starting at 0, 16 and 17 are 1. EX 4-9 gives octets only;
+        read as INT16 per 11.3.4 (little-endian, twos complement) they are 5000, 20000,
+        -1200 and 96 at indexes 4-7.
+        """
+        handler = CollectingHandler()
+        master = Master(handler=handler)
+        body = bytes([0x01, 0x01, 0x00, 0x00, 0x11, 0x0F, 0xAA, 0x03]) + bytes(
+            [0x1E, 0x04, 0x00, 0x04, 0x07, 0x88, 0x13, 0x20, 0x4E, 0x50, 0xFB, 0x60, 0x00]
+        )
+
+        assert master.process_response(RESPONSE_HEADER + body) is not None
+
+        alternating = {index: index % 2 == 1 for index in range(8, 16)}
+        assert handler.binary_inputs == {
+            **dict.fromkeys(range(4), True),
+            **dict.fromkeys(range(4, 8), False),
+            **alternating,
+            16: True,
+            17: True,
+        }
+        assert handler.analog_inputs == {4: 5000.0, 5: 20000.0, 6: -1200.0, 7: 96.0}
+
+    def test_g40v2_then_g30v1(self) -> None:
+        """Composed from A.19.2 (flag, INT16) and A.14.1 (flag, INT32); 11.3.4 little-endian."""
+        handler = CollectingHandler()
+        master = Master(handler=handler)
+        body = bytes([0x28, 0x02, 0x00, 0x03, 0x04, 0x01, 0xFE, 0xFF, 0x01, 0x34, 0x12]) + bytes(
+            [0x1E, 0x01, 0x00, 0x00, 0x00, 0x01, 0x60, 0x79, 0xFE, 0xFF]
+        )
+
+        assert master.process_response(RESPONSE_HEADER + body) is not None
+
+        assert handler.analog_outputs == {3: -2.0, 4: 4660.0}
+        assert handler.analog_inputs == {0: -100000.0}
+
+    def test_g40v1_then_g30v1(self) -> None:
+        """Composed from A.19.1 (flag, INT32) and A.14.1 (flag, INT32); 11.3.4 little-endian."""
+        handler = CollectingHandler()
+        master = Master(handler=handler)
+        body = bytes([0x28, 0x01, 0x00, 0x00, 0x00, 0x01, 0x90, 0xEE, 0xFE, 0xFF]) + bytes(
+            [0x1E, 0x01, 0x00, 0x02, 0x02, 0x01, 0x61, 0x09, 0x00, 0x00]
+        )
+
+        assert master.process_response(RESPONSE_HEADER + body) is not None
+
+        assert handler.analog_outputs == {0: -70000.0}
+        assert handler.analog_inputs == {2: 2401.0}
+
+
+class TestStartStopRangeBelowOneObject:
+    """A block whose stop index is below its start index (IEEE 1815-2012 4.2.2.7.3.3) names no object."""
+
+    @pytest.mark.parametrize("stop", [0x04, 0x03], ids=["stop-is-start-minus-1", "stop-is-start-minus-2"])
+    def test_block_before_is_delivered(self, stop: int) -> None:
+        handler = CollectingHandler()
+        master = Master(handler=handler)
+        body = bytes([0x1E, 0x01, 0x00, 0x00, 0x00, 0x01, 0x61, 0x09, 0x00, 0x00]) + bytes(
+            [0x1E, 0x01, 0x00, 0x05, stop, 0x01, 0x10, 0x00, 0x00, 0x00]
+        )
+
+        assert master.process_response(RESPONSE_HEADER + body) is not None
+
         assert handler.analog_inputs == {0: 2401.0}
