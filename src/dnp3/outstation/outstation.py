@@ -1213,17 +1213,20 @@ class Outstation:
 
         self._state.clear_expired_selects(self.config.select_timeout)
 
+        ao_parse_error = False
+
         for block in request.objects:
             if block.header.group == GROUP_CROB and block.header.variation == 1:
                 # CROB - Control Relay Output Block
                 block_results = self._process_crob_select(block, seq, peer=peer)
                 results.extend(block_results)
-            else:
-                # Unsupported object
-                pass
+            elif block.header.group == GROUP_ANALOG_OUTPUT:
+                block_results, block_parse_error = self._process_ao_select(block, seq, peer=peer)
+                results.extend(block_results)
+                ao_parse_error = ao_parse_error or block_parse_error
 
         # Build response with command status
-        return self._build_control_response(request, results)
+        return self._build_control_response(request, results, ao_parse_error=ao_parse_error)
 
     def _process_crob_select(
         self, block: ObjectBlock, seq: int, *, peer: PeerId = UNSPECIFIED_PEER
@@ -1281,12 +1284,18 @@ class Outstation:
         # Clear expired selects first
         self._state.clear_expired_selects(self.config.select_timeout)
 
+        ao_parse_error = False
+
         for block in request.objects:
             if block.header.group == GROUP_CROB and block.header.variation == 1:
                 block_results = self._process_crob_operate(block, seq, peer=peer)
                 results.extend(block_results)
+            elif block.header.group == GROUP_ANALOG_OUTPUT:
+                block_results, block_parse_error = self._process_ao_operate(block, peer=peer)
+                results.extend(block_results)
+                ao_parse_error = ao_parse_error or block_parse_error
 
-        return self._build_control_response(request, results)
+        return self._build_control_response(request, results, ao_parse_error=ao_parse_error)
 
     def _process_crob_operate(
         self, block: ObjectBlock, seq: int, *, peer: PeerId = UNSPECIFIED_PEER
@@ -1330,6 +1339,66 @@ class Outstation:
             results.append((crob.index, result.status))
 
         return results
+
+    def _process_ao_select(
+        self, block: ObjectBlock, seq: int, *, peer: PeerId = UNSPECIFIED_PEER
+    ) -> tuple[list[tuple[int, CommandStatus]], bool]:
+        """Process Analog Output SELECT (Group 41).
+
+        A point another peer holds returns BLOCKED_OTHER_MASTER without reaching
+        the handler. Other points are dispatched to the handler and, on success,
+        stored as this peer's pending SELECT state under group 41, so a CROB
+        selection at the same index is a separate point.
+
+        Returns:
+            Tuple of (results, has_parse_error), has_parse_error as from _parse_ao_block.
+        """
+        points, has_parse_error = _parse_ao_block(block)
+        results: list[tuple[int, CommandStatus]] = []
+
+        for index, value in points:
+            if self._state.held_by_other_peer(index, peer, self.config.select_timeout, group=GROUP_ANALOG_OUTPUT):
+                results.append((index, CommandStatus.BLOCKED_OTHER_MASTER))
+                continue
+
+            result = self.handler.select_analog_output(index=index, value=value)
+
+            if result.is_success:
+                select_state = SelectState(index=index, is_binary=False, analog_value=value, sequence=seq)
+                self._state.add_select(select_state, peer=peer, group=GROUP_ANALOG_OUTPUT)
+
+            results.append((index, result.status))
+
+        return results, has_parse_error
+
+    def _process_ao_operate(
+        self, block: ObjectBlock, *, peer: PeerId = UNSPECIFIED_PEER
+    ) -> tuple[list[tuple[int, CommandStatus]], bool]:
+        """Process Analog Output OPERATE (Group 41).
+
+        Each point is checked against this peer's group 41 selection only; a
+        missing or mismatched selection returns NO_SELECT without reaching the
+        handler.
+
+        Returns:
+            Tuple of (results, has_parse_error), has_parse_error as from _parse_ao_block.
+        """
+        points, has_parse_error = _parse_ao_block(block)
+        results: list[tuple[int, CommandStatus]] = []
+
+        for index, value in points:
+            select_state = self._state.get_select(index, peer=peer, group=GROUP_ANALOG_OUTPUT)
+            if select_state is None or not select_state.matches_analog(index, value):
+                results.append((index, CommandStatus.NO_SELECT))
+                self._state.remove_select(index, peer=peer, group=GROUP_ANALOG_OUTPUT)
+                continue
+
+            result = self.handler.operate_analog_output(index=index, value=value, select_sequence=select_state.sequence)
+
+            self._state.remove_select(index, peer=peer, group=GROUP_ANALOG_OUTPUT)
+            results.append((index, result.status))
+
+        return results, has_parse_error
 
     def _handle_direct_operate(self, request: RequestFragment) -> ResponseFragment:
         """Handle DIRECT_OPERATE request."""
