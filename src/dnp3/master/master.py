@@ -813,9 +813,10 @@ class Master:
         A block that decodes to no values still ends a run of another kind.
 
         A relative-time object is timed from the last common time of occurrence (group 51)
-        before it in this fragment. It has no timestamp when there is none, or when the
-        time falls past year 9999; either way it is counted in
-        `info.relative_time_without_cto`. A CTO block does not end a run.
+        before it in this fragment, since each fragment is parsed on its own (4.3 Rule 7).
+        It has no timestamp when there is none, or when the time falls past year 9999;
+        either way it is counted in `info.relative_time_without_cto`. A CTO block does
+        not end a run.
 
         Args:
             objects: Object blocks from response.
