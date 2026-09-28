@@ -4184,7 +4184,7 @@ class TestAOWireLevelBugs:
         assert iin2 & 0x04, f"IIN2 PARAMETER_ERROR (bit 2) not set for truncated AO frame; IIN2=0x{iin2:02X}"
 
     def test_ao_crafted_count_does_not_overrun(self) -> None:
-        """A declared count larger than the buffer must not over-read; only real objects are processed."""
+        """A declared count larger than the buffer must not over-read; the request operates nothing."""
         from dnp3.outstation.handler import CommandResult, DefaultCommandHandler
 
         calls: list[tuple[int, float]] = []
@@ -4220,9 +4220,9 @@ class TestAOWireLevelBugs:
         resp = outstation.process_request(request.to_bytes())
         resp = resp[0]
         assert resp is not None
-        # Only the 1 real object was processed; the phantom 4 did not over-run.
-        assert len(calls) == 1
-        assert calls[0] == (2, 7.0)
+        # The declared objects run past the data, so the request is refused whole.
+        assert calls == []
+        assert resp.header.iin & IIN.PARAMETER_ERROR
 
     def test_ao_var2_int16_correct_value(self) -> None:
         """g41v2 (16-bit int) parses and operates the correct value."""
@@ -4341,10 +4341,10 @@ class TestAOWireLevelBugs:
 
 
 class TestAOUnknownVariation:
-    """Unknown g41 variation must fail closed with IIN.PARAMETER_ERROR (item 1 review nit)."""
+    """Unknown g41 variation must fail closed with an IIN error bit (item 1 review nit)."""
 
     def test_ao_unknown_variation_sets_parameter_error(self) -> None:
-        """g41v5 (unknown variation) must set IIN.PARAMETER_ERROR, not produce a clean echo."""
+        """g41v5 (unknown variation) must set IIN.OBJECT_UNKNOWN, not produce a clean echo."""
         outstation = Outstation()
 
         header = ObjectHeader(group=41, variation=5, qualifier=0x17)
@@ -4363,7 +4363,7 @@ class TestAOUnknownVariation:
         assert resp is not None
         resp_bytes = resp.to_bytes()
         iin2 = resp_bytes[3]
-        assert iin2 & 0x04, f"IIN2 PARAMETER_ERROR (bit 2) not set for unknown AO variation g41v5; IIN2=0x{iin2:02X}"
+        assert iin2 & 0x02, f"IIN2 OBJECT_UNKNOWN (bit 1) not set for unknown AO variation g41v5; IIN2=0x{iin2:02X}"
 
     def test_ao_index0_real_result_not_replaced_when_variation_unknown(self) -> None:
         """An index-0 real result must not be overwritten by a dummy parse-error sentinel.
@@ -4461,7 +4461,7 @@ class TestG80V1MultibitRangeWrite:
     """Regression test: g80v1 write crossing a byte boundary must not misfire."""
 
     def test_multi_bit_range_write_crossing_byte_boundary(self) -> None:
-        """A g80v1 write with start=4 stop=11 spans two data bytes; must not clear DEVICE_RESTART."""
+        """A g80v1 write with start=4 stop=11 packs into one data byte; must not clear DEVICE_RESTART."""
         from dnp3.application.fragment import ObjectBlock, RequestFragment
         from dnp3.application.header import ApplicationControl, RequestHeader
         from dnp3.application.qualifiers import ObjectHeader
@@ -4474,11 +4474,11 @@ class TestG80V1MultibitRangeWrite:
         # Confirm DEVICE_RESTART is set initially.
         assert outstation.iin & 0x80, "DEVICE_RESTART should be set on a fresh outstation"
 
-        # Write g80v1 range 4..11 with both data bytes = 0xFF (all bits = 1, not clearing anything).
+        # Write g80v1 range 4..11 with the data byte = 0xFF (all bits = 1, not clearing anything).
         # Bit index 7 (DEVICE_RESTART) falls in the first data byte at bit_pos = 7 - 4 = 3.
         # With data byte 0xFF, bit 3 = 1, so DEVICE_RESTART should NOT be cleared.
         header = ObjectHeader(group=80, variation=1, qualifier=0x00)
-        data = b"\x04\x0b\xff\xff"  # start=4, stop=11, data_byte0=0xFF, data_byte1=0xFF
+        data = b"\x04\x0b\xff"  # start=4, stop=11, data_byte0=0xFF
         block = ObjectBlock(header=header, data=data)
         request = RequestFragment(
             header=RequestHeader(
@@ -4490,8 +4490,8 @@ class TestG80V1MultibitRangeWrite:
         outstation.process_request(request.to_bytes())
         assert outstation.iin & 0x80, "DEVICE_RESTART should still be set when written bit is 1"
 
-        # Now write range 4..11 with first byte = 0x00 (bit 3 = 0 clears DEVICE_RESTART at index 7).
-        data_clear = b"\x04\x0b\x00\xff"
+        # Now write range 4..11 with the byte = 0x00 (bit 3 = 0 clears DEVICE_RESTART at index 7).
+        data_clear = b"\x04\x0b\x00"
         block_clear = ObjectBlock(header=header, data=data_clear)
         request_clear = RequestFragment(
             header=RequestHeader(

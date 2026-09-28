@@ -178,6 +178,7 @@ _EXPECTED_ROWS = {
     (60, 2): (PointKind.CLASS, 0, 0, False, ValueCodec.NONE, _NO),  # A.26.2
     (60, 3): (PointKind.CLASS, 0, 0, False, ValueCodec.NONE, _NO),  # A.26.3
     (60, 4): (PointKind.CLASS, 0, 0, False, ValueCodec.NONE, _NO),  # A.26.4
+    (80, 1): (PointKind.INTERNAL_INDICATION, 0, 1, False, _PK, _NO),  # A.28.1: BSTRn
 }
 
 
