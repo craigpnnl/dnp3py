@@ -1,60 +1,103 @@
 """README Quick Start examples run as written and complete their round trip.
 
-Each test builds the same objects, with the same arguments, as the matching
-README code block. The outstation and master blocks are meant to run as two
-separate scripts against a fixed port; here they run in one process against a
-dynamic port so the test suite does not depend on port 20000 being free.
+The Outstation and Master blocks are extracted verbatim from README.md at
+test time, with the hard-coded port 20000 swapped for a bound one: the
+executed code is the README's own text, not a hand-maintained copy of it, so
+a change that breaks either block fails this test.
 """
 
 import asyncio
+from collections.abc import Callable, Coroutine
+from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
-from dnp3.database import AnalogInputConfig, BinaryInputConfig, Database
-from dnp3.master import DefaultSOEHandler, Master, MasterConfig, MasterTcpRunner
-from dnp3.outstation import Outstation, OutstationConfig, OutstationTcpRunner
+from dnp3.outstation import OutstationTcpRunner
 
 BIND_TIMEOUT = 5.0
 POLL_TIMEOUT = 5.0
+README_FIXED_PORT = "20000"
+
+README_PATH = Path(__file__).resolve().parents[2] / "README.md"
 
 
-def _build_readme_outstation() -> Outstation:
-    """Build the outstation and database exactly as the README's Outstation block does."""
-    database = Database()
-    database.add_binary_input(0, BinaryInputConfig())
-    database.add_analog_input(0, AnalogInputConfig())
-
-    database.update_binary_input(0, value=True)
-    database.update_analog_input(0, value=42)
-
-    return Outstation(database=database, config=OutstationConfig(address=1))
+def _extract_code_block(readme_text: str, heading: str) -> str:
+    """Return the fenced python block that follows `heading` in README.md."""
+    heading_index = readme_text.index(heading)
+    fence_start = readme_text.index("```python\n", heading_index) + len("```python\n")
+    fence_end = readme_text.index("```", fence_start)
+    return readme_text[fence_start:fence_end]
 
 
-async def _await_bind(runner: OutstationTcpRunner) -> tuple[str, int]:
+def _load_main(source: str, port: int) -> Callable[[], Coroutine[Any, Any, None]]:
+    """Load a README block's `main` with its fixed port swapped for `port`.
+
+    The block's own trailing `asyncio.run(main())` call is dropped: it would
+    try to start a second event loop inside the one this test already runs
+    on, so the caller schedules the returned `main` instead.
+    """
+    patched = source.replace(f"port={README_FIXED_PORT}", f"port={port}")
+    patched = patched.rsplit("asyncio.run(main())", 1)[0]
+    namespace: dict[str, object] = {}
+    exec(compile(patched, "<readme block>", "exec"), namespace)
+    # `main` is loaded at runtime from exec'd README text; there is no static
+    # type for it, so this cast is the one boundary crossing in this file.
+    return cast(Callable[[], Coroutine[Any, Any, None]], namespace["main"])
+
+
+class _RunnerRegistry:
+    """Records the OutstationTcpRunner a README block constructs.
+
+    The Outstation block keeps its `runner` in a local variable and never
+    returns it, so this recovers the instance by standing in for the name
+    the block imports, rather than by editing the block's source.
+    """
+
+    def __init__(self) -> None:
+        self.runners: list[OutstationTcpRunner] = []
+
+    def __call__(self, *args: Any, **kwargs: Any) -> OutstationTcpRunner:
+        # Stands in for OutstationTcpRunner's constructor without repeating
+        # its signature, so a future field there cannot drift out of sync.
+        runner = OutstationTcpRunner(*args, **kwargs)
+        self.runners.append(runner)
+        return runner
+
+
+async def _await_bind(serve_task: "asyncio.Task[None]", registry: _RunnerRegistry) -> tuple[str, int]:
+    """Wait for the registered runner to bind, surfacing a run() failure at once."""
     loop = asyncio.get_running_loop()
     deadline = loop.time() + BIND_TIMEOUT
     while loop.time() < deadline:
-        if runner.is_running and runner.local_address is not None:
-            return runner.local_address
+        if serve_task.done():
+            serve_task.result()
+            pytest.fail("outstation runner exited before binding")
+        if registry.runners:
+            runner = registry.runners[0]
+            if runner.is_running and runner.local_address is not None:
+                return runner.local_address
         await asyncio.sleep(0.01)
     pytest.fail("outstation runner did not bind in time")
 
 
 class TestReadmeOutstationQuickStart:
-    """The README's Outstation (Server) block."""
+    """The README's Outstation (Server) block, run as written."""
 
-    async def test_serves_the_points_it_configures(self) -> None:
-        """The outstation binds and serves the binary and analog points it sets."""
-        outstation = _build_readme_outstation()
-        runner = OutstationTcpRunner(outstation=outstation, host="127.0.0.1", port=0)
-        serve_task = asyncio.create_task(runner.run())
+    async def test_binds_and_shuts_down_only_on_cancellation(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The block binds the configured host, and stops only on cancellation."""
+        registry = _RunnerRegistry()
+        monkeypatch.setattr("dnp3.outstation.OutstationTcpRunner", registry)
+
+        source = _extract_code_block(README_PATH.read_text(), "### Outstation (Server)")
+        main = _load_main(source, port=0)
+        serve_task: asyncio.Task[None] = asyncio.create_task(main())
 
         try:
-            host, port = await _await_bind(runner)
+            host, port = await _await_bind(serve_task, registry)
             assert host == "127.0.0.1"
             assert port > 0
         finally:
-            await runner.stop()
             serve_task.cancel()
             with pytest.raises((asyncio.CancelledError, TimeoutError)):
                 await asyncio.wait_for(serve_task, timeout=POLL_TIMEOUT)
@@ -63,24 +106,25 @@ class TestReadmeOutstationQuickStart:
 class TestReadmeMasterQuickStart:
     """The README's Master (Client) block, against the Outstation block's server."""
 
-    async def test_integrity_poll_returns_the_configured_values(self) -> None:
-        """An integrity poll returns exactly the values the outstation block set."""
-        outstation = _build_readme_outstation()
-        server = OutstationTcpRunner(outstation=outstation, host="127.0.0.1", port=0)
-        serve_task = asyncio.create_task(server.run())
+    async def test_integrity_poll_prints_the_configured_values(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """An integrity poll prints exactly the values the outstation block set."""
+        registry = _RunnerRegistry()
+        monkeypatch.setattr("dnp3.outstation.OutstationTcpRunner", registry)
+
+        readme_text = README_PATH.read_text()
+        outstation_main = _load_main(_extract_code_block(readme_text, "### Outstation (Server)"), port=0)
+        serve_task: asyncio.Task[None] = asyncio.create_task(outstation_main())
 
         try:
-            host, port = await _await_bind(server)
+            _host, port = await _await_bind(serve_task, registry)
 
-            handler = DefaultSOEHandler()
-            master = Master(handler=handler, config=MasterConfig(address=2, outstation_address=1))
-            async with MasterTcpRunner(master=master, host=host, port=port) as runner:
-                await asyncio.wait_for(runner.integrity_poll(), timeout=POLL_TIMEOUT)
+            master_main = _load_main(_extract_code_block(readme_text, "### Master (Client)"), port=port)
+            await asyncio.wait_for(master_main(), timeout=POLL_TIMEOUT)
 
-            assert handler.binary_inputs[0].value is True
-            assert handler.analog_inputs[0].value == 42
+            assert capsys.readouterr().out == "True\n42.0\n"
         finally:
-            await server.stop()
             serve_task.cancel()
             with pytest.raises((asyncio.CancelledError, TimeoutError)):
                 await asyncio.wait_for(serve_task, timeout=POLL_TIMEOUT)
