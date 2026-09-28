@@ -276,3 +276,52 @@ class TestWriteTimeHandlerRaises:
             outstation.process_request(request.to_bytes())
 
         assert IIN.NEED_TIME in outstation.iin
+
+
+class TestWriteTimeHandlerRaisesAmongOtherBlocks:
+    """Every time_handler call happens before any IIN bit is cleared, so a
+    raising handler leaves both NEED_TIME and DEVICE_RESTART unchanged,
+    whichever order the blocks arrived in.
+    """
+
+    def test_raising_handler_after_g80v1_leaves_both_bits_unchanged(self) -> None:
+        def raiser(_timestamp: DNP3Timestamp) -> None:
+            msg = "handler refuses the time"
+            raise ValueError(msg)
+
+        outstation = Outstation(time_handler=raiser)
+        request = build_write_request(
+            objects=(_g80v1(0x00, bytes([7, 7, 0x00])), _g50v1_write()),
+            seq=13,
+        )
+
+        with pytest.raises(ValueError, match="handler refuses the time"):
+            outstation.process_request(request.to_bytes())
+
+        assert IIN.NEED_TIME in outstation.iin
+        assert IIN.DEVICE_RESTART in outstation.iin
+
+    def test_raising_handler_before_g80v1_leaves_both_bits_unchanged(self) -> None:
+        def raiser(_timestamp: DNP3Timestamp) -> None:
+            msg = "handler refuses the time"
+            raise ValueError(msg)
+
+        outstation = Outstation(time_handler=raiser)
+        request = build_write_request(
+            objects=(_g50v1_write(), _g80v1(0x00, bytes([7, 7, 0x00]))),
+            seq=14,
+        )
+
+        with pytest.raises(ValueError, match="handler refuses the time"):
+            outstation.process_request(request.to_bytes())
+
+        assert IIN.NEED_TIME in outstation.iin
+        assert IIN.DEVICE_RESTART in outstation.iin
+
+
+class TestTimeHandlerConstructionCheck:
+    """Item 2: a non-callable time_handler is rejected at construction."""
+
+    def test_non_callable_time_handler_raises_type_error(self) -> None:
+        with pytest.raises(TypeError, match="time_handler must be callable"):
+            Outstation(time_handler="not callable")  # type: ignore[arg-type]

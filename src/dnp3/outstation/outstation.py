@@ -742,7 +742,13 @@ class Outstation:
         time_handler: Called with the decoded time when a master writes
             g50v1 (IEEE 1815-2012 A.23.1.2.3). None (the default) accepts
             and ignores the write, which the clause permits for an
-            outstation with its own accurate time source.
+            outstation with its own accurate time source. The value comes
+            from the master and is untrusted: it may fall outside the
+            range a datetime can represent, and it is not adjusted for
+            this outstation's own request-processing delay ([F] to [G],
+            10.3.3.1 h). The handler must not raise or block: it runs
+            synchronously in process_request, so raising propagates
+            (leaving NEED_TIME set) and blocking stalls every connection.
     """
 
     config: OutstationConfig = field(default_factory=OutstationConfig)
@@ -754,6 +760,9 @@ class Outstation:
 
     def __post_init__(self) -> None:
         """Initialize outstation state."""
+        if self.time_handler is not None and not callable(self.time_handler):
+            msg = f"time_handler must be callable or None, got {self.time_handler!r}"
+            raise TypeError(msg)
         if self.config.time_sync_required:
             self._state.set_need_time()
 
@@ -1377,10 +1386,17 @@ class Outstation:
     def _handle_write(self, request: RequestFragment) -> ResponseFragment:
         """Handle WRITE request.
 
-        Rule W (IEEE 1815-2012 4.4.4.3 Rule 7): every block is checked
-        before any is applied. A request holding any block this outstation
-        cannot write delivers nothing and clears nothing, and the response
-        carries the IIN bit of the first failing block.
+        Rule W is this outstation's own policy, mirroring #130's control
+        rule (not a requirement of IEEE 1815-2012 4.4.4.3, which governs
+        SELECT/OPERATE): every block is checked before any is applied. A
+        request holding any block this outstation cannot write delivers
+        nothing and clears nothing, and the response carries the IIN bit of
+        the first failing block.
+
+        Every time_handler call happens before any IIN bit is cleared,
+        whatever order the blocks arrived in, so a raising handler (see
+        time_handler's docstring) leaves NEED_TIME and DEVICE_RESTART
+        exactly as they were.
 
         Supports g50v1 (deliver the time to time_handler, then clear
         NEED_TIME) and g80v1 (clear DEVICE_RESTART or NEED_TIME).
@@ -1393,7 +1409,11 @@ class Outstation:
 
         for block in request.objects:
             if block.header.group == GROUP_TIME_AND_DATE and block.header.variation == 1:
-                self._handle_write_time(block)
+                self._call_time_handler(block)
+
+        for block in request.objects:
+            if block.header.group == GROUP_TIME_AND_DATE and block.header.variation == 1:
+                self._state.clear_need_time()
             elif block.header.group == GROUP_IIN and block.header.variation == 1:
                 self._handle_write_iin(block)
 
@@ -1402,22 +1422,24 @@ class Outstation:
             seq=seq,
         )
 
-    def _handle_write_time(self, block: ObjectBlock) -> None:
-        """Apply a WRITE of g50v1: deliver the time, then clear NEED_TIME.
+    def _call_time_handler(self, block: ObjectBlock) -> None:
+        """Decode g50v1's timestamp and call time_handler. Clears no state.
 
         The block has already passed _write_block_error, so its data is
-        exactly the count byte and one 6-octet timestamp (A.23.1.2.3). If
-        time_handler raises, it propagates (as a raising control handler
-        does today, see _handle_select) and NEED_TIME stays set, because the
-        clear follows the call.
+        exactly the count byte and one 6-octet timestamp (A.23.1.2.3). Kept
+        separate from clearing NEED_TIME so every handler call in a WRITE
+        happens before _handle_write applies any IIN bit change: if the
+        handler raises, it propagates (as a raising control handler does
+        today, see _handle_select) and no bit in this WRITE has been
+        cleared yet, whatever order the blocks arrived in.
 
         Args:
             block: g50v1 object block with qualifier 0x07, count 1.
         """
+        if self.time_handler is None:
+            return
         timestamp = DNP3Timestamp.from_bytes(block.data[1:])
-        if self.time_handler is not None:
-            self.time_handler(timestamp)
-        self._state.clear_need_time()
+        self.time_handler(timestamp)
 
     def _handle_write_iin(self, block: ObjectBlock) -> None:
         """Apply a WRITE of g80v1 (Internal Indications): clear a bit written 0.
