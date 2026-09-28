@@ -134,6 +134,27 @@ class TestDetectedFaultKeepsEarlierBlocks:
         assert info.truncation == Truncation(reason=TruncationReason.TRAILING_OCTETS, offset=6)
         assert (info.truncation.group, info.truncation.variation, info.truncation.qualifier) == (None, None, None)
 
+    def test_runs_before_the_stop_keep_wire_order(self, caplog: pytest.LogCaptureFixture) -> None:
+        """Three runs precede the stopping block: each is its own callback, in fragment order."""
+        # g1v2, start-stop 3..3, flag 0x01: index 3 off, online.
+        b3 = bytes([0x01, 0x02, 0x00, 0x03, 0x03, 0x01])
+        recorder = RecordingHandler()
+
+        with caplog.at_level(logging.WARNING, logger="dnp3.master.master"):
+            info = Master(handler=recorder).process_response(RESPONSE_HEADER + B1 + G7 + b3 + OVER_DECLARED_G30 + G7)
+
+        assert info is not None
+        assert recorder.calls == [
+            ("on_binary_input", [BinaryValue(index=9, value=True, quality=0x01)]),
+            ("on_analog_input", [AnalogValue(index=7, value=200.0, quality=0x01)]),
+            ("on_binary_input", [BinaryValue(index=3, value=False, quality=0x01)]),
+        ]
+        assert info.truncation == Truncation(
+            reason=TruncationReason.DATA_SHORTER_THAN_DECLARED, offset=22, group=30, variation=1, qualifier=0x17
+        )
+        warnings = [r for r in caplog.records if r.name == "dnp3.master.master" and r.levelno == logging.WARNING]
+        assert len(warnings) == 1
+
 
 class TestTruncationIsLogged:
     """A truncation is logged, because an unsolicited fragment's ResponseInfo may reach no caller."""
