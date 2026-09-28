@@ -389,6 +389,24 @@ class TestBinaryOutputLatchSemantics:
         assert database.get_binary_output(0).value is True
 
 
+class TestNonInteroperableTripCloseCombinations:
+    """Trip-Close with any Op Type other than PULSE_ON is not carried out."""
+
+    @pytest.mark.parametrize("function", ["select", "operate", "direct_operate"])
+    @pytest.mark.parametrize("initial", [False, True])
+    @pytest.mark.parametrize("octet", [0x40, 0x43, 0x80, 0x82, 0x84, 0x42, 0x44, 0x83])
+    def test_not_supported_and_unchanged(
+        self, handler: MesaCommandHandler, database: Database, function: str, initial: bool, octet: int
+    ) -> None:
+        database.update_binary_output(0, value=initial)
+        if function == "select":
+            result = handler.select_binary_output(index=0, code=ControlCode(octet), count=1, on_time=0, off_time=0)
+        else:
+            result = _operate(handler, function, octet)
+        assert result.status == CommandStatus.NOT_SUPPORTED
+        assert database.get_binary_output(0).value is initial
+
+
 class TestSelectMatchesOperate:
     """SELECT refuses exactly what OPERATE refuses, and never changes the output."""
 
