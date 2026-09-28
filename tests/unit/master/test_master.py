@@ -225,6 +225,15 @@ class TestMasterRequestBuilding:
 
         assert fragment.header.function == FunctionCode.CONFIRM
 
+    def test_build_unsolicited_confirm(self) -> None:
+        """A CONFIRM built for an unsolicited response sets UNS and keeps SEQ."""
+        master = Master()
+
+        fragment = master.build_confirm(seq=9, uns=True)
+
+        assert fragment.to_bytes() == bytes([0xD9, FunctionCode.CONFIRM.value])
+        assert master.build_confirm(seq=9).to_bytes() == bytes([0xC9, FunctionCode.CONFIRM.value])
+
     def test_sequence_increments(self) -> None:
         """Test that sequence numbers increment."""
         master = Master()

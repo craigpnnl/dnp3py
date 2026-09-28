@@ -166,6 +166,8 @@ class RequestHeader:
         fin: bool = True,
         con: bool = False,
         seq: int = 0,
+        *,
+        uns: bool = False,
     ) -> "RequestHeader":
         """Build a request header from components.
 
@@ -175,6 +177,9 @@ class RequestHeader:
             fin: Final fragment flag.
             con: Confirmation requested flag.
             seq: Sequence number (0-15).
+            uns: Unsolicited flag. Set only on a CONFIRM answering an
+                unsolicited response, which must echo that fragment's UNS bit
+                (IEEE 1815-2012 4.2.2.4 Rule 18).
 
         Returns:
             RequestHeader instance.
@@ -183,7 +188,7 @@ class RequestHeader:
             fir=fir,
             fin=fin,
             con=con,
-            uns=False,  # UNS is not used in requests
+            uns=uns,
             seq=seq,
         )
         return cls(control=control, function=function)

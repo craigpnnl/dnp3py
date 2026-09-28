@@ -251,6 +251,113 @@ class TestChannelPairCommunication:
         with pytest.raises(ChannelClosedError, match="EOF"):
             await b.read_exactly(10)
 
+    @pytest.mark.asyncio
+    async def test_read_parked_own_close_raises_closed(self) -> None:
+        """A read already parked on this channel's own queue is woken by
+        this channel's own close(), not left waiting for its read timeout.
+        """
+        config = SimulatorConfig(read_timeout=0.2)
+        a, _b = create_channel_pair(config=config)
+        await a.open()
+        await _b.open()
+
+        read_task = asyncio.create_task(a.read(100))
+        await asyncio.sleep(0)  # let read() park on the empty queue
+
+        await a.close()
+
+        with pytest.raises(ChannelClosedError, match="not open"):
+            await read_task
+
+    @pytest.mark.asyncio
+    async def test_read_parked_peer_close_still_returns_eof(self) -> None:
+        """A read parked while this channel stays OPEN still returns b""
+        (EOF) when the PEER closes: only this channel's own close() raises.
+        """
+        a, b = create_channel_pair()
+        await a.open()
+        await b.open()
+
+        read_task = asyncio.create_task(b.read(100))
+        await asyncio.sleep(0)  # let read() park on the empty queue
+
+        await a.close()  # peer of b; b itself stays open
+
+        assert await read_task == b""
+        assert b.state == ChannelState.OPEN
+
+    @pytest.mark.asyncio
+    async def test_close_with_peer_queue_full_does_not_raise(self) -> None:
+        """close() completes when the peer's queue has no room for the EOF
+        sentinel, and the data already queued there is not lost.
+        """
+        config = SimulatorConfig(buffer_size=1)
+        a, b = create_channel_pair(config=config)
+        await a.open()
+        await b.open()
+
+        await a.write(b"x")  # fills b's read queue to its capacity of 1
+
+        await a.close()
+
+        assert a.state == ChannelState.CLOSED
+        assert a.peer is None
+        assert b.peer is None
+        assert await b.read(100) == b"x"
+        with pytest.raises(ChannelError, match="No peer connected"):
+            await b.write(b"y")
+
+    @pytest.mark.asyncio
+    async def test_reopened_channel_reads_nothing_stale(self) -> None:
+        """close() then open() leaves no false EOF for the first read."""
+        a, b = create_channel_pair(config_a=SimulatorConfig(read_timeout=0.1))
+        await a.open()
+        await b.open()
+
+        await a.close()
+        await a.open()
+        with pytest.raises(ChannelTimeoutError):
+            await a.read(100)
+
+        a.connect_to(b)
+        await b.write(b"fresh")
+        assert await a.read(100) == b"fresh"
+
+    @pytest.mark.asyncio
+    async def test_completed_read_does_not_leave_stale_parked_count(self) -> None:
+        """A read that already returned does not leave close() thinking one is
+        still parked: that would queue a false EOF for the channel's next life
+        after close() and open().
+        """
+        config = SimulatorConfig(read_timeout=0.1)
+        a, b = create_channel_pair(config=config)
+        await a.open()
+        await b.open()
+
+        await b.write(b"x")
+        assert await a.read(1) == b"x"  # parks on the queue, then completes
+
+        await a.close()
+        await a.open()
+
+        with pytest.raises(ChannelTimeoutError):
+            await a.read(1)
+
+    @pytest.mark.asyncio
+    async def test_reopened_channel_still_sees_peer_eof(self) -> None:
+        """After a reopen, a genuine peer close still reads as EOF."""
+        a, b = create_channel_pair()
+        await a.open()
+        await b.open()
+        await a.close()
+        await a.open()
+        a.connect_to(b)
+
+        await b.close()
+
+        assert await a.read(100) == b""
+        assert a.state == ChannelState.OPEN
+
 
 class TestChannelPairFactory:
     """Tests for create_channel_pair factory."""

@@ -9,13 +9,14 @@ from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass, field
 
 from dnp3.application.builder import (
-    build_confirm_request,
     build_delay_measure_request,
     build_disable_unsolicited_request,
     build_enable_unsolicited_request,
 )
 from dnp3.application.fragment import ObjectBlock, RequestFragment, ResponseFragment
+from dnp3.application.header import RequestHeader
 from dnp3.application.parser import parse_response
+from dnp3.core.enums import FunctionCode
 from dnp3.master.commands import (
     CommandBuilder,
     DirectOperateTask,
@@ -624,16 +625,19 @@ class Master:
         seq = self._state.get_next_request_sequence()
         return build_delay_measure_request(seq=seq)
 
-    def build_confirm(self, seq: int) -> RequestFragment:
+    def build_confirm(self, seq: int, *, uns: bool = False) -> RequestFragment:
         """Build a CONFIRM request.
 
         Args:
             seq: Sequence number to confirm.
+            uns: Whether the confirmed fragment was unsolicited. A CONFIRM
+                echoes the SEQ and UNS of the fragment it answers
+                (IEEE 1815-2012 4.2.2.4 Rule 18).
 
         Returns:
             Request fragment for CONFIRM.
         """
-        return build_confirm_request(seq=seq)
+        return RequestFragment(header=RequestHeader.build(function=FunctionCode.CONFIRM, seq=seq, uns=uns))
 
     # -------------------------------------------------------------------------
     # Response Processing
@@ -882,6 +886,19 @@ class Master:
             task: Poll task that was executed.
         """
         task.mark_executed()
+
+    def next_request_sequence(self) -> int:
+        """Reserve the next application sequence number for an outbound request.
+
+        The `build_*` methods call this internally. It is public so that a
+        caller building a request from a `PollTask` (which does its own
+        building and takes `seq` as an argument) draws from the same counter,
+        instead of numbering scheduled polls separately from direct ones.
+
+        Returns:
+            Sequence number to use, 0-15.
+        """
+        return self._state.get_next_request_sequence()
 
     def check_timeout(self) -> bool:
         """Check for and handle task timeout.

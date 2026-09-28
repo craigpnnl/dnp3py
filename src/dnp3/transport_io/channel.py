@@ -264,6 +264,8 @@ class TcpConfig(ChannelConfig):
         keepalive_idle: Keepalive idle time in seconds.
         keepalive_interval: Keepalive interval in seconds.
         keepalive_count: Keepalive probe count.
+        close_timeout: Seconds close() waits for unsent bytes to drain before
+            aborting the connection.
     """
 
     host: str = "127.0.0.1"
@@ -273,6 +275,7 @@ class TcpConfig(ChannelConfig):
     keepalive_idle: float = 60.0
     keepalive_interval: float = 10.0
     keepalive_count: int = 3
+    close_timeout: float = 1.0
 
 
 @dataclass

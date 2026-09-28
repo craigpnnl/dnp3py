@@ -253,6 +253,18 @@ class TestRequestHeaderSerialization:
         data = header.to_bytes()
         assert data[0] == 0xCA  # FIR=1, FIN=1, SEQ=10
 
+    def test_serialize_unsolicited_confirm(self) -> None:
+        """A CONFIRM for an unsolicited response carries UNS=1 on the wire."""
+        header = RequestHeader.build(function=FunctionCode.CONFIRM, seq=6, uns=True)
+        data = header.to_bytes()
+        assert data[0] == 0xD6  # FIR=1, FIN=1, CON=0, UNS=1, SEQ=6
+        assert data[1] == 0x00  # CONFIRM
+
+    def test_uns_defaults_clear(self) -> None:
+        """UNS stays clear unless asked for."""
+        header = RequestHeader.build(function=FunctionCode.CONFIRM, seq=6)
+        assert header.to_bytes()[0] == 0xC6
+
 
 class TestRequestHeaderParsing:
     """Tests for parsing RequestHeader from bytes."""
