@@ -74,14 +74,16 @@ def double_bit_state(flags: int) -> DoubleBitState:
 def unpack_double_bit_states(payload: bytes, count: int) -> list[DoubleBitState]:
     """Read `count` packed double-bit states, first point in bits 1 and 0 (A.4.1.2.2).
 
-    Padding in the last octet is ignored, and reading stops at the end of the
-    payload if it holds fewer than `count` points.
+    Padding in the last octet is ignored. Returns an empty list when `count` is 0,
+    and when the payload is too short to hold all `count` points: an object
+    header carries no length (IEEE 1815-2012 4.2.2.7), so no point in a short
+    payload is known to be real.
     """
     states: list[DoubleBitState] = []
+    if len(payload) < (count * 2 + 7) // 8:
+        return states
     for ordinal in range(count):
         octet_index, slot = divmod(ordinal, _POINTS_PER_OCTET)
-        if octet_index >= len(payload):
-            break
         states.append(DoubleBitState((payload[octet_index] >> (2 * slot)) & _STATE_MASK))
     return states
 

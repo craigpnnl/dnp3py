@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
+from dnp3.application.fragment import Truncation
 from dnp3.core.enums import CommandStatus, FunctionCode
 from dnp3.core.flags import IIN
 
@@ -100,6 +101,8 @@ class ResponseInfo:
         fin: True if this is the final fragment. False if more fragments
             follow.
         con: True if the outstation requested a CONFIRM for this fragment.
+        truncation: Set when the object data was cut short. Values from the
+            blocks before the stopping block are delivered; none from it or after.
     """
 
     function: FunctionCode
@@ -109,6 +112,7 @@ class ResponseInfo:
     fir: bool = True
     fin: bool = True
     con: bool = False
+    truncation: Truncation | None = None
 
 
 @runtime_checkable

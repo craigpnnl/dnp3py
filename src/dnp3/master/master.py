@@ -4,6 +4,7 @@ The Master class handles communication with an outstation,
 including polling, commands, and unsolicited response handling.
 """
 
+import logging
 import struct
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -51,6 +52,8 @@ from dnp3.master.polling import (
 )
 from dnp3.master.state import MasterState, MasterStateManager
 from dnp3.objects.layout import PointKind, TimeKind, ValueCodec, WireLayout, layout_for
+
+logger = logging.getLogger(__name__)
 
 # Quality flag mask
 QUALITY_ONLINE = 0x01
@@ -166,15 +169,18 @@ def _iter_object_slots(
 
     The index comes from the object's own prefix when the qualifier carries one,
     and from consecutive numbering off `first_index` otherwise. Iteration stops
-    at the declared count or when the remaining bytes cannot hold another whole
-    object, so a truncated or over-long block yields only the objects actually
-    present.
+    at the declared count. A block whose data is shorter than its declared count
+    yields nothing: an object header carries no length (IEEE 1815-2012 4.2.2.7),
+    so no object in it is known to be real.
     """
+    entry_width = layout.index_prefix_width + object_width
     offset = layout.data_offset
     ordinal = 0
 
+    if layout.count is not None and offset + layout.count * entry_width > len(data):
+        return
+
     while layout.count is None or ordinal < layout.count:
-        entry_width = layout.index_prefix_width + object_width
         if offset + entry_width > len(data):
             return
 
@@ -255,16 +261,17 @@ def _parse_packed_binary(layout: ObjectLayout, data: bytes) -> list[BinaryValue]
     """Parse bit-packed binary points (g1v1 / g10v1), 8 points per byte.
 
     Bounded by the range's declared count so the unused high bits of the final
-    byte are not reported as real points.
+    byte are not reported as real points. Returns an empty list when the payload
+    is too short to hold every declared point, the rule `_iter_object_slots` applies.
     """
     values: list[BinaryValue] = []
     payload = data[layout.data_offset :]
     total = layout.count if layout.count is not None else len(payload) * 8
+    if len(payload) < (total + 7) // 8:
+        return values
 
     for ordinal in range(total):
         byte_index, bit = divmod(ordinal, 8)
-        if byte_index >= len(payload):
-            break
         values.append(
             BinaryValue(
                 index=layout.first_index + ordinal,
@@ -712,7 +719,24 @@ class Master:
             fir=response.header.control.fir,
             fin=response.header.control.fin,
             con=response.header.control.con,
+            truncation=response.truncation,
         )
+
+        truncation = response.truncation
+        if truncation is not None:
+            # An unsolicited fragment's info reaches no caller of request(), so this may be its only trace.
+            qualifier = "None" if truncation.qualifier is None else f"0x{truncation.qualifier:02X}"
+            logger.warning(
+                "Response fragment seq=%d unsolicited=%s cut short (%s) at object offset %d: "
+                "group %s, variation %s, qualifier %s; no value from that block onward was delivered",
+                info.sequence,
+                info.is_unsolicited,
+                truncation.reason.value,
+                truncation.offset,
+                truncation.group,
+                truncation.variation,
+                qualifier,
+            )
 
         # Handle unsolicited responses
         if info.is_unsolicited:

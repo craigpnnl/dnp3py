@@ -20,7 +20,7 @@ import time
 import pytest
 
 from dnp3.application.builder import build_response
-from dnp3.application.fragment import ObjectBlock
+from dnp3.application.fragment import ObjectBlock, Truncation, TruncationReason
 from dnp3.application.qualifiers import ObjectHeader
 from dnp3.core.enums import FunctionCode, LinkFunctionCode
 from dnp3.datalink.builder import (
@@ -1812,3 +1812,76 @@ class TestSpentDeadline:
         assert handler.analog_inputs == {0: pytest.approx(1.0)}
         assert confirms == [bytes([0xC0 | seq_holder[0], FunctionCode.CONFIRM.value])]
         assert runner.is_open is True
+
+
+# g30v1, count 3, holding one object: the parser stops at this block (IEEE 1815-2012 4.2.2.7).
+OVER_DECLARED_G30V1 = bytes([0x1E, 0x01, 0x17, 0x03, 0x05, 0x01, 0x64, 0x00, 0x00, 0x00])
+# g30v1, count 1, index 7, value 200: never reached behind the block above.
+G30V1_INDEX_7 = bytes([0x1E, 0x01, 0x17, 0x01, 0x07, 0x01, 0xC8, 0x00, 0x00, 0x00])
+
+
+class TestTruncatedFragments:
+    """A fragment the parser cannot read to the end is confirmed as before, and not silent."""
+
+    async def test_truncated_unsolicited_during_request_is_logged_and_confirmed(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Its ResponseInfo is not returned by request() and it delivers no value, so the log is its only trace."""
+        channel_a, channel_b = create_channel_pair()
+        await channel_a.open()
+        await channel_b.open()
+        runner, handler = make_runner(channel_a)
+        await runner.open()
+        peer = FakeOutstation(channel_b)
+        # FIR, FIN, CON, UNS, seq 6.
+        unsolicited = (
+            bytes([0xF6, FunctionCode.UNSOLICITED_RESPONSE.value, 0x00, 0x00]) + OVER_DECLARED_G30V1 + G30V1_INDEX_7
+        )
+        confirms: list[bytes] = []
+
+        async def respond() -> None:
+            seq = await peer.read_request_seq()
+            await peer.send_fragment(unsolicited)
+            confirms.extend(await peer.read_fragments(1))
+            await peer.send_fragment(analog_response(seq=seq, fir=True, fin=True, con=False, index=0, value=1.0))
+
+        with caplog.at_level("WARNING", logger="dnp3.master.master"):
+            responder = asyncio.create_task(respond())
+            infos = await runner.integrity_poll()
+            await responder
+
+        assert [(i.is_unsolicited, i.truncation) for i in infos] == [(False, None)]
+        assert handler.analog_inputs == {0: pytest.approx(1.0)}
+        assert confirms == [bytes([0xD6, FunctionCode.CONFIRM.value])]
+        warnings = [r for r in caplog.records if r.name == "dnp3.master.master" and r.levelname == "WARNING"]
+        assert len(warnings) == 1
+        assert "data_shorter_than_declared" in warnings[0].getMessage()
+        assert "group 30" in warnings[0].getMessage()
+
+    async def test_truncated_solicited_fragment_is_confirmed_and_returns_its_truncation(self) -> None:
+        channel_a, channel_b = create_channel_pair()
+        await channel_a.open()
+        await channel_b.open()
+        runner, handler = make_runner(channel_a)
+        await runner.open()
+        peer = FakeOutstation(channel_b)
+        seq_holder: list[int] = []
+
+        async def respond() -> None:
+            seq = await peer.read_request_seq()
+            seq_holder.append(seq)
+            # FIR, FIN, CON.
+            header = bytes([0xE0 | seq, FunctionCode.RESPONSE.value, 0x00, 0x00])
+            await peer.send_fragment(header + OVER_DECLARED_G30V1 + G30V1_INDEX_7)
+
+        responder = asyncio.create_task(respond())
+        infos = await runner.integrity_poll()
+        await responder
+
+        assert [(i.fin, i.con) for i in infos] == [(True, True)]
+        assert infos[0].truncation == Truncation(
+            reason=TruncationReason.DATA_SHORTER_THAN_DECLARED, offset=0, group=30, variation=1, qualifier=0x17
+        )
+        assert handler.analog_inputs == {}
+        confirms = await peer.read_fragments(1, timeout=0.5)
+        assert confirms == [bytes([0xC0 | seq_holder[0], FunctionCode.CONFIRM.value])]
