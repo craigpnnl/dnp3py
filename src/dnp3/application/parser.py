@@ -3,7 +3,9 @@
 Parses raw bytes into application layer structures (requests, responses, objects).
 """
 
+from collections.abc import Callable
 from dataclasses import dataclass
+from functools import partial
 
 from dnp3.application.fragment import ObjectBlock, RequestFragment, ResponseFragment
 from dnp3.application.header import (
@@ -24,10 +26,15 @@ from dnp3.application.qualifiers import (
 )
 from dnp3.core.enums import FunctionCode
 from dnp3.objects import registry
+from dnp3.objects.layout import data_length, layout_for
+
+# Octets of object data for (object count, index prefix width), or None when the
+# block's objects cannot be laid out with that prefix.
+_DataLength = Callable[[int, int], int | None]
 
 # Prefix codes that prefix each object with its index. The size prefixes
-# (UINT8_SIZE and up) describe variable-format objects, whose width the registry
-# cannot supply.
+# (UINT8_SIZE and up) describe variable-format objects, whose width neither the
+# layout table nor the registry can supply.
 _INDEX_PREFIX_CODES = frozenset(
     {
         PrefixCode.NONE,
@@ -136,15 +143,25 @@ def _parse_range(data: bytes, range_code: RangeCode) -> ParsedRange:
     return ParsedRange(start=0, stop=0, count=0, bytes_consumed=0)
 
 
+def _fixed_width_length(width: int, count: int, prefix_width: int) -> int:
+    return (prefix_width + width) * count
+
+
 def _parse_object_block(
     data: bytes,
     object_size: int | None = None,
+    *,
+    length_of: _DataLength | None = None,
 ) -> tuple[ObjectBlock, int]:
     """Parse a single object block from data.
 
     Args:
         data: Raw bytes starting at object header.
-        object_size: Size of each object in bytes, if known. If None, parses header only.
+        object_size: Size of each object in bytes, if known. Ignored when
+            ``length_of`` is given.
+        length_of: Object data length for (count, index prefix width), if known.
+            If neither is known, or ``length_of`` gives None, a block carrying
+            objects takes all remaining data.
 
     Returns:
         Tuple of (ObjectBlock, bytes_consumed).
@@ -165,20 +182,20 @@ def _parse_object_block(
     consumed += parsed_range.bytes_consumed
     remaining = data[consumed:]
 
-    # If count is 0, just return range data
-    if parsed_range.count == 0:
+    if length_of is None and object_size is not None:
+        length_of = partial(_fixed_width_length, object_size)
+    total_object_size = None
+    if length_of is not None:
+        total_object_size = length_of(parsed_range.count, get_prefix_size(header.prefix_code))
+    elif parsed_range.count == 0:
         range_data = data[OBJECT_HEADER_SIZE:consumed]
         return ObjectBlock(header=header, data=range_data), consumed
 
-    # If we don't know object size, include all remaining data after the header
+    # If we don't know the data length, include all remaining data after the header
     # This works for single-block requests (common for control operations)
-    if object_size is None:
+    if total_object_size is None:
         all_data = data[OBJECT_HEADER_SIZE:]
         return ObjectBlock(header=header, data=all_data), len(data)
-
-    # Calculate total data size
-    prefix_size = get_prefix_size(header.prefix_code)
-    total_object_size = (prefix_size + object_size) * parsed_range.count
 
     if len(remaining) < total_object_size:
         msg = f"Object data requires {total_object_size} bytes, got {len(remaining)}"
@@ -266,19 +283,17 @@ def parse_object_headers(data: bytes) -> list[ObjectBlock]:
     return blocks
 
 
-def _lookup_object_size(header: ObjectHeader) -> int | None:
-    """Per-object size in bytes for a block's group/variation, or None.
+def _lookup_data_length(header: ObjectHeader) -> _DataLength | None:
+    """Object data length function for a block's group/variation, or None.
 
-    The object width comes from the object registry, which knows every
-    registered group/variation including timestamped event variations (g2v2 is
-    7 bytes, g32v3 is 11) and float variations (g30v5 is 5, g30v6 is 9). Reading
-    it from the registry keeps one source of truth for object widths instead of
-    a second table in the parser.
+    The length comes from the wire-layout table, which also covers bit-packed
+    variations (g1v1, g3v1, g10v1), whose length depends on the object count
+    rather than a per-object width. A pair with no layout row falls back to the
+    object registry, so an object registered by an application is still
+    bounded by its registered size.
 
-    Returns None for group/variations the registry does not know: g1v1 packed
-    format is bit-packed rather than fixed per-object, and groups 40/42 are not
-    registered. Callers then fall back to consuming the rest of the fragment,
-    which is the historical behaviour and correct when the block is last.
+    Returns None for a pair neither knows. Callers then fall back to consuming
+    the rest of the fragment, which is correct when the block is last.
 
     Raises:
         ValueError: If the qualifier holds a reserved range or prefix code. Both
@@ -294,7 +309,13 @@ def _lookup_object_size(header: ObjectHeader) -> int | None:
         return None  # Unsupported range specifier: width is unknowable.
     if get_prefix_size(prefix_code) and prefix_code not in _INDEX_PREFIX_CODES:
         return None  # Size prefixes describe variable-format objects.
-    return registry.get_size(header.group, header.variation)
+    layout = layout_for(header.group, header.variation)
+    if layout is not None:
+        return partial(data_length, layout)
+    size = registry.get_size(header.group, header.variation)
+    if size is None:
+        return None
+    return partial(_fixed_width_length, size)
 
 
 def parse_response_object_blocks(data: bytes) -> list[ObjectBlock]:
@@ -326,14 +347,14 @@ def parse_response_object_blocks(data: bytes) -> list[ObjectBlock]:
 
         try:
             header = ObjectHeader.from_bytes(remaining)
-            object_size = _lookup_object_size(header)
+            length_of = _lookup_data_length(header)
         except ValueError:
             # A reserved qualifier has no decodable range or prefix code, so the
             # block's width is unknowable. Stop here and keep what came before
             # rather than letting it propagate and discard the whole response.
             break
 
-        if object_size is None and header.range_code != RangeCode.ALL_OBJECTS:
+        if length_of is None and header.range_code != RangeCode.ALL_OBJECTS:
             # Width unknown for a block that does carry objects. Take the rest of
             # the fragment: guessing a boundary would decode the payload of this
             # block as the header of the next one.
@@ -341,7 +362,7 @@ def parse_response_object_blocks(data: bytes) -> list[ObjectBlock]:
             break
 
         try:
-            block, consumed = _parse_object_block(remaining, object_size=object_size)
+            block, consumed = _parse_object_block(remaining, length_of=length_of)
         except (ParseError, ValueError):
             # Declared object count exceeds the bytes available. Keep the block
             # with the data present, then stop: the next boundary is unknowable.
