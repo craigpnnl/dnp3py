@@ -45,8 +45,11 @@ the two points the outstation set.
 
 ```python
 import asyncio
+import logging
 from dnp3.database import AnalogInputConfig, BinaryInputConfig, Database
 from dnp3.outstation import Outstation, OutstationConfig, OutstationTcpRunner
+
+logging.basicConfig(level=logging.INFO)
 
 async def main():
     # Create database with points
