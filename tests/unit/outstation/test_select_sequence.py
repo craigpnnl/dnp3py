@@ -53,7 +53,7 @@ class _RecordingHandler(DefaultCommandHandler):
         self.selects.append((index, on_time))
         return CommandResult.success()
 
-    def operate_binary_output(  # noqa: PLR0917 - signature fixed by CommandHandler
+    def operate_binary_output(
         self, index: int, code: ControlCode, count: int, on_time: int, off_time: int, select_sequence: int
     ) -> CommandResult:
         self.operates.append((index, on_time, select_sequence))
