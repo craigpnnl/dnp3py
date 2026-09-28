@@ -578,8 +578,9 @@ class Outstation:
         Args:
             request: Parsed request fragment.
             peer: The peer that sent this request (see process_request).
-            body: Raw octets after the function code, for the Table 4-9
-                octet-equality test (#72 slice 3); unused before then.
+            body: Raw octets after the function code, for a later change to
+                #72 adding a Table 4-9 octet-equality check; unused before
+                then.
 
         Returns:
             List of response fragments. Empty list if no response needed.

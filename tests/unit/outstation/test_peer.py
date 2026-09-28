@@ -1,10 +1,11 @@
-"""Unit tests for peer identity plumbing (craigpnnl/dnp3py#72 slice 1).
+"""Unit tests for peer identity plumbing (craigpnnl/dnp3py#72).
 
 Peer identity is threaded from the TCP runner's frame source and a
-per-connection counter into Outstation.process_request(), so a later slice
-can key SELECT/OPERATE state per peer. This slice changes no SELECT/OPERATE
-behaviour: it proves the identity reaches the outstation unchanged for
-existing single-peer callers, and distinctly for two connections.
+per-connection counter into Outstation.process_request(), so later work on
+#72 can key SELECT/OPERATE state per peer. This change alters no
+SELECT/OPERATE behaviour: it proves the identity reaches the outstation
+unchanged for existing single-peer callers, and distinctly for two
+connections.
 """
 
 from __future__ import annotations
