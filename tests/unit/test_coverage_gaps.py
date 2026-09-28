@@ -4343,7 +4343,7 @@ class TestAOWireLevelBugs:
 class TestAOUnknownVariation:
     """Unknown g41 variation must fail closed with an IIN error bit (item 1 review nit)."""
 
-    def test_ao_unknown_variation_sets_parameter_error(self) -> None:
+    def test_ao_unknown_variation_sets_object_unknown(self) -> None:
         """g41v5 (unknown variation) must set IIN.OBJECT_UNKNOWN, not produce a clean echo."""
         outstation = Outstation()
 
