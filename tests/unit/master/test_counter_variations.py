@@ -81,6 +81,23 @@ class TestGroup20Delta:
         handler = _deliver(_block(20, 8, 0, struct.pack("<H", 0xABCD)))
         assert handler.counters == [CounterValue(index=0, value=0xABCD, quality=QUALITY_ONLINE)]
 
+    def test_g20v1_two_objects_uint16_count_uint16_index(self) -> None:
+        """Qualifier 0x28: 2-byte count, 2-byte index prefix per object (A.10.1.2.2)."""
+        data = (
+            (2).to_bytes(2, "little")
+            + (5).to_bytes(2, "little")
+            + bytes([0x21])
+            + struct.pack("<I", 0x12345678)
+            + (9).to_bytes(2, "little")
+            + bytes([0x03])
+            + struct.pack("<I", 0x89ABCDEF)
+        )
+        handler = _deliver(bytes([20, 1, 0x28]) + data)
+        assert handler.counters == [
+            CounterValue(index=5, value=0x12345678, quality=0x21),
+            CounterValue(index=9, value=0x89ABCDEF, quality=0x03),
+        ]
+
 
 class TestGroup21RemainingVariations:
     """A.11.3, A.11.4, A.11.7 to A.11.12: every g21 variation not already registered
