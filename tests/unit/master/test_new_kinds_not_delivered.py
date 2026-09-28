@@ -1,14 +1,11 @@
 """New point kinds from Annex A groups 3, 4, 13, 31, 33, 34, 41 and 43 are
-framed by the wire-level parser and value-decoded by the master, but never
-delivered to any handler callback, end to end through
-``Master.process_response``.
-
-None of these kinds has an entry in master.py's delivery table
-(``_DELIVERIES``), so adding their layout rows must not make the master
-start decoding or delivering values for them (IEEE 1815-2012 Annex A defines
-their wire shape; delivery is a separate, later step). One representative
-pair per new kind, built with ``struct`` from its own clause rather than the
-library's own encoder.
+framed by the wire-level parser, but never reach a decode function or a
+handler callback, end to end through ``Master.process_response``: master.py
+only batches and decodes a kind with an entry in its delivery table
+(``_DELIVERIES``), and none of these new kinds has one. IEEE 1815-2012 Annex A
+defines their wire shape; delivery is a separate, later step. One
+representative pair per new kind, built with ``struct`` from its own clause
+rather than the library's own encoder.
 """
 
 import struct
@@ -47,7 +44,7 @@ NEW_KIND_IDS = ["g3v2", "g13v1", "g31v1", "g34v1", "g41v1", "g43v1"]
 G30V1_DATA = bytes([0x01]) + struct.pack("<i", 2401)
 G30V1_EXPECTED = AnalogValue(index=0, value=2401.0, quality=0x01)
 
-# The point kinds this dispatch's new rows use, none of which master.py delivers.
+# Point kinds the rows above use; master.py delivers none of them.
 UNDELIVERED_NEW_KINDS = frozenset(
     {
         PointKind.DOUBLE_BIT_INPUT,
