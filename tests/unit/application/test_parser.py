@@ -513,6 +513,7 @@ class TestResponseBlocksFramedFromLayout:
             (10, 1, 0, 1),  # A.6.1: 1 point, 1 bit
             (3, 1, 4, 2),  # A.4.1: 5 points, 2 bits each
             (3, 1, 3, 1),  # 4 points fill one octet exactly
+            (80, 1, 15, 2),  # A.28.1: 16 internal indications, 1 bit each
         ],
     )
     def test_packed_block_then_g30v1(self, group: int, variation: int, stop: int, octets: int) -> None:
