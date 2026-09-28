@@ -27,6 +27,7 @@ SUCCESS = CommandStatus.SUCCESS
 NO_SELECT = CommandStatus.NO_SELECT
 BLOCKED = CommandStatus.BLOCKED_OTHER_MASTER
 REFUSED = CommandStatus.NOT_AUTHORIZED
+FORMAT_ERROR = CommandStatus.FORMAT_ERROR
 
 _IIN1_RESTART = 0x80
 _IIN2_OBJECT_UNKNOWN = 0x02
@@ -53,7 +54,7 @@ _CROB_NO_INDEX = bytes([0x0C, 0x01, 0x07, 0x01]) + _CROB_BODY
 _G41V2_NO_INDEX = bytes([0x29, 0x02, 0x07, 0x01]) + _G41V2_BODY
 # g40v1 (A.19.1: flags, INT32) at index 0: a status object, not a control.
 _G40V1 = bytes.fromhex("28 01 00 00 00 01 E8030000")
-# g12v2 has no width this outstation knows.
+# g12v2 has no width this outstation knows, so framing refuses it before the control path sees it.
 _G12V2 = bytes([0x0C, 0x02, 0x17, 0x01, 0x02]) + _CROB_BODY
 
 _UNDECODABLE = [
@@ -61,7 +62,10 @@ _UNDECODABLE = [
     pytest.param(_crob(1) + _G41V2_NO_INDEX, _IIN2_PARAMETER_ERROR, id="analog-output-without-index"),
     pytest.param(_crob(1) + _G40V1, _IIN2_OBJECT_UNKNOWN, id="analog-output-status"),
     pytest.param(_G40V1 + _crob(1), _IIN2_OBJECT_UNKNOWN, id="analog-output-status-first"),
-    pytest.param(_crob(1) + _G12V2, _IIN2_OBJECT_UNKNOWN, id="pattern-control-block"),
+    pytest.param(_crob(1) + _G12V2, _IIN2_OBJECT_UNKNOWN, id="pattern-control-block-unframed"),
+    # Two failing blocks: the IIN bit is the first one's (4.4.4.3 Rule 7).
+    pytest.param(_G40V1 + _CROB_NO_INDEX, _IIN2_OBJECT_UNKNOWN, id="unknown-then-malformed"),
+    pytest.param(_CROB_NO_INDEX + _G40V1, _IIN2_PARAMETER_ERROR, id="malformed-then-unknown"),
 ]
 
 _G41V2_HEADER = ObjectHeader(group=41, variation=2, qualifier=0x17)
@@ -85,6 +89,12 @@ _HAND_BUILT = [
         ObjectBlock(ObjectHeader(group=41, variation=5, qualifier=0x17), bytes([1, 5, 0, 0, 0])),
         _IIN2_OBJECT_UNKNOWN,
         id="analog-output-unknown-variation",
+    ),
+    # Sized exactly as a g12v1 object, but only g12v1 is a control.
+    pytest.param(
+        ObjectBlock(ObjectHeader(group=12, variation=2, qualifier=0x17), bytes([1, 1]) + _CROB_BODY),
+        _IIN2_OBJECT_UNKNOWN,
+        id="pattern-control-block",
     ),
 ]
 _CONTROL_FUNCTIONS = [
@@ -153,12 +163,12 @@ def _null_response(seq: int, iin2: int) -> bytes:
     return bytes([0xC0 | seq, 0x81, _IIN1_RESTART, iin2])
 
 
-def _echo(objects: bytes, seq: int, statuses: dict[int, CommandStatus]) -> bytes:
+def _echo(objects: bytes, seq: int, statuses: dict[int, CommandStatus], iin2: int = 0x00) -> bytes:
     """A RESPONSE echoing ``objects``, with the status octet at each given offset replaced."""
     echoed = bytearray(objects)
     for offset, status in statuses.items():
         echoed[offset] = int(status)
-    return _null_response(seq, 0x00) + bytes(echoed)
+    return _null_response(seq, iin2) + bytes(echoed)
 
 
 # Offsets of each object's status octet in _crob(a, b) and in _crob(a) + _crob(b).
@@ -319,3 +329,18 @@ class TestSelectWithAnyRefusalArmsNothing:
 
         assert response == _echo(objects, 3, {})
         assert handler.calls[-2:] == [("bo_operate", 1), ("bo_operate", 2)]
+
+    def test_a_format_error_in_one_object_cancels_the_rest(self) -> None:
+        outstation, handler = _outstation()
+        first, second = _ONE_BLOCK_STATUS
+        objects = bytearray(_crob(1, 2))
+        # Index 2's control code: Op Type 5 is not defined.
+        objects[second - 10] = 0x05
+        request = bytes(objects)
+
+        select = _only(_send(outstation, FunctionCode.SELECT, request, seq=2))
+        operate = _only(_send(outstation, FunctionCode.OPERATE, request, seq=3))
+
+        assert select == _echo(request, 2, {first: SUCCESS, second: FORMAT_ERROR}, _IIN2_PARAMETER_ERROR)
+        assert operate == _echo(request, 3, {first: NO_SELECT, second: FORMAT_ERROR}, _IIN2_PARAMETER_ERROR)
+        assert handler.calls == [("bo_select", 1)]
