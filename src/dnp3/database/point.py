@@ -310,7 +310,8 @@ class AnalogOutputPoint:
             timestamp: Time of update (optional).
 
         Returns:
-            False. Analog output points do not generate events in this issue.
+            False. Analog output points do not generate events (group 42 is
+            not implemented).
 
         Raises:
             ValueError: If value is NaN.

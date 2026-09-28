@@ -434,7 +434,8 @@ class Database:
             timestamp: Update timestamp.
 
         Returns:
-            False. Analog output points do not generate events in this issue.
+            False. Analog output points do not generate events (group 42 is
+            not implemented).
 
         Raises:
             KeyError: If point does not exist.
