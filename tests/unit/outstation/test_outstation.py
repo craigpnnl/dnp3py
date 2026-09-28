@@ -947,8 +947,7 @@ class TestCROBUnknownQualifier:
         raw_request = build_direct_operate_request(objects=(valid_block,))
         request = parse_request(raw_request.to_bytes())
 
-        results = [(0, CommandStatus.FORMAT_ERROR)]
-        response = outstation._build_control_response(request, results)
+        response = outstation._build_control_response(request, [[(0, CommandStatus.FORMAT_ERROR)]])
 
         assert IIN.PARAMETER_ERROR in response.header.iin, (
             f"FORMAT_ERROR result must produce IIN.PARAMETER_ERROR, got IIN=0x{int(response.header.iin):04X}"
@@ -2041,8 +2040,7 @@ class TestEchoCrobBlockHardenPass:
 
         # Inject an unknown-qualifier FORMAT_ERROR result directly (as the parse
         # path would produce for a real unknown-qualifier block).
-        results = [(0, CommandStatus.FORMAT_ERROR)]
-        response = outstation._build_control_response(request, results)
+        response = outstation._build_control_response(request, [[(0, CommandStatus.FORMAT_ERROR)]])
 
         assert IIN.PARAMETER_ERROR in response.header.iin, (
             f"FORMAT_ERROR result must set IIN.PARAMETER_ERROR, got IIN=0x{int(response.header.iin):04X}"

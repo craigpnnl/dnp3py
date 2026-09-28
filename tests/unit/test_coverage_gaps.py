@@ -4366,15 +4366,11 @@ class TestAOUnknownVariation:
         assert iin2 & 0x02, f"IIN2 OBJECT_UNKNOWN (bit 1) not set for unknown AO variation g41v5; IIN2=0x{iin2:02X}"
 
     def test_ao_index0_real_result_not_replaced_when_variation_unknown(self) -> None:
-        """An index-0 real result must not be overwritten by a dummy parse-error sentinel.
+        """A g41v1 result at index 0 is the handler's own, and a g41v5 block beside it runs nothing.
 
-        Send a valid g41v1 DIRECT_OPERATE at index 0.  Separately confirm that
-        processing an unknown-variation block via _process_ao_direct_operate returns
-        an empty results list (no index-0 dummy entry) alongside has_parse_error=True.
-        This verifies the sentinel-free design: the parse-error flag travels separately.
+        The unknown variation is refused before any point runs, so no placeholder
+        result can stand in for index 0.
         """
-        from dnp3.outstation.handler import CommandResult, DefaultCommandHandler
-
         calls: list[tuple[int, float]] = []
 
         class TrackingHandler(DefaultCommandHandler):
@@ -4384,25 +4380,27 @@ class TestAOUnknownVariation:
 
         outstation = Outstation(handler=TrackingHandler())
 
-        # Directly call _process_ao_direct_operate with an unknown variation block.
-        header_v5 = ObjectHeader(group=41, variation=5, qualifier=0x17)
-        payload_v5 = b"\x01\x00" + (99).to_bytes(4, "little", signed=True) + b"\x00"
-        block_v5 = ObjectBlock(header=header_v5, data=payload_v5)
-
-        results, has_parse_error = outstation._process_ao_direct_operate(block_v5)
-
-        # No dummy index-0 entry in results: the sentinel is gone.
-        assert results == [], f"Expected empty results for unknown variation, got {results}"
-        assert has_parse_error is True
-
-        # A real index-0 result from a valid block is not overwritten.
         header_v1 = ObjectHeader(group=41, variation=1, qualifier=0x17)
         payload_v1 = b"\x01\x00" + (10).to_bytes(4, "little", signed=True) + b"\x00"
         block_v1 = ObjectBlock(header=header_v1, data=payload_v1)
-        valid_results, valid_error = outstation._process_ao_direct_operate(block_v1)
-        assert len(valid_results) == 1
-        assert valid_results[0][0] == 0  # index 0
-        assert valid_error is False
+        assert outstation._process_ao_direct_operate(block_v1) == [(0, CommandStatus.SUCCESS)]
+        assert calls == [(0, 10.0)]
+
+        calls.clear()
+        header_v5 = ObjectHeader(group=41, variation=5, qualifier=0x17)
+        payload_v5 = b"\x01\x00" + (99).to_bytes(4, "little", signed=True) + b"\x00"
+        request = RequestFragment(
+            header=RequestHeader(
+                control=ApplicationControl(fir=True, fin=True, con=False, uns=False, seq=3),
+                function=FunctionCode.DIRECT_OPERATE,
+            ),
+            objects=[block_v1, ObjectBlock(header=header_v5, data=payload_v5)],
+        )
+        response = outstation.process_request(request.to_bytes())[0]
+
+        assert response.objects == ()
+        assert IIN.OBJECT_UNKNOWN in response.header.iin
+        assert calls == []
 
 
 class TestEventFraming2ByteBranch:
