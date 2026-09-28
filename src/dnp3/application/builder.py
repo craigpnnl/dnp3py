@@ -281,6 +281,8 @@ def build_response(
     seq: int = 0,
     fir: bool = True,
     fin: bool = True,
+    *,
+    con: bool = False,
 ) -> ResponseFragment:
     """Build a response with objects.
 
@@ -290,6 +292,7 @@ def build_response(
         seq: Sequence number.
         fir: First fragment flag.
         fin: Final fragment flag.
+        con: Confirmation requested flag.
 
     Returns:
         ResponseFragment.
@@ -300,6 +303,7 @@ def build_response(
         seq=seq,
         fir=fir,
         fin=fin,
+        con=con,
     )
     return ResponseFragment(header=header, objects=objects)
 
@@ -310,6 +314,8 @@ def build_unsolicited_response(
     seq: int = 0,
     fir: bool = True,
     fin: bool = True,
+    *,
+    con: bool = False,
 ) -> ResponseFragment:
     """Build an unsolicited response.
 
@@ -319,6 +325,7 @@ def build_unsolicited_response(
         seq: Sequence number.
         fir: First fragment flag.
         fin: Final fragment flag.
+        con: Confirmation requested flag.
 
     Returns:
         ResponseFragment with UNS flag set.
@@ -329,6 +336,7 @@ def build_unsolicited_response(
         seq=seq,
         fir=fir,
         fin=fin,
+        con=con,
         uns=True,
     )
     return ResponseFragment(header=header, objects=objects)

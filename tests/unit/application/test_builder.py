@@ -225,6 +225,22 @@ class TestBuildResponse:
         assert fragment.header.function == FunctionCode.RESPONSE
         assert len(fragment.objects) == 1
 
+    def test_response_con_clear_by_default(self) -> None:
+        """CON bit (bit 5, 0x20) is clear by default."""
+        obj_header = ObjectHeader.build(group=1, variation=2)
+        block = ObjectBlock(header=obj_header, data=b"\x81")
+        fragment = build_response(objects=(block,))
+        assert fragment.header.control.con is False
+        assert fragment.header.control.to_byte() & 0x20 == 0
+
+    def test_response_con_set(self) -> None:
+        """CON bit (bit 5, 0x20) is set when con=True."""
+        obj_header = ObjectHeader.build(group=1, variation=2)
+        block = ObjectBlock(header=obj_header, data=b"\x81")
+        fragment = build_response(objects=(block,), con=True)
+        assert fragment.header.control.con is True
+        assert fragment.header.control.to_byte() & 0x20 == 0x20
+
 
 class TestBuildUnsolicitedResponse:
     """Tests for build_unsolicited_response function."""
@@ -236,6 +252,22 @@ class TestBuildUnsolicitedResponse:
         fragment = build_unsolicited_response(objects=(block,))
         assert fragment.header.function == FunctionCode.UNSOLICITED_RESPONSE
         assert fragment.is_unsolicited is True
+
+    def test_unsolicited_response_con_clear_by_default(self) -> None:
+        """CON bit (bit 5, 0x20) is clear by default."""
+        obj_header = ObjectHeader.build(group=2, variation=1)
+        block = ObjectBlock(header=obj_header, data=b"\x81")
+        fragment = build_unsolicited_response(objects=(block,))
+        assert fragment.header.control.con is False
+        assert fragment.header.control.to_byte() & 0x20 == 0
+
+    def test_unsolicited_response_con_set(self) -> None:
+        """CON bit (bit 5, 0x20) is set when con=True."""
+        obj_header = ObjectHeader.build(group=2, variation=1)
+        block = ObjectBlock(header=obj_header, data=b"\x81")
+        fragment = build_unsolicited_response(objects=(block,), con=True)
+        assert fragment.header.control.con is True
+        assert fragment.header.control.to_byte() & 0x20 == 0x20
 
 
 class TestBuildConfirmRequest:
