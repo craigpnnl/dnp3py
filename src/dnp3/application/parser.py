@@ -401,8 +401,9 @@ def frame_response_object_blocks(data: bytes) -> tuple[list[ObjectBlock], Trunca
             length_of = sized
         elif header.range_code != RangeCode.ALL_OBJECTS:
             return blocks, _stopped_at(sized, offset, header)
-        # Otherwise an all-objects block: no range field and no objects, so it
-        # frames as its header alone whatever its width.
+        # Otherwise an all-objects block of unknown width: no range field and no
+        # objects, so it frames as its header alone. One of known width goes
+        # through its length, so a packed layout with an index prefix stops.
 
         try:
             block, consumed = _parse_object_block(remaining, length_of=length_of)

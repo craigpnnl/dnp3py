@@ -436,6 +436,19 @@ class TestParseResponseObjectBlocks:
         assert len(blocks) == 1
         assert blocks[0].header.group == 60
 
+    @pytest.mark.parametrize(("group", "variation"), [(30, 1), (200, 0)], ids=["g30v1-known", "g200v0-unknown"])
+    def test_all_objects_block_with_index_prefix_frames_as_its_header(self, group: int, variation: int) -> None:
+        header = bytes([group, variation, 0x16])
+
+        assert frame_response_object_blocks(header + _G7) == ([_block(header), _block(_G7)], None)
+
+    def test_all_objects_packed_block_with_index_prefix_stops(self) -> None:
+        """IEEE 1815-2012 A.2.1 packs bits only over a contiguous range, so g1v1 with an index prefix has no length."""
+        assert frame_response_object_blocks(bytes([0x01, 0x01, 0x16]) + _G7) == (
+            [],
+            Truncation(TruncationReason.PACKED_WITH_INDEX_PREFIX, 0, 1, 1, 0x16),
+        )
+
     def test_all_objects_block_of_unknown_width_frames_as_its_header(self) -> None:
         """An ALL_OBJECTS block has no objects to size, so an unknown width does not stop framing."""
         data = bytes([0x1E, 0x63, 0x06]) + _G7
@@ -703,6 +716,12 @@ class TestResponseFramingStops:
     def test_short_last_block_is_dropped(self) -> None:
         """Start-stop 0..2 declares three g30v1 objects and one is present."""
         fragment = self._parse(_B1 + bytes([0x1E, 0x01, 0x00, 0x00, 0x02, 0x01, 0x64, 0x00, 0x00, 0x00]))
+
+        assert fragment.objects == (_block(_B1),)
+        assert fragment.truncation == Truncation(TruncationReason.DATA_SHORTER_THAN_DECLARED, 6, 30, 1, 0x00)
+
+    def test_block_short_by_one_octet_is_dropped(self) -> None:
+        fragment = self._parse(_B1 + bytes([0x1E, 0x01, 0x00, 0x00, 0x00, 0x01, 0x64, 0x00, 0x00]))
 
         assert fragment.objects == (_block(_B1),)
         assert fragment.truncation == Truncation(TruncationReason.DATA_SHORTER_THAN_DECLARED, 6, 30, 1, 0x00)
