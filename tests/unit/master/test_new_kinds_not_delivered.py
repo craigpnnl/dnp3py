@@ -1,4 +1,4 @@
-"""New point kinds from Annex A groups 3, 4, 13, 31, 33, 34, 41 and 43 are
+"""New point kinds from Annex A groups 13, 31, 33, 34, 41 and 43 are
 framed by the wire-level parser, but never reach a decode function or a
 handler callback, end to end through ``Master.process_response``: master.py
 only batches and decodes a kind with an entry in its delivery table
@@ -25,8 +25,6 @@ RANGE_8 = 0x00
 
 # One representative pair per new point kind, with a minimal valid object.
 NEW_KIND_BLOCKS = [
-    # A.4.2: flag octet, UINT2 state (g3v2, DOUBLE_BIT_INPUT).
-    (3, 2, bytes([0x81])),
     # A.9.1: UINT7 status, BSTR1 commanded state (g13v1, BINARY_COMMAND_EVENT).
     (13, 1, bytes([0x00])),
     # A.15.1: flag octet, INT32 (g31v1, FROZEN_ANALOG_INPUT).
@@ -38,7 +36,7 @@ NEW_KIND_BLOCKS = [
     # A.22.1: UINT7 status, BSTR1 reserved, INT32 (g43v1, ANALOG_COMMAND_EVENT).
     (43, 1, bytes([0x00]) + struct.pack("<i", 500)),
 ]
-NEW_KIND_IDS = ["g3v2", "g13v1", "g31v1", "g34v1", "g41v1", "g43v1"]
+NEW_KIND_IDS = ["g13v1", "g31v1", "g34v1", "g41v1", "g43v1"]
 
 # A.14.1: flag octet, INT32 (g30v1, ANALOG_INPUT): the delivered marker block.
 G30V1_DATA = bytes([0x01]) + struct.pack("<i", 2401)
@@ -47,7 +45,6 @@ G30V1_EXPECTED = AnalogValue(index=0, value=2401.0, quality=0x01)
 # Point kinds the rows above use; master.py delivers none of them.
 UNDELIVERED_NEW_KINDS = frozenset(
     {
-        PointKind.DOUBLE_BIT_INPUT,
         PointKind.BINARY_COMMAND_EVENT,
         PointKind.ANALOG_COMMAND,
         PointKind.ANALOG_COMMAND_EVENT,

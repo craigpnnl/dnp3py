@@ -13,6 +13,7 @@ from dnp3.master.commands import (
     SelectTask,
 )
 from dnp3.master.config import MasterConfig, PollingConfig
+from dnp3.master.double_bit import DoubleBitInputHandler, DoubleBitValue
 from dnp3.master.handler import (
     DefaultSOEHandler,
     ResponseHandler,
@@ -42,6 +43,8 @@ __all__ = [
     "ControlOperation",
     "DefaultSOEHandler",
     "DirectOperateTask",
+    "DoubleBitInputHandler",
+    "DoubleBitValue",
     "IntegrityPollTask",
     "LinkError",
     "LinkResetPolicy",
