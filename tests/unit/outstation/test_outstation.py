@@ -1987,13 +1987,10 @@ class TestAnalogOutputVariations:
         assert status_byte == int(CommandStatus.SUCCESS), f"g41v4: expected SUCCESS at offset 10, got {status_byte}"
 
     def test_g41_unknown_variation_does_not_emit_garbage_echo(self) -> None:
-        """Unknown AO variation (g41v5) must not emit a garbage default-4-byte echo.
+        """A DIRECT_OPERATE carrying an unknown AO variation (g41v5) is answered with a RESPONSE.
 
-        The prior _echo_ao_block used value_sizes.get(variation, 4), so an
-        unknown variation would echo 4 bytes of garbage value data. The fix
-        returns the block unchanged. Assert the response does not crash and
-        that the echoed block (if present) does not have a 4-byte-assumed layout
-        that would misalign a client parsing it as a known variation.
+        Only that a response comes back, rather than an exception, is checked here;
+        the objects it carries are not.
         """
         outstation = Outstation()
 
