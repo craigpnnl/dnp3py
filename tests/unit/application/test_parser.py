@@ -888,6 +888,14 @@ class TestRequestBlocksAreFramedSeparately:
         assert fragment.objects == (_block(bytes([0x1E, 0x00, 0x00, 0x05, 0x03])), _block(_G60V1_ALL))
         assert fragment.truncation is None
 
+    def test_header_only_index_prefixed_start_stop_below_start_consumes_its_range(self) -> None:
+        prefixed = bytes([0x01, 0x02, 0x10, 0x05, 0x03])
+
+        fragment = _request(FunctionCode.READ, prefixed + _G60V1_ALL)
+
+        assert fragment.objects == (_block(prefixed), _block(_G60V1_ALL))
+        assert fragment.truncation is None
+
     def test_parse_object_headers_consumes_the_index_list_only(self) -> None:
         assert parse_object_headers(bytes.fromhex("01 02 17 02 01 04") + _G60V1_ALL) == [
             _block(bytes.fromhex("01 02 17 02 01 04")),

@@ -222,6 +222,14 @@ class TestUnframeableRequestRunsNothing:
         assert response.to_bytes() == _null_response(3, 0x04)
         assert handler.bo_direct == []
 
+    def test_write_with_a_short_block_applies_no_block(self) -> None:
+        outstation, _handler = _outstation()
+
+        response = _only(_send(outstation, FunctionCode.WRITE, _G80V1_CLEAR_RESTART + _G50V1[:-1], seq=5))
+
+        assert response.to_bytes() == _null_response(5, 0x04)
+        assert outstation.iin & IIN.DEVICE_RESTART
+
     def test_read_with_a_reserved_qualifier_is_parameter_error(self) -> None:
         outstation, _handler = _outstation()
         outstation.database.add_binary_input(0)
