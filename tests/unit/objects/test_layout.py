@@ -88,6 +88,14 @@ _EXPECTED_ROWS = {
     (22, 2): (_CT, 3, 0, True, _UINT, _NO),  # A.12.2: flag, UINT16
     (22, 5): (_CT, 11, 0, True, _UINT, _ABS),  # A.12.5: flag, UINT32, DNP3TIME
     (22, 6): (_CT, 9, 0, True, _UINT, _ABS),  # A.12.6: flag, UINT16, DNP3TIME
+    (23, 1): (_FC, 5, 0, True, _UINT, _NO),  # A.13.1: flag, UINT32
+    (23, 2): (_FC, 3, 0, True, _UINT, _NO),  # A.13.2: flag, UINT16
+    (23, 3): (_FC, 5, 0, True, _UINT, _NO),  # A.13.3: flag, UINT32, delta (obsolete)
+    (23, 4): (_FC, 3, 0, True, _UINT, _NO),  # A.13.4: flag, UINT16, delta (obsolete)
+    (23, 5): (_FC, 11, 0, True, _UINT, _ABS),  # A.13.5: flag, UINT32, DNP3TIME
+    (23, 6): (_FC, 9, 0, True, _UINT, _ABS),  # A.13.6: flag, UINT16, DNP3TIME
+    (23, 7): (_FC, 11, 0, True, _UINT, _ABS),  # A.13.7: flag, UINT32, DNP3TIME, delta (obsolete)
+    (23, 8): (_FC, 9, 0, True, _UINT, _ABS),  # A.13.8: flag, UINT16, DNP3TIME, delta (obsolete)
     (30, 1): (_AI, 5, 0, True, _INT, _NO),  # A.14.1: flag, INT32
     (30, 2): (_AI, 3, 0, True, _INT, _NO),  # A.14.2: flag, INT16
     (30, 3): (_AI, 4, 0, False, _INT, _NO),  # A.14.3: INT32
