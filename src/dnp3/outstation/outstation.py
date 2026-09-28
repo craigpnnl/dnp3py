@@ -1815,7 +1815,13 @@ class Outstation:
         return self._build_delay_response(self.handler.warm_restart, request)
 
     def _handle_delay_measure(self, request: RequestFragment) -> ResponseFragment:
-        """Handle DELAY_MEASURE request for time sync."""
+        """Handle DELAY_MEASURE request for time sync.
+
+        Does not clear NEED_TIME: the clock is set at the WRITE that follows
+        (IEEE 1815-2012 10.3.3.1 h), and 4.5.5 clears NEED_TIME only on a
+        time synchronization message or a written IIN1.4, neither of which
+        this request is.
+        """
         # Respond with time delay of 0 (we process immediately)
         delay_data = (0).to_bytes(2, "little")
         header = ObjectHeader.build(
@@ -1826,9 +1832,6 @@ class Outstation:
         )
         count_data = CountRange(count=1).to_bytes_1()
         block = ObjectBlock(header=header, data=count_data + delay_data)
-
-        # Clear NEED_TIME flag
-        self._state.clear_need_time()
 
         return build_response(
             objects=(block,),

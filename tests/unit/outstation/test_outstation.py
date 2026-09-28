@@ -225,8 +225,13 @@ class TestDelayMeasure:
         assert response.objects[0].header.group == 52
         assert response.objects[0].header.variation == 2
 
-    def test_delay_measure_clears_need_time(self) -> None:
-        """DELAY_MEASURE clears NEED_TIME IIN."""
+    def test_delay_measure_does_not_clear_need_time(self) -> None:
+        """DELAY_MEASURE does not clear NEED_TIME (IEEE 1815-2012 4.5.5: only a time write does).
+
+        A master that runs DELAY_MEASURE and never sends the WRITE that
+        follows it (a lost response, no retries) must not see a synchronized
+        outstation that was never given a time.
+        """
         config = OutstationConfig(time_sync_required=True)
         outstation = Outstation(config=config)
 
@@ -235,7 +240,7 @@ class TestDelayMeasure:
         request = build_delay_measure_request()
         outstation.process_request(request.to_bytes())
 
-        assert IIN.NEED_TIME not in outstation.iin
+        assert IIN.NEED_TIME in outstation.iin
 
 
 class TestUnsolicitedControl:

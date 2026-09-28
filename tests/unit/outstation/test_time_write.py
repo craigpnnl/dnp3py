@@ -7,11 +7,12 @@ write or a WRITE of g80v1 index 4 = 0; DELAY_MEASURE never clears it. Rule W
 
 import pytest
 
-from dnp3.application.builder import build_write_request
+from dnp3.application.builder import build_delay_measure_request, build_write_request
 from dnp3.application.fragment import ObjectBlock, ResponseFragment
 from dnp3.application.qualifiers import ObjectHeader
 from dnp3.core.flags import IIN
 from dnp3.core.timestamp import DNP3Timestamp
+from dnp3.outstation.config import OutstationConfig
 from dnp3.outstation.outstation import Outstation
 
 # 10.3.2 worked example: 2008-01-01T00:00:00.000 UTC, wire octets 00 C4 A5 32 17 01.
@@ -132,6 +133,24 @@ class TestWriteTimeUnknownWidthVariations:
         response = _send(outstation, block, seq=6)
 
         assert IIN.OBJECT_UNKNOWN in response.header.iin
+        assert IIN.NEED_TIME in outstation.iin
+
+
+class TestDelayMeasureDoesNotClearNeedTime:
+    """Item 5: DELAY_MEASURE still answers one g52v2 object, and leaves NEED_TIME set."""
+
+    def test_delay_measure_reports_delay_and_leaves_need_time_set(self) -> None:
+        config = OutstationConfig(time_sync_required=True)
+        outstation = Outstation(config=config)
+        assert IIN.NEED_TIME in outstation.iin
+
+        request = build_delay_measure_request(seq=1)
+        responses = outstation.process_request(request.to_bytes())
+
+        assert len(responses) == 1
+        response = responses[0]
+        assert len(response.objects) == 1
+        assert (response.objects[0].header.group, response.objects[0].header.variation) == (52, 2)
         assert IIN.NEED_TIME in outstation.iin
 
 
