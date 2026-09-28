@@ -16,13 +16,16 @@ import pytest
 
 from dnp3.application.builder import (
     build_confirm_request,
+    build_direct_operate_request,
     build_integrity_poll,
     build_operate_request,
     build_select_request,
+    build_write_request,
 )
 from dnp3.application.fragment import ObjectBlock, RequestFragment, ResponseFragment
+from dnp3.application.header import RequestHeader
 from dnp3.application.qualifiers import ObjectHeader
-from dnp3.core.enums import CommandStatus, ControlCode
+from dnp3.core.enums import CommandStatus, ControlCode, FunctionCode
 from dnp3.outstation import Outstation, OutstationConfig
 from dnp3.outstation.handler import CommandResult, DefaultCommandHandler
 from dnp3.outstation.peer import UNSPECIFIED_PEER, PeerId
@@ -251,13 +254,26 @@ class TestSelectRetryDiscardOverride:
 class TestOtherRequestsBetweenSelectAndOperate:
     """Any other request from the selecting peer ends its selection, except CONFIRM."""
 
-    def test_read_ends_the_selection(self) -> None:
+    @pytest.mark.parametrize(
+        "between",
+        [
+            build_integrity_poll(seq=1),
+            build_write_request(objects=(), seq=1),
+            build_direct_operate_request(objects=(_crob_block((6, 6000)),), seq=1),
+            RequestFragment(
+                header=RequestHeader.build(function=FunctionCode.DIRECT_OPERATE_NO_ACK, seq=1),
+                objects=(_crob_block((6, 6000)),),
+            ),
+        ],
+        ids=["read", "write", "direct-operate", "direct-operate-no-ack"],
+    )
+    def test_other_request_ends_the_selection(self, between: RequestFragment) -> None:
         outstation, handler = _outstation()
         _select(outstation, MASTER_A, 0, POINT_5)
-        _send(outstation, MASTER_A, build_integrity_poll(seq=1))
+        _send(outstation, MASTER_A, between)
 
         assert _statuses(_operate(outstation, MASTER_A, 1, POINT_5)) == [(5, NO_SELECT)]
-        assert handler.operates == []
+        assert [op for op in handler.operates if op[0] == 5] == []
 
     def test_confirm_does_not_end_the_selection(self) -> None:
         """A CONFIRM from the selecting master only acknowledges an earlier response.
