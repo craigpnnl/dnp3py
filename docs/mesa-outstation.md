@@ -33,28 +33,26 @@ source checkout or installed from a wheel.
 ## Quick start (CLI)
 
 ```
-usage: python -m dnp3.mesa [-h] [--profile PROFILE]
-                           [--profile-name {full,mandatory_1815,mandatory_1547,minimal_1547}]
+usage: python -m dnp3.mesa [-h] [--profile PROFILE |
+                           --profile-name {full,mandatory_1547,mandatory_1815,minimal_1547}]
                            [--host HOST] [--port PORT] [--address ADDRESS]
                            [--master-address MASTER_ADDRESS] [--meters METERS]
                            [--ders DERS] [--inverters INVERTERS]
                            [--batteries BATTERIES]
-
-options:
-  --profile PROFILE           Path to a PicsProfile JSON file (default: bundled full.json)
-  --profile-name {full,mandatory_1815,mandatory_1547,minimal_1547}
-                              Select a bundled profile by name instead of --profile
-                              (mutually exclusive with --profile)
-  --host HOST                 Listen address (default: 0.0.0.0)
-  --port PORT                 Listen port (default: 20000)
-  --address ADDRESS           DNP3 outstation address (default: 1)
-  --master-address MASTER_ADDRESS
-                              Expected master address (default: 0)
-  --meters METERS             Number of meter instances to include
-  --ders DERS                 Number of DER instances to include
-  --inverters INVERTERS       Number of inverter instances to include
-  --batteries BATTERIES       Number of battery instances to include
 ```
+
+(`python -m dnp3.mesa --help` prints the same usage line plus a one-line
+description per flag; `--profile` and `--profile-name` are mutually
+exclusive.) Defaults, which the `--help` text itself does not print:
+
+| Flag | Default |
+|------|---------|
+| `--profile` / `--profile-name` | bundled `full.json` |
+| `--host` | `0.0.0.0` |
+| `--port` | `20000` |
+| `--address` | `1` |
+| `--master-address` | `0` |
+| `--meters`, `--ders`, `--inverters`, `--batteries` | every instance the profile carries |
 
 Run the simulator against the bundled full profile (the default, so
 `--profile`/`--profile-name` can be omitted entirely):
