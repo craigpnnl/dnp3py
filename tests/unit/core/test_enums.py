@@ -318,6 +318,17 @@ class TestControlCodeFromFieldsRange:
         assert int(code) == 0xF4
 
 
+def test_control_code_field_types_exported_from_core() -> None:
+    """Callers of ControlCode.from_fields can import its field types from dnp3.core."""
+    import dnp3.core
+
+    assert dnp3.core.OperationType is OperationType
+    assert dnp3.core.TripCloseCode is TripCloseCode
+    assert {"ControlCode", "OperationType", "TripCloseCode"} <= set(dnp3.core.__all__)
+    code = dnp3.core.ControlCode.from_fields(dnp3.core.OperationType.PULSE_ON, tcc=dnp3.core.TripCloseCode.TRIP)
+    assert code == dnp3.core.ControlCode.TRIP_PULSE_ON
+
+
 def test_exactly_one_control_code_symbol() -> None:
     """Every module in the package that exposes ControlCode exposes the same class."""
     # One directory level of the package, then every dnp3 module that import pulled in.
