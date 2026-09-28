@@ -13,6 +13,7 @@ Regression cover for the response-parsing bugs reported in issue #30.
 """
 
 import struct
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -29,6 +30,9 @@ FLAGS_OFF = 0x01
 
 # Response header: app control (FIR+FIN, seq 1), RESPONSE function, 2-byte IIN.
 RESPONSE_HEADER = bytes([0xC1, 0x81, 0x00, 0x00])
+
+# All-zero DNP3TIME (11.3.4): the epoch itself, 1970-01-01 00:00:00 UTC.
+_EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 
 
 class CollectingHandler(SOEHandler):
@@ -96,13 +100,15 @@ class TestBinaryEventCountQualifiers:
 
         assert indexed_values(values) == {5: True, 9: False}
 
-    def test_g2v2_absolute_timestamp_is_skipped(self) -> None:
+    def test_g2v2_absolute_timestamp_is_decoded(self) -> None:
         """g2v2 carries a 48-bit timestamp after the flags byte (7 bytes total)."""
         header = ObjectHeader(group=2, variation=2, qualifier=0x17)
         data = bytes([0x02]) + bytes([0x00, FLAGS_ON]) + bytes(6) + bytes([0x01, FLAGS_OFF]) + bytes(6)
         values = delivered(ObjectBlock(header=header, data=data), "on_binary_input")
 
         assert indexed_values(values) == {0: True, 1: False}
+        assert values[0].timestamp == _EPOCH
+        assert values[1].timestamp == _EPOCH
 
     def test_g2v3_relative_timestamp_is_skipped(self) -> None:
         """g2v3 carries a 16-bit relative time after the flags byte (3 bytes)."""
@@ -186,6 +192,7 @@ class TestAnalogEventCountQualifiers:
         values = delivered(ObjectBlock(header=header, data=data), "on_analog_input")
 
         assert indexed_values(values) == {5: -1500.0}
+        assert values[0].timestamp == _EPOCH
 
     def test_g32v5_float_event(self) -> None:
         """g32v5 carries a float32 payload."""
@@ -371,6 +378,7 @@ class TestMalformedBlocks:
         values = delivered(ObjectBlock(header=header, data=data), "on_counter")
 
         assert indexed_values(values) == {2: 4242}
+        assert values[0].timestamp == _EPOCH
 
     def test_counter_no_flags_variation_g20v5(self) -> None:
         """g20v5 has no quality byte; quality defaults to online."""
@@ -442,9 +450,17 @@ class TestFrozenCounterLayout:
     cover for craigpnnl/dnp3py#79.
     """
 
-    # Non-zero, non-palindromic time octets so a wrong stride misreads point 1
-    # from inside them (see the two-point tests below).
-    _TIME_OCTETS = bytes([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF])
+    # A.11.5/A.11.6: DNP3TIME is UINT48 ms since epoch, little-endian (11.3.4).
+    # Non-zero, non-palindromic octets so a wrong stride misreads point 1
+    # from inside them (see the two-point tests below). Point 0 and point 1
+    # carry distinct times, so a decoder that reads one object's time field
+    # for every object in the block is caught, not just a wrong stride.
+    _TIME_MS = 1_700_000_000_123
+    _TIME_OCTETS = _TIME_MS.to_bytes(6, "little")
+    _EXPECTED_TIME = datetime(1970, 1, 1, tzinfo=UTC) + timedelta(milliseconds=_TIME_MS)
+    _TIME_MS_2 = _TIME_MS + 3_600_000
+    _TIME_OCTETS_2 = _TIME_MS_2.to_bytes(6, "little")
+    _EXPECTED_TIME_2 = datetime(1970, 1, 1, tzinfo=UTC) + timedelta(milliseconds=_TIME_MS_2)
 
     def test_g21v5_delivers_flag_as_quality_and_uint32_value(self) -> None:
         """A.11.5.2.2: BSTR8 flag, UINT32 count, DNP3TIME. 11.3.4: little-endian.
@@ -461,16 +477,15 @@ class TestFrozenCounterLayout:
             + self._TIME_OCTETS
             + bytes([0x03])
             + struct.pack("<I", 0x87654321)
-            + self._TIME_OCTETS
+            + self._TIME_OCTETS_2
         )
         values = delivered(ObjectBlock(header=header, data=data), "on_frozen_counter")
 
         assert indexed_values(values) == {0: 0x12345678, 1: 0x87654321}
         assert values[0].quality == 0x21
         assert values[1].quality == 0x03
-        # Known limitation (#81): time-of-occurrence is skipped, not decoded.
-        assert values[0].timestamp is None
-        assert values[1].timestamp is None
+        assert values[0].timestamp == self._EXPECTED_TIME
+        assert values[1].timestamp == self._EXPECTED_TIME_2
 
     def test_g21v6_delivers_flag_as_quality_and_uint16_value(self) -> None:
         """A.11.6.2.2: BSTR8 flag, UINT16 count, DNP3TIME. 11.3.4: little-endian.
@@ -487,16 +502,15 @@ class TestFrozenCounterLayout:
             + self._TIME_OCTETS
             + bytes([0x03])
             + struct.pack("<H", 0x4321)
-            + self._TIME_OCTETS
+            + self._TIME_OCTETS_2
         )
         values = delivered(ObjectBlock(header=header, data=data), "on_frozen_counter")
 
         assert indexed_values(values) == {0: 0x1234, 1: 0x4321}
         assert values[0].quality == 0x21
         assert values[1].quality == 0x03
-        # Known limitation (#81): time-of-occurrence is skipped, not decoded.
-        assert values[0].timestamp is None
-        assert values[1].timestamp is None
+        assert values[0].timestamp == self._EXPECTED_TIME
+        assert values[1].timestamp == self._EXPECTED_TIME_2
 
     def test_g21v1_frozen_counter_32bit_with_flag_unchanged(self) -> None:
         """A.11.1: flag + UINT32, no time. Must not move when v5/v6 are fixed."""
