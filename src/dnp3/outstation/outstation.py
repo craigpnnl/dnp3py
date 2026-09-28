@@ -99,7 +99,7 @@ IIN_BIT_DEVICE_RESTART = 7  # Bit 7 of IIN byte 1
 MIN_IIN_WRITE_DATA = 2  # start + stop bytes
 
 # Analog output value sizes in bytes, keyed by variation number.
-# Used by both _process_ao_direct_operate and _echo_ao_block so the mapping
+# Used by both _parse_ao_block and _echo_ao_block so the mapping
 # is defined exactly once (parallel to _CROB_BODY_BYTES for CROB).
 _AO_VALUE_SIZES: dict[int, int] = {
     AO_VAR_INT32: 4,  # Group 41 Var 1: 32-bit signed integer
@@ -508,6 +508,68 @@ def _parse_crob_block(block: ObjectBlock) -> list[ParsedCrob]:
         )
 
     return parsed
+
+
+def _parse_ao_block(block: ObjectBlock) -> tuple[list[tuple[int, float]], bool]:
+    """Parse an Analog Output block (Group 41) into (index, value) pairs.
+
+    Supports variations 1-4:
+        Var 1: 32-bit signed integer (4 bytes value + 1 byte status)
+        Var 2: 16-bit signed integer (2 bytes value + 1 byte status)
+        Var 3: single-precision float (4 bytes value + 1 byte status)
+        Var 4: double-precision float (8 bytes value + 1 byte status)
+
+    Qualifiers follow the same 0x17/0x28 scheme as CROB (IEEE 1815-2012 Table 4-3).
+    Unknown qualifiers and unknown variations fail closed, matching the CROB path.
+
+    Returns:
+        Tuple of (points, has_parse_error). has_parse_error is True when the
+        frame is malformed (unknown variation, unknown qualifier, or truncated
+        buffer); callers must set IIN.PARAMETER_ERROR when it is True. The
+        objects before a truncation are still returned. A dummy-index sentinel
+        is never returned, so index 0 is not conflated with a parse error.
+    """
+    points: list[tuple[int, float]] = []
+    variation = block.header.variation
+
+    value_size = _AO_VALUE_SIZES.get(variation)
+    if value_size is None:
+        return points, True
+
+    try:
+        count_bytes, index_bytes = _crob_count_index_sizes(block.header.qualifier)
+    except ValueError:
+        return points, True
+
+    data = block.data
+    if len(data) < count_bytes:
+        return points, True
+
+    count = int.from_bytes(data[0:count_bytes], "little")
+    offset = count_bytes
+
+    # object size = index_bytes + value_size + 1 byte status
+    obj_size = index_bytes + value_size + 1
+
+    for _ in range(count):
+        if offset + obj_size > len(data):
+            break
+
+        index = int.from_bytes(data[offset : offset + index_bytes], "little")
+        offset += index_bytes
+
+        raw_value = data[offset : offset + value_size]
+        if variation in {AO_VAR_INT32, AO_VAR_INT16}:
+            value = float(int.from_bytes(raw_value, "little", signed=True))
+        elif variation == AO_VAR_FLOAT32:
+            value = float(struct.unpack("<f", raw_value)[0])
+        else:
+            value = float(struct.unpack("<d", raw_value)[0])
+
+        offset += value_size + 1  # skip request status byte
+        points.append((index, value))
+
+    return points, len(points) < count
 
 
 @dataclass
@@ -1151,17 +1213,20 @@ class Outstation:
 
         self._state.clear_expired_selects(self.config.select_timeout)
 
+        ao_parse_error = False
+
         for block in request.objects:
             if block.header.group == GROUP_CROB and block.header.variation == 1:
                 # CROB - Control Relay Output Block
                 block_results = self._process_crob_select(block, seq, peer=peer)
                 results.extend(block_results)
-            else:
-                # Unsupported object
-                pass
+            elif block.header.group == GROUP_ANALOG_OUTPUT:
+                block_results, block_parse_error = self._process_ao_select(block, seq, peer=peer)
+                results.extend(block_results)
+                ao_parse_error = ao_parse_error or block_parse_error
 
         # Build response with command status
-        return self._build_control_response(request, results)
+        return self._build_control_response(request, results, ao_parse_error=ao_parse_error)
 
     def _process_crob_select(
         self, block: ObjectBlock, seq: int, *, peer: PeerId = UNSPECIFIED_PEER
@@ -1219,12 +1284,18 @@ class Outstation:
         # Clear expired selects first
         self._state.clear_expired_selects(self.config.select_timeout)
 
+        ao_parse_error = False
+
         for block in request.objects:
             if block.header.group == GROUP_CROB and block.header.variation == 1:
                 block_results = self._process_crob_operate(block, seq, peer=peer)
                 results.extend(block_results)
+            elif block.header.group == GROUP_ANALOG_OUTPUT:
+                block_results, block_parse_error = self._process_ao_operate(block, peer=peer)
+                results.extend(block_results)
+                ao_parse_error = ao_parse_error or block_parse_error
 
-        return self._build_control_response(request, results)
+        return self._build_control_response(request, results, ao_parse_error=ao_parse_error)
 
     def _process_crob_operate(
         self, block: ObjectBlock, seq: int, *, peer: PeerId = UNSPECIFIED_PEER
@@ -1268,6 +1339,66 @@ class Outstation:
             results.append((crob.index, result.status))
 
         return results
+
+    def _process_ao_select(
+        self, block: ObjectBlock, seq: int, *, peer: PeerId = UNSPECIFIED_PEER
+    ) -> tuple[list[tuple[int, CommandStatus]], bool]:
+        """Process Analog Output SELECT (Group 41).
+
+        A point another peer holds returns BLOCKED_OTHER_MASTER without reaching
+        the handler. Other points are dispatched to the handler and, on success,
+        stored as this peer's pending SELECT state under group 41, so a CROB
+        selection at the same index is a separate point.
+
+        Returns:
+            Tuple of (results, has_parse_error), has_parse_error as from _parse_ao_block.
+        """
+        points, has_parse_error = _parse_ao_block(block)
+        results: list[tuple[int, CommandStatus]] = []
+
+        for index, value in points:
+            if self._state.held_by_other_peer(index, peer, self.config.select_timeout, group=GROUP_ANALOG_OUTPUT):
+                results.append((index, CommandStatus.BLOCKED_OTHER_MASTER))
+                continue
+
+            result = self.handler.select_analog_output(index=index, value=value)
+
+            if result.is_success:
+                select_state = SelectState(index=index, is_binary=False, analog_value=value, sequence=seq)
+                self._state.add_select(select_state, peer=peer, group=GROUP_ANALOG_OUTPUT)
+
+            results.append((index, result.status))
+
+        return results, has_parse_error
+
+    def _process_ao_operate(
+        self, block: ObjectBlock, *, peer: PeerId = UNSPECIFIED_PEER
+    ) -> tuple[list[tuple[int, CommandStatus]], bool]:
+        """Process Analog Output OPERATE (Group 41).
+
+        Each point is checked against this peer's group 41 selection only; a
+        missing or mismatched selection returns NO_SELECT without reaching the
+        handler.
+
+        Returns:
+            Tuple of (results, has_parse_error), has_parse_error as from _parse_ao_block.
+        """
+        points, has_parse_error = _parse_ao_block(block)
+        results: list[tuple[int, CommandStatus]] = []
+
+        for index, value in points:
+            select_state = self._state.get_select(index, peer=peer, group=GROUP_ANALOG_OUTPUT)
+            if select_state is None or not select_state.matches_analog(index, value):
+                results.append((index, CommandStatus.NO_SELECT))
+                self._state.remove_select(index, peer=peer, group=GROUP_ANALOG_OUTPUT)
+                continue
+
+            result = self.handler.operate_analog_output(index=index, value=value, select_sequence=select_state.sequence)
+
+            self._state.remove_select(index, peer=peer, group=GROUP_ANALOG_OUTPUT)
+            results.append((index, result.status))
+
+        return results, has_parse_error
 
     def _handle_direct_operate(self, request: RequestFragment) -> ResponseFragment:
         """Handle DIRECT_OPERATE request."""
@@ -1315,81 +1446,18 @@ class Outstation:
     def _process_ao_direct_operate(self, block: ObjectBlock) -> tuple[list[tuple[int, CommandStatus]], bool]:
         """Process Analog Output DIRECT_OPERATE (Group 41).
 
-        Supports variations 1-4:
-            Var 1: 32-bit signed integer (4 bytes value + 1 byte status)
-            Var 2: 16-bit signed integer (2 bytes value + 1 byte status)
-            Var 3: single-precision float (4 bytes value + 1 byte status)
-            Var 4: double-precision float (8 bytes value + 1 byte status)
-
-        Qualifiers follow the same 0x17/0x28 scheme as CROB (IEEE 1815-2012 Table 4-3):
-            0x17: 1-byte count + 1-byte index prefix per object
-            0x28: 2-byte count + 2-byte index prefix per object
-        Unknown qualifiers and unknown variations fail closed, matching the CROB path.
+        Each object _parse_ao_block returns is dispatched immediately to the
+        handler with no prior SELECT required.
 
         Returns:
-            Tuple of (results, has_parse_error). has_parse_error is True when the
-            frame is malformed (unknown variation, unknown qualifier, or truncated
-            buffer); callers must set IIN.PARAMETER_ERROR when it is True.
-            A dummy-index sentinel is NOT injected into results; the flag is the
-            sole signal so index 0 is never conflated with a parse-error placeholder.
+            Tuple of (results, has_parse_error), has_parse_error as from
+            _parse_ao_block; callers must set IIN.PARAMETER_ERROR when it is True.
         """
+        points, has_parse_error = _parse_ao_block(block)
         results: list[tuple[int, CommandStatus]] = []
-        variation = block.header.variation
-
-        # Unknown variation: fail closed, no side effects, signal parse error to caller.
-        value_size = _AO_VALUE_SIZES.get(variation)
-        if value_size is None:
-            return results, True
-
-        # Derive count/index widths from qualifier, identical to the CROB path.
-        try:
-            count_bytes, index_bytes = _crob_count_index_sizes(block.header.qualifier)
-        except ValueError:
-            return results, True
-
-        data = block.data
-        if len(data) < count_bytes:
-            return results, True
-
-        count = int.from_bytes(data[0:count_bytes], "little")
-        offset = count_bytes
-
-        # object size = index_bytes + value_size + 1 byte status
-        obj_size = index_bytes + value_size + 1
-
-        echoed = 0
-        for _ in range(count):
-            if offset + obj_size > len(data):
-                # Buffer too short; remaining declared objects cannot be processed.
-                break
-
-            index = int.from_bytes(data[offset : offset + index_bytes], "little")
-            offset += index_bytes
-
-            # Parse value based on variation
-            raw_value = data[offset : offset + value_size]
-            if variation in {AO_VAR_INT32, AO_VAR_INT16}:
-                value = float(int.from_bytes(raw_value, "little", signed=True))
-            elif variation == AO_VAR_FLOAT32:
-                value = float(struct.unpack("<f", raw_value)[0])
-            elif variation == AO_VAR_FLOAT64:
-                value = float(struct.unpack("<d", raw_value)[0])
-            else:
-                value = 0.0
-
-            offset += value_size
-            offset += 1  # skip request status byte
-
-            result = self.handler.direct_operate_analog_output(
-                index=index,
-                value=value,
-            )
-
+        for index, value in points:
+            result = self.handler.direct_operate_analog_output(index=index, value=value)
             results.append((index, result.status))
-            echoed += 1
-
-        # Truncation: declared count exceeds available objects.
-        has_parse_error = echoed < count
         return results, has_parse_error
 
     def _build_control_response(
@@ -1537,7 +1605,7 @@ class Outstation:
             Tuple of (ObjectBlock with status bytes updated, truncation flag).
         """
         variation = block.header.variation
-        # Unknown variations are returned unchanged; _process_ao_direct_operate
+        # Unknown variations are returned unchanged; _parse_ao_block
         # already produced no results for them, so there is nothing meaningful
         # to echo. No silent size default: a wrong size would corrupt the wire frame.
         value_size = _AO_VALUE_SIZES.get(variation)
