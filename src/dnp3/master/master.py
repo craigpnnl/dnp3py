@@ -401,7 +401,7 @@ _V = TypeVar("_V")
 
 
 class _Batch(Protocol):
-    """Values of one point kind gathered across a response's blocks."""
+    """Values of one point kind gathered from one run of consecutive blocks of that kind."""
 
     def add(self, block: ObjectBlock, wire: WireLayout) -> None:
         """Decode a block into the batch."""
@@ -431,7 +431,7 @@ class _KindDelivery(Generic[_V]):
 
 @dataclass(slots=True)
 class _KindBatch(Generic[_V]):
-    """One response's values for a point kind, in block order."""
+    """Values of one run of consecutive same-kind blocks in a response, in block order."""
 
     delivery: _KindDelivery[_V]
     values: list[_V] = field(default_factory=list)
@@ -758,6 +758,9 @@ class Master:
         in the fragment. Consecutive blocks of one point kind share one callback; a block
         of another delivered kind ends that run, and a block with no delivery is skipped
         without ending it.
+
+        A block of another kind ends a run even when the handler lacks that kind's callback.
+        A block that decodes to no values still ends a run of another kind.
 
         Args:
             objects: Object blocks from response.
