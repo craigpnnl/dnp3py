@@ -1,8 +1,9 @@
 """Tests for outstation Group 40 (Analog Output Status) READ and Class 0.
 
-IEEE 1815-2012 Table 14-3: a Level 2 outstation answers a g40v0 read (and
-Class 0) with g40v2. Clause 11.6 Note 4 rules 2 and 3 govern the clamp and
-OVER_RANGE behaviour asserted here.
+IEEE 1815-2012 4.2.2.7.2.1: a g40v0 read (and Class 0) answers in the
+configured default variation, g40v2 per Clause 14 Table 14-3 for a Level 2
+outstation. 11.6.1.1 rules 2 and 3 govern the clamp and OVER_RANGE
+behaviour asserted here.
 """
 
 import math

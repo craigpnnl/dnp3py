@@ -58,7 +58,8 @@ class OutstationConfig:
         enable_self_address: Accept messages to self address (0xFFFC).
         time_sync_required: Start with NEED_TIME IIN flag.
         analog_output_static_variation: Group 40 variation served for a
-            variation-0 read and for Class 0 (1815.2 Level 2 answers g40v2).
+            variation-0 read and for Class 0 (IEEE 1815-2012 Clause 14,
+            Table 14-3 lists g40v2 for a Level 2 outstation).
     """
 
     address: int = 1

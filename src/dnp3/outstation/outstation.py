@@ -119,7 +119,7 @@ _AO_VALUE_SIZES: dict[int, int] = {
 # the leading flag octet every g40 variation carries (IEEE 1815-2012 A.19).
 _AO_STATUS_SIZES: dict[int, int] = {variation: size + 1 for variation, size in _AO_VALUE_SIZES.items()}
 
-# Signed integer range of each g40 int variation, for the clause 11.6 Note 4
+# Signed integer range of each g40 int variation, for the 11.6.1.1
 # clamp: a value outside this range is reported as the nearer bound.
 _AO_STATUS_INT_LIMITS: dict[int, tuple[int, int]] = {
     AO_VAR_INT32: (-(2**31), 2**31 - 1),
@@ -128,7 +128,7 @@ _AO_STATUS_INT_LIMITS: dict[int, tuple[int, int]] = {
 
 # Largest finite IEEE 754 binary32 magnitude (bit pattern 0x7F7FFFFF), the g40v3
 # clamp limit: struct.pack("<f", ...) raises OverflowError above this for any
-# finite value, so it is the bound clause 11.6 Note 4 clamps to.
+# finite value, so it is the bound 11.6.1.1 clamps to.
 _FLOAT32_MAX = struct.unpack("<f", b"\xff\xff\x7f\x7f")[0]
 
 # Index size thresholds
@@ -352,7 +352,7 @@ def _build_static_blocks(
 def _serialize_analog_output_status(point: Any, variation: int) -> bytes:
     """Serialize one analog output status point to its g40 variation's wire bytes.
 
-    IEEE 1815-2012 clause 11.6 Note 4 rules 2 and 3: a value outside the
+    IEEE 1815-2012 11.6.1.1 rules 2 and 3: a value outside the
     variation's range is reported as the variation's limit value with
     OVER_RANGE set in the flag octet, rather than raised or wrapped. For the
     int variations (v1, v2) the range check runs before int(), because a
@@ -1226,9 +1226,9 @@ class Outstation:
     def _read_analog_outputs(self, block: ObjectBlock) -> tuple[list[ObjectBlock], IIN]:
         """Read analog output status (group 40) for a request block.
 
-        IEEE 1815-2012 Table 14-3: variation 0 answers in the configured
-        default variation; 1-4 are served as requested; any other variation
-        is unknown.
+        IEEE 1815-2012 4.2.2.7.2.1: variation 0 answers in the configured
+        default variation. 4.2.2.7.2.2: 1-4 are served as requested; any
+        other variation is unknown.
         """
         variation = block.header.variation
         if variation == 0:
