@@ -144,6 +144,11 @@ class TestReadRequests:
         _STATE_BIT = 0x80
         assert event_data[2] & _STATE_BIT, f"expected STATE bit set (value=True), flags=0x{event_data[2]:02X}"
 
+        # This slice does not change solicited responses: CON stays clear
+        # even though the fragment carries event data (Rule 1 is a later slice).
+        assert response.header.control.con is False
+        assert response.header.control.to_byte() & 0x20 == 0
+
     def test_read_unknown_object(self) -> None:
         """READ unknown object returns OBJECT_UNKNOWN IIN."""
         outstation = Outstation()
@@ -293,6 +298,19 @@ class TestGenerateUnsolicited:
 
         response = outstation.generate_unsolicited()
         assert response is None
+
+    def test_unsolicited_response_sets_con(self) -> None:
+        """Every unsolicited fragment sets CON (IEEE 1815-2012 4.6.6 Rule 3)."""
+        outstation = Outstation()
+        config = BinaryInputConfig(event_class=EventClass.CLASS_1)
+        outstation.database.add_binary_input(0, config=config)
+        outstation.database.update_binary_input(0, value=True)
+        outstation._state.unsolicited.class_1_enabled = True
+
+        response = outstation.generate_unsolicited()
+        assert response is not None
+        assert response.header.control.con is True
+        assert response.header.control.to_byte() & 0x20 == 0x20
 
 
 class TestIINFlags:

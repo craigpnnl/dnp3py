@@ -1652,6 +1652,7 @@ class Outstation:
             objects=tuple(objects),
             iin=self.iin,
             seq=seq,
+            con=True,  # IEEE 1815-2012 4.6.6 Rule 3: unsolicited responses always request CON.
         )
 
     def clear_restart(self) -> None:
