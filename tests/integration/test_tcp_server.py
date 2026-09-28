@@ -8,6 +8,8 @@ Tests real TCP server/client communication including:
 """
 
 import asyncio
+import contextlib
+import logging
 
 import pytest
 
@@ -620,6 +622,203 @@ class TestTcpServerStopWithConnections:
 
         for client in clients:
             await client.close()
+
+
+class TestTcpServerStopBoundedByStalledConnection:
+    """stop() must not multiply its close_timeout bound across every connection."""
+
+    @pytest.mark.asyncio
+    async def test_stop_bounded_despite_three_stalled_connections(self) -> None:
+        """Three stalled peers and one healthy peer: stop() finishes near one bound, not three."""
+        config = TcpServerConfig(host="127.0.0.1", port=0, close_timeout=0.5)
+        server = TcpServer(config=config)
+        await server.start()
+        addr = server.local_address
+        assert addr is not None
+
+        stuffing = b"\x00" * (32 * 1024 * 1024)
+
+        _stalled_reader1, stalled_writer1 = await asyncio.open_connection(addr[0], addr[1])
+        stalled_channel1 = await asyncio.wait_for(server.accept(), timeout=2.0)
+        _stalled_reader2, stalled_writer2 = await asyncio.open_connection(addr[0], addr[1])
+        stalled_channel2 = await asyncio.wait_for(server.accept(), timeout=2.0)
+        _stalled_reader3, stalled_writer3 = await asyncio.open_connection(addr[0], addr[1])
+        stalled_channel3 = await asyncio.wait_for(server.accept(), timeout=2.0)
+        healthy_reader, healthy_writer = await asyncio.open_connection(addr[0], addr[1])
+        healthy_channel = await asyncio.wait_for(server.accept(), timeout=2.0)
+
+        assert server.connection_count == 4
+
+        for stalled in (stalled_channel1, stalled_channel2, stalled_channel3):
+            with pytest.raises(TimeoutError):
+                await asyncio.wait_for(stalled.write_all(stuffing), timeout=0.3)
+
+        # The healthy peer has bytes pending when stop() closes it; it must
+        # still receive them, then EOF, even though closing is concurrent.
+        healthy_payload = b"pending bytes for the healthy peer"
+        healthy_channel.writer.write(healthy_payload)
+
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+        await asyncio.wait_for(server.stop(), timeout=5.0)
+        elapsed = loop.time() - started
+
+        # Sequential closing of three stalled connections takes roughly
+        # 3 * close_timeout (1.5s); closing concurrently bounds it to about one,
+        # a wider margin than two stalled peers gives (0.15s) between the pass
+        # and fail thresholds.
+        assert config.close_timeout * 0.8 <= elapsed < config.close_timeout * 1.7, (
+            f"stop() took {elapsed:.2f}s, more than one stalled connection's close bound"
+        )
+        assert stalled_channel1.state == ChannelState.CLOSED
+        assert stalled_channel2.state == ChannelState.CLOSED
+        assert stalled_channel3.state == ChannelState.CLOSED
+        assert healthy_channel.state == ChannelState.CLOSED
+        assert server.connection_count == 0
+
+        received = await asyncio.wait_for(healthy_reader.read(len(healthy_payload)), timeout=2.0)
+        assert received == healthy_payload
+        eof = await asyncio.wait_for(healthy_reader.read(1), timeout=2.0)
+        assert eof == b""
+
+        stalled_writer1.transport.abort()
+        stalled_writer2.transport.abort()
+        stalled_writer3.transport.abort()
+        healthy_writer.close()
+        await healthy_writer.wait_closed()
+
+    @pytest.mark.asyncio
+    async def test_stop_closes_a_connection_accepted_during_the_close_window(self) -> None:
+        """A connection that arrives while stop() is closing a stalled peer must not be dropped."""
+        config = TcpServerConfig(host="127.0.0.1", port=0, close_timeout=1.0)
+        server = TcpServer(config=config)
+        await server.start()
+        addr = server.local_address
+        assert addr is not None
+
+        stuffing = b"\x00" * (32 * 1024 * 1024)
+        _stalled_reader, stalled_writer = await asyncio.open_connection(addr[0], addr[1])
+        stalled_channel = await asyncio.wait_for(server.accept(), timeout=2.0)
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(stalled_channel.write_all(stuffing), timeout=0.3)
+
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+        stop_task = asyncio.create_task(server.stop())
+        await asyncio.sleep(0.1)  # let stop() begin closing the stalled connection
+
+        late_reader: asyncio.StreamReader | None = None
+        late_writer: asyncio.StreamWriter | None = None
+        try:
+            late_reader, late_writer = await asyncio.wait_for(asyncio.open_connection(addr[0], addr[1]), timeout=0.5)
+        except (ConnectionRefusedError, TimeoutError, OSError):
+            # The fix closes the listener before this point, so a refusal is
+            # the correct outcome too: the point is that stop() never hangs
+            # and never leaves an accepted connection unclosed.
+            late_reader = None
+
+        await asyncio.wait_for(stop_task, timeout=config.close_timeout + 2.0)
+        elapsed = loop.time() - started
+        assert elapsed < config.close_timeout + 1.5, (
+            "stop() must not hang on a connection accepted during the close window"
+        )
+
+        if late_reader is not None:
+            data = await asyncio.wait_for(late_reader.read(1), timeout=2.0)
+            assert data == b"", "a connection accepted during stop() must be closed, not orphaned"
+            assert late_writer is not None
+            late_writer.close()
+            await late_writer.wait_closed()
+
+        stalled_writer.transport.abort()
+
+    @pytest.mark.asyncio
+    async def test_stop_cancelled_leaves_listener_stopped_and_second_stop_recovers(self) -> None:
+        """Cancelling stop() must not leave the server still accepting connections."""
+        config = TcpServerConfig(host="127.0.0.1", port=0, close_timeout=5.0)
+        server = TcpServer(config=config)
+        await server.start()
+        addr = server.local_address
+        assert addr is not None
+
+        stuffing = b"\x00" * (32 * 1024 * 1024)
+        _stalled_reader, stalled_writer = await asyncio.open_connection(addr[0], addr[1])
+        stalled_channel = await asyncio.wait_for(server.accept(), timeout=2.0)
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(stalled_channel.write_all(stuffing), timeout=0.3)
+
+        stop_task = asyncio.create_task(server.stop())
+        await asyncio.sleep(0.1)  # let stop() stop the listener and start closing the stalled peer
+        stop_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await stop_task
+
+        # A cancelled close() still ends CLOSED with the disconnect counted
+        # exactly once, even though it is the outer stop() that was
+        # cancelled here, not the channel's own close() call directly.
+        assert stalled_channel.state == ChannelState.CLOSED
+        assert stalled_channel.statistics.disconnect_count == 1
+
+        # The listener must already be stopped even though stop() did not finish.
+        with pytest.raises((ConnectionRefusedError, OSError, TimeoutError)):
+            await asyncio.wait_for(asyncio.open_connection(addr[0], addr[1]), timeout=1.0)
+
+        # A second stop() recovers and finishes closing what remains.
+        await asyncio.wait_for(server.stop(), timeout=config.close_timeout + 2.0)
+        assert server.state == ChannelState.CLOSED
+        assert server.connection_count == 0
+        assert stalled_channel.state == ChannelState.CLOSED
+        assert stalled_channel.statistics.disconnect_count == 1
+
+        stalled_writer.transport.abort()
+
+    @pytest.mark.asyncio
+    async def test_stop_logs_and_continues_when_a_connections_close_raises(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """An unexpected exception from one connection's close() is logged, not dropped,
+        and does not stop the others from being closed."""
+        config = TcpServerConfig(host="127.0.0.1", port=0, close_timeout=0.5)
+        server = TcpServer(config=config)
+        await server.start()
+        addr = server.local_address
+        assert addr is not None
+
+        _reader1, writer1 = await asyncio.open_connection(addr[0], addr[1])
+        bad_channel = await asyncio.wait_for(server.accept(), timeout=2.0)
+        _reader2, writer2 = await asyncio.open_connection(addr[0], addr[1])
+        good_channel = await asyncio.wait_for(server.accept(), timeout=2.0)
+
+        original_close = bad_channel.close
+
+        async def raising_close() -> None:
+            # Close for real first, so this scenario is "a bug in close()"
+            # rather than "the transport never actually closes."
+            await original_close()
+            raise RuntimeError("boom: close() bug")
+
+        bad_channel.close = raising_close  # type: ignore[method-assign]
+
+        with caplog.at_level(logging.ERROR, logger="dnp3.transport_io.tcp_server"):
+            await asyncio.wait_for(server.stop(), timeout=config.close_timeout + 2.0)
+
+        assert good_channel.state == ChannelState.CLOSED
+        assert server.connection_count == 0
+
+        matching = [
+            record
+            for record in caplog.records
+            if "Unexpected error closing a connection during stop()" in record.getMessage()
+        ]
+        assert matching, "expected an ERROR log for the connection whose close() raised"
+        assert matching[0].exc_info is not None
+        assert isinstance(matching[0].exc_info[1], RuntimeError)
+
+        writer1.close()
+        with contextlib.suppress(OSError, ConnectionError):
+            await writer1.wait_closed()
+        writer2.close()
+        await writer2.wait_closed()
 
 
 class TestTcpServerQueueClearing:

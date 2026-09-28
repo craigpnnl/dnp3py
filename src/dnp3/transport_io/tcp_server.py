@@ -5,6 +5,7 @@ and accepting connections from DNP3 masters.
 """
 
 import asyncio
+import logging
 import socket
 from dataclasses import dataclass, field
 
@@ -17,6 +18,8 @@ from dnp3.transport_io.channel import (
     TcpConfig,
     TcpServerConfig,
 )
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -84,7 +87,11 @@ class TcpServerChannel:
         pass
 
     async def close(self) -> None:
-        """Close the channel."""
+        """Close the channel, gracefully if the peer lets it.
+
+        Waits at most `config.close_timeout` for unsent bytes to drain, then
+        aborts the transport.
+        """
         if self._state == ChannelState.CLOSED:
             return
 
@@ -92,12 +99,24 @@ class TcpServerChannel:
 
         try:
             self.writer.close()
-            await self.writer.wait_closed()
+            await asyncio.wait_for(self.writer.wait_closed(), timeout=self.config.close_timeout)
+        except TimeoutError:
+            # A peer that stopped reading never drains the send buffer, so a
+            # graceful close would wait forever.
+            self.writer.transport.abort()
+        except asyncio.CancelledError:
+            # Cancelled while waiting for the drain: abort so the transport
+            # is not left half-closed, then let the cancellation propagate.
+            self.writer.transport.abort()
+            raise
         except (OSError, ConnectionError):
+            # The peer may already be gone; the channel is closing regardless.
             pass
-
-        self._state = ChannelState.CLOSED
-        self._statistics.disconnect_count += 1
+        finally:
+            # Runs on every path, including a re-raised cancellation, so the
+            # channel always ends CLOSED with the disconnect counted once.
+            self._state = ChannelState.CLOSED
+            self._statistics.disconnect_count += 1
 
     async def read(self, max_bytes: int) -> bytes:
         """Read up to max_bytes from the channel.
@@ -298,6 +317,14 @@ class TcpServer:
             reader: Stream reader for the connection.
             writer: Stream writer for the connection.
         """
+        # Refuse a connection that reaches here while not OPEN: stop() sets
+        # CLOSING before it closes tracked connections, and this can still
+        # run after that point for a connection already in flight.
+        if self._state != ChannelState.OPEN:
+            writer.close()
+            await writer.wait_closed()
+            return
+
         # Check max connections
         if self.config.max_connections > 0 and len(self._connections) >= self.config.max_connections:
             writer.close()
@@ -323,6 +350,7 @@ class TcpServer:
                 keepalive_idle=self.config.keepalive_idle,
                 keepalive_interval=self.config.keepalive_interval,
                 keepalive_count=self.config.keepalive_count,
+                close_timeout=self.config.close_timeout,
             ),
         )
 
@@ -367,14 +395,26 @@ class TcpServer:
 
         self._state = ChannelState.CLOSING
 
-        # Close all connections
-        for conn in self._connections:
-            await conn.close()
-        self._connections.clear()
-
-        # Stop the server
+        # Stop accepting first: with the listener closed and
+        # _handle_connection() refusing while state is not OPEN, a
+        # connection arriving during the bounded close below is refused.
         if self._server is not None:
             self._server.close()
+
+        # Close concurrently so one stalled peer cannot multiply the bound
+        # across every connection. _handle_connection() refuses anything
+        # else that arrives, so this loop runs once in practice.
+        while self._connections:
+            pending = list(self._connections)
+            results = await asyncio.gather(*(conn.close() for conn in pending), return_exceptions=True)
+            for conn, result in zip(pending, results, strict=True):
+                if isinstance(result, Exception):
+                    logger.error("Unexpected error closing a connection during stop()", exc_info=result)
+                self.remove_connection(conn)
+
+        # wait_closed() waits for every connection this server ever accepted
+        # to close, so it must run last.
+        if self._server is not None:
             await self._server.wait_closed()
             self._server = None
 
@@ -459,6 +499,7 @@ async def serve(
             keepalive_idle=config.keepalive_idle,
             keepalive_interval=config.keepalive_interval,
             keepalive_count=config.keepalive_count,
+            close_timeout=config.close_timeout,
             backlog=config.backlog,
             reuse_address=config.reuse_address,
             max_connections=config.max_connections,
