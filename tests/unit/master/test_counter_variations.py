@@ -11,7 +11,7 @@ response fragment, the same public entry point an outstation reply reaches.
 import struct
 from datetime import UTC, datetime, timedelta
 
-from dnp3.master.handler import CounterValue, ResponseInfo, SOEHandler
+from dnp3.master.handler import AnalogValue, CounterValue, ResponseInfo, SOEHandler
 from dnp3.master.master import QUALITY_ONLINE, Master
 
 # Response header: app control (FIR+FIN, seq 1), RESPONSE function, 2-byte IIN.
@@ -32,17 +32,21 @@ def _block(group: int, variation: int, index: int, data: bytes) -> bytes:
 
 
 class CountingHandler(SOEHandler):
-    """Records every counter and frozen-counter value delivered, in call order."""
+    """Records every counter, frozen-counter and analog-input value delivered."""
 
     def __init__(self) -> None:
         self.counters: list[CounterValue] = []
         self.frozen_counters: list[CounterValue] = []
+        self.analog_inputs: list[AnalogValue] = []
 
     def on_counter(self, values: list[CounterValue], info: ResponseInfo) -> None:
         self.counters.extend(values)
 
     def on_frozen_counter(self, values: list[CounterValue], info: ResponseInfo) -> None:
         self.frozen_counters.extend(values)
+
+    def on_analog_input(self, values: list[AnalogValue], info: ResponseInfo) -> None:
+        self.analog_inputs.extend(values)
 
 
 def _deliver(body: bytes) -> CountingHandler:
@@ -134,6 +138,7 @@ class TestGroup21RemainingVariations:
         )
         handler = _deliver(body)
         assert handler.frozen_counters == [CounterValue(index=0, value=0x89ABCDEF, quality=QUALITY_ONLINE)]
+        assert handler.analog_inputs == [AnalogValue(index=0, value=2401.0, quality=QUALITY_ONLINE)]
 
 
 class TestGroup22Delta:
