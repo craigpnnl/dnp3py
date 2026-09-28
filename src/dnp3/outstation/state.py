@@ -5,7 +5,7 @@ state, unsolicited response state, and IIN flags.
 """
 
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum, auto
 
 from dnp3.application.fragment import ResponseFragment
@@ -311,7 +311,9 @@ class OutstationStateManager:
         """Add a point to a peer's selection, replacing any entry for the same point.
 
         Opens a selection for the peer if it has none, taking its sequence
-        and start time from ``select``.
+        and start time from ``select``. A point added to a selection begun for
+        a SELECT request is stored with that selection's start time, so every
+        point expires on the one timer the SELECT started.
 
         Args:
             select: The select state to add.
@@ -322,6 +324,8 @@ class OutstationStateManager:
         if selection is None:
             selection = PeerSelection(sequence=select.sequence, body=None, response=None, started=select.timestamp)
             self.selections[peer] = selection
+        elif selection.body is not None:
+            select = replace(select, timestamp=selection.started)
         selection.points[(group, select.index)] = select
 
     def get_select(self, index: int, *, peer: PeerId = UNSPECIFIED_PEER, group: int = CROB_GROUP) -> SelectState | None:

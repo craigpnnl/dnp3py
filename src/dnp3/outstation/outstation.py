@@ -5,7 +5,6 @@ processes them according to the DNP3 protocol, and generates responses.
 """
 
 import struct
-import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
@@ -1196,8 +1195,6 @@ class Outstation:
             )
 
             if result.is_success:
-                # Every point shares the selection's timer, which a retry never restarts.
-                selection = self._state.selection_of(peer)
                 select_state = SelectState(
                     index=crob.index,
                     is_binary=True,
@@ -1206,8 +1203,8 @@ class Outstation:
                     on_time=crob.on_time,
                     off_time=crob.off_time,
                     sequence=seq,
-                    timestamp=selection.started if selection is not None else time.monotonic(),
                 )
+                # The store stamps the point with the selection's start time.
                 self._state.add_select(select_state, peer=peer)
 
             results.append((crob.index, result.status))

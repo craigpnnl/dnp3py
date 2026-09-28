@@ -449,6 +449,17 @@ class TestSelectionStore:
         assert manager.get_select(5, peer=MASTER_A) is None
         assert manager.get_select(6, peer=MASTER_B) is kept
 
+    def test_point_added_to_a_selection_for_a_select_request_takes_its_start_time(self) -> None:
+        manager = OutstationStateManager()
+        selection = manager.begin_selection(MASTER_A, 3, b"\x0c\x01")
+        later = SelectState(index=5, is_binary=True, timestamp=selection.started + 5.0)
+
+        manager.add_select(later, peer=MASTER_A)
+
+        stored = manager.get_select(5, peer=MASTER_A)
+        assert stored is not None
+        assert (stored.index, stored.timestamp) == (5, selection.started)
+
     def test_clear_expired_selects_drops_an_emptied_record(self) -> None:
         manager = OutstationStateManager()
         manager.add_select(SelectState(index=5, is_binary=True, timestamp=time.monotonic() - 20.0), peer=MASTER_A)
