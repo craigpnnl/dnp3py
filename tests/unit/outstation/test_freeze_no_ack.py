@@ -1,9 +1,9 @@
 """Tests for IMMEDIATE_FREEZE_NO_ACK and FREEZE_CLEAR_NO_ACK (issue #121).
 
-IEEE 1815-2012 Table 14-3 (clause 14.4) lists function codes 7-10 on Binary
-Counters as required for a Level 2 outstation. 0x08 and 0x0A are the NO_ACK
-forms of 0x07 (IMMEDIATE_FREEZE) and 0x09 (FREEZE_CLEAR): same freeze
-semantics, but per the NO_ACK convention already used for
+IEEE 1815-2012 Table 14-3 (clause 14.4) lists function codes 7-10 on Counter
+(group 20) objects as required for a Level 2 outstation. 0x08 and 0x0A are
+the NO_ACK forms of 0x07 (IMMEDIATE_FREEZE) and 0x09 (FREEZE_CLEAR): same
+freeze semantics, but per the NO_ACK convention already used for
 DIRECT_OPERATE_NO_ACK, the outstation sends no response.
 """
 
@@ -60,6 +60,16 @@ def _seeded_outstation(value: int) -> tuple[Outstation, Database]:
     return outstation, db
 
 
+def _seeded_outstation_default_handler(value: int) -> tuple[Outstation, Database]:
+    """A plain outstation: DefaultCommandHandler rejects freeze_counters."""
+    db = Database()
+    db.add_counter(0, CounterConfig())
+    db.add_frozen_counter(0, CounterConfig())
+    db.update_counter(0, value=value)
+    outstation = Outstation(database=db)
+    return outstation, db
+
+
 class TestImmediateFreezeNoAck:
     """FunctionCode 0x08: freezes exactly as 0x07 does, no response."""
 
@@ -82,6 +92,14 @@ class TestImmediateFreezeNoAck:
         outstation, db = _seeded_outstation(value=100)
         outstation.process_request(_build_request(FunctionCode.IMMEDIATE_FREEZE_NO_ACK))
         assert db.counters[0].value == 100
+
+    def test_rejected_by_default_handler_changes_nothing(self) -> None:
+        """DefaultCommandHandler.freeze_counters rejects; nothing is frozen."""
+        outstation, db = _seeded_outstation_default_handler(value=100)
+        responses = outstation.process_request(_build_request(FunctionCode.IMMEDIATE_FREEZE_NO_ACK))
+        assert responses == []
+        assert db.counters[0].value == 100
+        assert db.frozen_counters[0].value == 0
 
 
 class TestFreezeClearNoAck:
@@ -106,3 +124,11 @@ class TestFreezeClearNoAck:
         outstation, db = _seeded_outstation(value=100)
         outstation.process_request(_build_request(FunctionCode.FREEZE_CLEAR_NO_ACK))
         assert db.counters[0].value == 0
+
+    def test_rejected_by_default_handler_changes_nothing(self) -> None:
+        """DefaultCommandHandler.freeze_counters rejects; nothing is frozen or cleared."""
+        outstation, db = _seeded_outstation_default_handler(value=100)
+        responses = outstation.process_request(_build_request(FunctionCode.FREEZE_CLEAR_NO_ACK))
+        assert responses == []
+        assert db.counters[0].value == 100
+        assert db.frozen_counters[0].value == 0
