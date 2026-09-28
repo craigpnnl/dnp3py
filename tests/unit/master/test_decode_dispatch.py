@@ -109,14 +109,14 @@ class TestRouting:
     @pytest.mark.parametrize(
         ("group", "variation", "data"),
         [
-            (3, 1, bytes([0, 3, 0b01101100])),  # double-bit input, not delivered
+            (34, 1, bytes([0, 0]) + struct.pack("<H", 100)),  # analog deadband, not delivered
             (12, 1, bytes([0, 0]) + bytes(11)),  # control relay output block
             (50, 1, bytes([0, 0]) + bytes(6)),  # absolute time
             (52, 2, bytes([0, 0]) + bytes(2)),  # time delay fine
             (60, 1, bytes([0, 0])),  # class 0
             (99, 1, bytes([0, 0, 0x01])),  # no layout at all
         ],
-        ids=["g3v1", "g12v1", "g50v1", "g52v2", "g60v1", "g99v1"],
+        ids=["g34v1", "g12v1", "g50v1", "g52v2", "g60v1", "g99v1"],
     )
     def test_block_whose_kind_has_no_delivery_invokes_no_callback(
         self, group: int, variation: int, data: bytes
@@ -126,7 +126,7 @@ class TestRouting:
     def test_undelivered_block_does_not_disturb_neighbours(self) -> None:
         calls = _dispatch(
             _block(1, 2, RANGE_8, bytes([0, 0, 0x81])),
-            _block(3, 1, RANGE_8, bytes([0, 3, 0xFF])),
+            _block(34, 1, RANGE_8, bytes([0, 0]) + struct.pack("<H", 100)),
             _block(1, 2, RANGE_8, bytes([1, 1, 0x01])),
         )
 
