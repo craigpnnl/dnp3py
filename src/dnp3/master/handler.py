@@ -104,9 +104,10 @@ class ResponseInfo:
         truncation: Set when the object data was cut short. Values from the
             blocks before the stopping block are delivered; none from it or after.
         relative_time_without_cto: Relative-time event objects in this fragment
-            delivered with no timestamp because no usable common time of
-            occurrence (group 51) preceded them in the fragment. Counted as
-            the objects are decoded, so a callback sees the count so far.
+            delivered with no timestamp, because no usable common time of
+            occurrence (group 51) preceded them in the fragment or because
+            their time falls past year 9999. Counted as the objects are
+            decoded, so a callback sees the count so far.
     """
 
     function: FunctionCode

@@ -382,3 +382,15 @@ def test_callback_sees_the_count_so_far() -> None:
 
     assert handler.seen == [("on_binary_input", 1), ("on_analog_input", 1), ("on_binary_input", 3)]
     assert info.relative_time_without_cto == 3
+
+
+def test_relative_time_past_year_9999_has_no_timestamp_and_is_counted() -> None:
+    """A CTO 1 s before the last representable instant plus 5000 ms: no time, no crash, counted."""
+    handler = DefaultSOEHandler()
+    objects = _cto(_MAX_MS - 999) + _relative(2, [(1, FLAGS_ON, 5000)])
+
+    info = _process(objects, handler)
+
+    assert handler.binary_inputs[1].timestamp is None
+    assert handler.binary_inputs[1].value is True
+    assert info.relative_time_without_cto == 1

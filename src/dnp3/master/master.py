@@ -431,14 +431,25 @@ def _decode_double_bit(block: ObjectBlock, wire: WireLayout, cto: datetime | Non
     ]
 
 
-_V = TypeVar("_V")
+class _Timed(Protocol):
+    """A decoded value, which may carry a timestamp."""
+
+    @property
+    def timestamp(self) -> datetime | None:
+        """When the value was recorded, if known."""
+
+
+_V = TypeVar("_V", bound=_Timed)
 
 
 class _Batch(Protocol):
     """Values of one point kind gathered from one run of consecutive blocks of that kind."""
 
     def add(self, block: ObjectBlock, wire: WireLayout, cto: datetime | None) -> int:
-        """Decode a block into the batch, timing relative objects from `cto`; return how many it held."""
+        """Decode a block into the batch, timing relative objects from `cto`.
+
+        Returns how many of the block's values have no timestamp.
+        """
 
     def deliver(self, handler: SOEHandler, info: ResponseInfo) -> None:
         """Hand the gathered values to the handler, if there are any."""
@@ -471,10 +482,13 @@ class _KindBatch(Generic[_V]):
     values: list[_V] = field(default_factory=list)
 
     def add(self, block: ObjectBlock, wire: WireLayout, cto: datetime | None) -> int:
-        """Decode a block into the batch, timing relative objects from `cto`; return how many it held."""
+        """Decode a block into the batch, timing relative objects from `cto`.
+
+        Returns how many of the block's values have no timestamp.
+        """
         decoded = self.delivery.decode(block, wire, cto)
         self.values.extend(decoded)
-        return len(decoded)
+        return sum(value.timestamp is None for value in decoded)
 
     def deliver(self, handler: SOEHandler, info: ResponseInfo) -> None:
         """Hand the gathered values to the handler, if there are any."""
@@ -799,8 +813,9 @@ class Master:
         A block that decodes to no values still ends a run of another kind.
 
         A relative-time object is timed from the last common time of occurrence (group 51)
-        before it in this fragment, and has no timestamp when there is none; those objects
-        are counted in `info.relative_time_without_cto`. A CTO block does not end a run.
+        before it in this fragment. It has no timestamp when there is none, or when the
+        time falls past year 9999; either way it is counted in
+        `info.relative_time_without_cto`. A CTO block does not end a run.
 
         Args:
             objects: Object blocks from response.
@@ -825,9 +840,9 @@ class Master:
                     run.deliver(self.handler, info)
                 run_kind = wire.point_kind
                 run = delivery.batch()
-            decoded = run.add(block, wire, cto)
-            if wire.time is TimeKind.RELATIVE and cto is None:
-                info.relative_time_without_cto += decoded
+            untimed = run.add(block, wire, cto)
+            if wire.time is TimeKind.RELATIVE:
+                info.relative_time_without_cto += untimed
 
         if run is not None:
             run.deliver(self.handler, info)
