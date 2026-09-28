@@ -241,7 +241,18 @@ class ControlCode(int):
         clear: bool = False,
         queue: bool = False,
     ) -> "ControlCode":
-        """Encode a control code from its fields."""
+        """Encode a control code from its fields.
+
+        Raises:
+            ValueError: ``op_type`` is outside 0-4 or ``tcc`` is outside 0-3, which
+                would otherwise spill bits into the neighbouring fields.
+        """
+        if not OperationType.NUL <= op_type <= OperationType.LATCH_OFF:
+            msg = f"Op Type {op_type} out of range (0-4)"
+            raise ValueError(msg)
+        if not TripCloseCode.NUL <= tcc <= TripCloseCode.RESERVED:
+            msg = f"Trip-Close code {tcc} out of range (0-3)"
+            raise ValueError(msg)
         octet = (tcc << _TCC_SHIFT) | (_CLEAR_BIT if clear else 0) | (_QUEUE_BIT if queue else 0) | op_type
         return cls(octet)
 

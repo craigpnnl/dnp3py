@@ -1,6 +1,7 @@
 """Tests for protocol enumerations."""
 
 import importlib
+import pickle
 import pkgutil
 import sys
 
@@ -228,6 +229,93 @@ class TestControlCodeTableA2:
         assert isinstance(ControlCode.LATCH_ON, ControlCode)
         assert ControlCode.LATCH_ON.name == "LATCH_ON"
         assert ControlCode(0xA1).name == "TRIP_PULSE_ON|CLEAR"
+
+
+_NAMED_CONSTANTS = [
+    ("NUL", 0x00, TripCloseCode.NUL, OperationType.NUL),
+    ("PULSE_ON", 0x01, TripCloseCode.NUL, OperationType.PULSE_ON),
+    ("PULSE_OFF", 0x02, TripCloseCode.NUL, OperationType.PULSE_OFF),
+    ("LATCH_ON", 0x03, TripCloseCode.NUL, OperationType.LATCH_ON),
+    ("LATCH_OFF", 0x04, TripCloseCode.NUL, OperationType.LATCH_OFF),
+    ("CLOSE_PULSE_ON", 0x41, TripCloseCode.CLOSE, OperationType.PULSE_ON),
+    ("TRIP_PULSE_ON", 0x81, TripCloseCode.TRIP, OperationType.PULSE_ON),
+]
+
+
+class TestControlCodeKeptSurface:
+    """The parts of the former IntEnum surface that ControlCode keeps."""
+
+    @pytest.mark.parametrize(("name", "octet", "tcc", "op_type"), _NAMED_CONSTANTS)
+    def test_named_constant(self, name: str, octet: int, tcc: TripCloseCode, op_type: OperationType) -> None:
+        """Attribute access, int value, .value, .name, repr and fields of each named constant."""
+        code = getattr(ControlCode, name)
+        assert type(code) is ControlCode
+        assert isinstance(code, int)
+        assert int(code) == octet
+        assert code == octet
+        assert code.value == octet
+        assert type(code.value) is int
+        assert code.name == name
+        assert repr(code) == f"<ControlCode.{name}: 0x{octet:02X}>"
+        assert code.tcc is tcc
+        assert code.op_type is op_type
+        assert code.clear is False
+        assert code.queue is False
+
+    @pytest.mark.parametrize(
+        ("octet", "name"),
+        [
+            (0x13, "LATCH_ON|QUEUE"),
+            (0x23, "LATCH_ON|CLEAR"),
+            (0x33, "LATCH_ON|QUEUE|CLEAR"),
+            (0xA1, "TRIP_PULSE_ON|CLEAR"),
+            (0xC3, "RESERVED_LATCH_ON"),
+            (0x44, "CLOSE_LATCH_OFF"),
+        ],
+    )
+    def test_composite_name_and_repr(self, octet: int, name: str) -> None:
+        """Codes without a constant get a name built from their fields."""
+        code = ControlCode(octet)
+        assert code.name == name
+        assert code.value == octet
+        assert repr(code) == f"<ControlCode.{name}: 0x{octet:02X}>"
+
+    @pytest.mark.parametrize("octet", [0x00, 0x03, 0x41, 0x81, 0xA1, 0x13])
+    def test_pickle_round_trip(self, octet: int) -> None:
+        """A pickled code comes back as the same ControlCode with the same fields."""
+        code = ControlCode(octet)
+        restored = pickle.loads(pickle.dumps(code))
+        assert type(restored) is ControlCode
+        assert restored == code
+        assert int(restored) == octet
+        assert restored.tcc is code.tcc
+        assert restored.clear is code.clear
+
+    def test_hashes_and_compares_as_its_octet(self) -> None:
+        """Dict lookups keyed by int octets find a ControlCode and the reverse."""
+        assert hash(ControlCode.LATCH_ON) == hash(0x03)
+        assert {0x03: "on"}[ControlCode.LATCH_ON] == "on"
+        assert {ControlCode.TRIP_PULSE_ON: "trip"}[0x81] == "trip"
+        assert bytes([ControlCode.TRIP_PULSE_ON]) == b"\x81"
+
+
+class TestControlCodeFromFieldsRange:
+    """from_fields rejects field values that would spill into neighbouring bits."""
+
+    @pytest.mark.parametrize("op_type", [-1, 5, 15, 16, 0x41])
+    def test_op_type_out_of_range(self, op_type: int) -> None:
+        with pytest.raises(ValueError, match=r"Op Type .* out of range"):
+            ControlCode.from_fields(op_type)  # type: ignore[arg-type]
+
+    @pytest.mark.parametrize("tcc", [-1, 4, 255])
+    def test_tcc_out_of_range(self, tcc: int) -> None:
+        with pytest.raises(ValueError, match=r"Trip-Close code .* out of range"):
+            ControlCode.from_fields(OperationType.NUL, tcc=tcc)  # type: ignore[arg-type]
+
+    def test_bounds_accepted(self) -> None:
+        """The largest valid field values still encode."""
+        code = ControlCode.from_fields(OperationType.LATCH_OFF, tcc=TripCloseCode.RESERVED, clear=True, queue=True)
+        assert int(code) == 0xF4
 
 
 def test_exactly_one_control_code_symbol() -> None:

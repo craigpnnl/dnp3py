@@ -381,7 +381,8 @@ class ParsedCrob:
 
     When ``control_code`` is None, ``status`` is FORMAT_ERROR (undefined
     Op Type, truncated buffer, or unknown qualifier) or NOT_SUPPORTED (Queue
-    bit set).  Callers must check ``status`` before accessing ``control_code``.
+    bit set).  ``control_code`` is None exactly when ``status`` is not SUCCESS,
+    so callers branch on ``control_code`` and report ``status`` when it is None.
 
     Attributes:
         index: Point index addressed by this CROB.
@@ -398,13 +399,6 @@ class ParsedCrob:
     on_time: int
     off_time: int
     status: CommandStatus
-
-
-def _rejection_status(crob: ParsedCrob) -> CommandStatus:
-    """Status reported for a CROB entry that is not passed to the handler."""
-    if crob.status != CommandStatus.SUCCESS:
-        return crob.status
-    return CommandStatus.FORMAT_ERROR
 
 
 def _parse_crob_block(block: ObjectBlock) -> list[ParsedCrob]:
@@ -429,12 +423,12 @@ def _parse_crob_block(block: ObjectBlock) -> list[ParsedCrob]:
     would never be set and the malformed frame would produce a clean null
     response (silent protocol violation).
 
-    Per-object failures (undefined Op Type, Queue bit set, truncated body
-    discovered mid-loop) carry the real parsed index and status=FORMAT_ERROR
-    so the caller can include the correct point index in the response.
+    Per-object failures carry the real parsed index and status=FORMAT_ERROR
+    (undefined Op Type, truncated body discovered mid-loop) or NOT_SUPPORTED
+    (Queue bit set), so the caller can include the correct point index in the response.
 
-    In all cases control_code=None signals the entry is a rejection sentinel;
-    callers must check status before accessing control_code.
+    In all cases control_code=None signals the entry is a rejection sentinel,
+    and control_code is set only when status is SUCCESS.
 
     Args:
         block: CROB ObjectBlock from a SELECT, OPERATE, or DIRECT_OPERATE request.
@@ -1086,8 +1080,8 @@ class Outstation:
         results: list[tuple[int, CommandStatus]] = []
 
         for crob in _parse_crob_block(block):
-            if crob.status != CommandStatus.SUCCESS or crob.control_code is None:
-                results.append((crob.index, _rejection_status(crob)))
+            if crob.control_code is None:
+                results.append((crob.index, crob.status))
                 continue
 
             result = self.handler.select_binary_output(
@@ -1139,8 +1133,8 @@ class Outstation:
         results: list[tuple[int, CommandStatus]] = []
 
         for crob in _parse_crob_block(block):
-            if crob.status != CommandStatus.SUCCESS or crob.control_code is None:
-                results.append((crob.index, _rejection_status(crob)))
+            if crob.control_code is None:
+                results.append((crob.index, crob.status))
                 continue
 
             select_state = self._state.get_select(crob.index)
@@ -1196,8 +1190,8 @@ class Outstation:
         results: list[tuple[int, CommandStatus]] = []
 
         for crob in _parse_crob_block(block):
-            if crob.status != CommandStatus.SUCCESS or crob.control_code is None:
-                results.append((crob.index, _rejection_status(crob)))
+            if crob.control_code is None:
+                results.append((crob.index, crob.status))
                 continue
 
             result = self.handler.direct_operate_binary_output(

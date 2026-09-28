@@ -2564,6 +2564,46 @@ class TestCROBFullControlCode:
         assert outstation._state.get_select(5) is None
         assert IIN.PARAMETER_ERROR not in responses[0].header.iin
 
+    @pytest.mark.parametrize("function", ["select", "operate", "direct_operate"])
+    def test_queue_bit_with_undefined_op_type_is_format_error(self, function: str) -> None:
+        """0x15 (Queue set, Op Type 5): the Op Type check runs first, so FORMAT_ERROR and PARAMETER_ERROR."""
+        from dnp3.application.builder import (
+            build_direct_operate_request,
+            build_operate_request,
+            build_select_request,
+        )
+
+        builders = {
+            "select": build_select_request,
+            "operate": build_operate_request,
+            "direct_operate": build_direct_operate_request,
+        }
+        outstation, handler = self._outstation()
+        request = builders[function](objects=(_make_crob_block_raw(0x17, _crob_payload(5, 0x15)),))
+        responses = outstation.process_request(request.to_bytes())
+
+        assert _crob_status(responses) == CommandStatus.FORMAT_ERROR
+        assert IIN.PARAMETER_ERROR in responses[0].header.iin
+        assert handler.calls == []
+
+    def test_parse_status_success_exactly_when_code_present(self) -> None:
+        """For every octet, the parser sets control_code only on SUCCESS, and rejects by class."""
+        for octet in range(256):
+            parsed = _parse_crob_block(_make_crob_block_raw(0x17, _crob_payload(5, octet)))
+            assert len(parsed) == 1
+            entry = parsed[0]
+            assert entry.index == 5
+            if octet & 0x0F > 4:
+                expected = CommandStatus.FORMAT_ERROR
+            elif octet & 0x10:
+                expected = CommandStatus.NOT_SUPPORTED
+            else:
+                expected = CommandStatus.SUCCESS
+            assert entry.status == expected, f"0x{octet:02X}"
+            assert (entry.control_code is None) is (expected != CommandStatus.SUCCESS), f"0x{octet:02X}"
+            if entry.control_code is not None:
+                assert int(entry.control_code) == octet
+
     def test_parse_crob_block_carries_tcc(self) -> None:
         """_parse_crob_block returns the decoded octet, not the Op Type nibble."""
         parsed = _parse_crob_block(_make_crob_block_raw(0x17, _crob_payload(5, 0xA1)))
