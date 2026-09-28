@@ -157,26 +157,29 @@ class TcpClientChannel:
 
         self._state = ChannelState.CLOSING
 
-        if self._writer is not None:
-            try:
-                self._writer.close()
-                await asyncio.wait_for(self._writer.wait_closed(), timeout=self.config.close_timeout)
-            except TimeoutError:
-                # A peer that stopped reading never drains the send buffer, so a
-                # graceful close would wait forever.
-                self._writer.transport.abort()
-            except asyncio.CancelledError:
-                # Cancelled while waiting for the drain: abort so the transport
-                # is not left half-closed, then let the cancellation propagate.
-                self._writer.transport.abort()
-                raise
-            except (OSError, ConnectionError):
-                pass  # Ignore errors during close
-
-        self._writer = None
-        self._reader = None
-        self._state = ChannelState.CLOSED
-        self._statistics.disconnect_count += 1
+        try:
+            if self._writer is not None:
+                try:
+                    self._writer.close()
+                    await asyncio.wait_for(self._writer.wait_closed(), timeout=self.config.close_timeout)
+                except TimeoutError:
+                    # A peer that stopped reading never drains the send buffer, so a
+                    # graceful close would wait forever.
+                    self._writer.transport.abort()
+                except asyncio.CancelledError:
+                    # Cancelled while waiting for the drain: abort so the transport
+                    # is not left half-closed, then let the cancellation propagate.
+                    self._writer.transport.abort()
+                    raise
+                except (OSError, ConnectionError):
+                    pass  # Ignore errors during close
+        finally:
+            # Runs on every path, including a re-raised cancellation, so the
+            # channel never stays stuck in CLOSING.
+            self._writer = None
+            self._reader = None
+            self._state = ChannelState.CLOSED
+            self._statistics.disconnect_count += 1
 
     async def read(self, max_bytes: int) -> bytes:
         """Read up to max_bytes from the channel.
