@@ -1475,8 +1475,8 @@ class Outstation:
         Called after DIRECT_OPERATE, DIRECT_OPERATE_NO_ACK or OPERATE of
         group 41 succeeds. A no-op when the Database has no point at index or
         the point opts out with config.track_commands = False. A NaN value
-        (g41v3/v4) is refused rather than synthesized (data-invariants rule
-        2): the point keeps its prior value and the refusal is logged once.
+        (g41v3/v4) is refused rather than synthesized: the point keeps its
+        prior value and the refusal is logged once.
         """
         point = self.database.get_analog_output(index)
         if point is None or not point.config.track_commands:

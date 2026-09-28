@@ -97,7 +97,7 @@ def _database_with_ao(index: int = 5, *, value: float = 0.0, track_commands: boo
 
 
 class TestDirectOperateUpdatesStatus:
-    """Item 1: SUCCESS from DIRECT_OPERATE writes the commanded value."""
+    """SUCCESS from DIRECT_OPERATE writes the commanded value into the status point."""
 
     @pytest.mark.parametrize(("variation", "fmt", "value"), VARIATIONS)
     def test_success_stores_the_commanded_value(self, variation: int, fmt: str, value: float) -> None:
@@ -127,7 +127,7 @@ class TestDirectOperateUpdatesStatus:
 
 
 class TestOperateUpdatesStatus:
-    """Item 1: SUCCESS from OPERATE (after a matching SELECT) writes the commanded value."""
+    """SUCCESS from OPERATE (after a matching SELECT) writes the commanded value."""
 
     @pytest.mark.parametrize(("variation", "fmt", "value"), VARIATIONS)
     def test_select_then_operate_success_stores_the_commanded_value(
@@ -146,7 +146,7 @@ class TestOperateUpdatesStatus:
 
 
 class TestNoWriteCases:
-    """Item 2: no write on a non-SUCCESS status, a missing point, or an opted-out point."""
+    """No write on a non-SUCCESS status, a missing point, an opted-out point, or SELECT."""
 
     @pytest.mark.parametrize("function", ["direct_operate", "operate"])
     def test_non_success_does_not_update_status(self, function: str) -> None:
@@ -208,12 +208,12 @@ class TestNoWriteCases:
 
 
 class TestNanCommandIsRefused:
-    """Item 3: a commanded NaN is refused, logged once, and leaves the old status and response.
+    """A commanded NaN is refused, logged once, and leaves the old status and response.
 
     OPERATE cannot carry a NaN through this assertion via SELECT-then-OPERATE:
-    ``SelectState.matches_analog`` (state.py, unchanged by this slice) compares
-    the selected and operated values with ``==``, and NaN never equals NaN, so
-    an OPERATE of a NaN value always answers NO_SELECT before reaching any
+    ``SelectState.matches_analog`` (state.py, unchanged here) compares the
+    selected and operated values with ``==``, and NaN never equals NaN, so an
+    OPERATE of a NaN value always answers NO_SELECT before reaching any
     handler. The three function codes share one tracking call on SUCCESS
     (``_track_ao_command``), so its OPERATE case is exercised directly.
     """
