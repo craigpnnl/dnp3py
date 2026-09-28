@@ -712,6 +712,7 @@ class Master:
             fir=response.header.control.fir,
             fin=response.header.control.fin,
             con=response.header.control.con,
+            truncation=response.truncation,
         )
 
         # Handle unsolicited responses
