@@ -31,6 +31,7 @@ class PointKind(Enum):
     COUNTER = "counter"
     FROZEN_COUNTER = "frozen_counter"
     ANALOG_INPUT = "analog_input"
+    ANALOG_OUTPUT = "analog_output"
     TIME = "time"
     TIME_DELAY = "time_delay"
     CLASS = "class"
@@ -126,6 +127,7 @@ _BO = PointKind.BINARY_OUTPUT
 _CT = PointKind.COUNTER
 _FC = PointKind.FROZEN_COUNTER
 _AI = PointKind.ANALOG_INPUT
+_AO = PointKind.ANALOG_OUTPUT
 _ABS = TimeKind.ABSOLUTE
 _INT = ValueCodec.INT
 _UINT = ValueCodec.UINT
@@ -183,6 +185,20 @@ _TABLE: dict[tuple[int, int], WireLayout] = {
     (32, 6): _octets(_AI, 8, _F64),
     (32, 7): _octets(_AI, 4, _F32, time=_ABS),
     (32, 8): _octets(_AI, 8, _F64, time=_ABS),
+    # A.19
+    (40, 1): _octets(_AO, 4, _INT),
+    (40, 2): _octets(_AO, 2, _INT),
+    (40, 3): _octets(_AO, 4, _F32),
+    (40, 4): _octets(_AO, 8, _F64),
+    # A.21
+    (42, 1): _octets(_AO, 4, _INT),
+    (42, 2): _octets(_AO, 2, _INT),
+    (42, 3): _octets(_AO, 4, _INT, time=_ABS),
+    (42, 4): _octets(_AO, 2, _INT, time=_ABS),
+    (42, 5): _octets(_AO, 4, _F32),
+    (42, 6): _octets(_AO, 8, _F64),
+    (42, 7): _octets(_AO, 4, _F32, time=_ABS),
+    (42, 8): _octets(_AO, 8, _F64, time=_ABS),
     # A.23 and A.24: a DNP3TIME (UINT48) is the whole object.
     (50, 1): _octets(PointKind.TIME, 6, _UINT, flags=False),
     (51, 1): _octets(PointKind.TIME, 6, _UINT, flags=False),

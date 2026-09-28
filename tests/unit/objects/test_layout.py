@@ -42,6 +42,7 @@ _BO = PointKind.BINARY_OUTPUT
 _CT = PointKind.COUNTER
 _FC = PointKind.FROZEN_COUNTER
 _AI = PointKind.ANALOG_INPUT
+_AO = PointKind.ANALOG_OUTPUT
 _NO = TimeKind.NONE
 _ABS = TimeKind.ABSOLUTE
 _REL = TimeKind.RELATIVE
@@ -92,6 +93,18 @@ _EXPECTED_ROWS = {
     (32, 6): (_AI, 9, 0, True, _F64, _NO),  # A.16.6: flag, FLT64
     (32, 7): (_AI, 11, 0, True, _F32, _ABS),  # A.16.7: flag, FLT32, DNP3TIME
     (32, 8): (_AI, 15, 0, True, _F64, _ABS),  # A.16.8: flag, FLT64, DNP3TIME
+    (40, 1): (_AO, 5, 0, True, _INT, _NO),  # A.19.1: flag, INT32
+    (40, 2): (_AO, 3, 0, True, _INT, _NO),  # A.19.2: flag, INT16
+    (40, 3): (_AO, 5, 0, True, _F32, _NO),  # A.19.3: flag, FLT32
+    (40, 4): (_AO, 9, 0, True, _F64, _NO),  # A.19.4: flag, FLT64
+    (42, 1): (_AO, 5, 0, True, _INT, _NO),  # A.21.1: flag, INT32
+    (42, 2): (_AO, 3, 0, True, _INT, _NO),  # A.21.2: flag, INT16
+    (42, 3): (_AO, 11, 0, True, _INT, _ABS),  # A.21.3: flag, INT32, DNP3TIME
+    (42, 4): (_AO, 9, 0, True, _INT, _ABS),  # A.21.4: flag, INT16, DNP3TIME
+    (42, 5): (_AO, 5, 0, True, _F32, _NO),  # A.21.5: flag, FLT32
+    (42, 6): (_AO, 9, 0, True, _F64, _NO),  # A.21.6: flag, FLT64
+    (42, 7): (_AO, 11, 0, True, _F32, _ABS),  # A.21.7: flag, FLT32, DNP3TIME
+    (42, 8): (_AO, 15, 0, True, _F64, _ABS),  # A.21.8: flag, FLT64, DNP3TIME
     (50, 1): (PointKind.TIME, 6, 0, False, _UINT, _NO),  # A.23.1: DNP3TIME
     (51, 1): (PointKind.TIME, 6, 0, False, _UINT, _NO),  # A.24.1: DNP3TIME
     (51, 2): (PointKind.TIME, 6, 0, False, _UINT, _NO),  # A.24.2: DNP3TIME
