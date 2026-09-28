@@ -520,13 +520,33 @@ class TestResponseBlocksFramedFromLayout:
         assert (blocks[0].header.group, blocks[0].header.variation) == (1, 1)
         assert blocks[0].data == data[3:]
 
-    def test_pair_without_layout_is_sized_by_the_registry(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """A registered object with no layout row is still bounded by its registered size."""
-        sizes = {(99, 1): 2}
-        monkeypatch.setattr(parser.registry, "get_size", lambda group, variation: sizes.get((group, variation)))
-        data = bytes([0x63, 0x01, 0x00, 0x00, 0x01, 0xAB, 0xCD, 0xEF, 0x12]) + _G30V1_BLOCK
+    @pytest.mark.parametrize(
+        "framing",
+        [
+            (0x00, bytes([0x00, 0x01]), b""),
+            (0x17, bytes([0x02]), bytes([0x07])),
+            (0x28, bytes([0x02, 0x00]), bytes([0x07, 0x01])),
+        ],
+        ids=["start-stop", "count-index8", "count-index16"],
+    )
+    def test_pair_without_layout_is_sized_by_the_registry(
+        self, monkeypatch: pytest.MonkeyPatch, framing: tuple[int, bytes, bytes]
+    ) -> None:
+        """A registered object with no layout row is bounded by its registered size and index prefix."""
+        _register_g99v1_width_2(monkeypatch)
+        qualifier, range_field, prefix = framing
+        objects = prefix + bytes([0xAB, 0xCD]) + prefix + bytes([0xEF, 0x12])
+        data = bytes([0x63, 0x01, qualifier]) + range_field + objects + _G30V1_BLOCK
 
         blocks = parse_response_object_blocks(data)
 
         assert [(b.header.group, b.header.variation) for b in blocks] == [(99, 1), (30, 1)]
-        assert blocks[0].data == bytes([0x00, 0x01, 0xAB, 0xCD, 0xEF, 0x12])
+        assert blocks[0].data == range_field + objects
+        assert blocks[1].data == _G30V1_BLOCK[3:]
+
+
+def _register_g99v1_width_2(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make g99v1, a pair with no layout row, a registered 2-octet object for one test."""
+    sizes = {(99, 1): 2}
+    monkeypatch.setattr(parser.registry, "get_size", lambda group, variation: sizes.get((group, variation)))
+
