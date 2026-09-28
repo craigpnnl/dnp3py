@@ -301,6 +301,18 @@ class TestClass0:
         assert ao_blocks[0].header.variation == 2
         assert ao_blocks[0].data[2:5] == bytes([int(ONLINE)]) + struct.pack("<h", 99)
 
+    def test_class_0_with_config_variation_1_serves_g40v1(self) -> None:
+        config = OutstationConfig(analog_output_static_variation=1)
+        outstation = Outstation(config=config)
+        outstation.database.add_analog_output(0, value=99.0, quality=ONLINE)
+
+        response = outstation.process_request(build_integrity_poll().to_bytes())[0]
+
+        ao_blocks = _g40_blocks(response)
+        assert len(ao_blocks) == 1
+        assert ao_blocks[0].header.variation == 1
+        assert ao_blocks[0].data[2:7] == bytes([int(ONLINE)]) + struct.pack("<i", 99)
+
     def test_class_0_no_ao_points_no_g40_block(self) -> None:
         outstation = Outstation()
         outstation.database.add_analog_input(0, value=1.0)
