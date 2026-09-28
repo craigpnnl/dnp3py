@@ -226,6 +226,27 @@ class TestSelectRetryDiscardOverride:
         assert handler.selects == [(5, 1000), (5, 1000)]
         assert _statuses(_operate(outstation, MASTER_A, 5, POINT_5)) == [(5, SUCCESS)]
 
+    def test_every_point_shares_the_selections_timer(self) -> None:
+        timeout = 0.4
+        outstation, handler = _outstation(select_timeout=timeout)
+        accept_select = handler.select_binary_output
+
+        def select_point_6_slowly(
+            index: int, code: ControlCode, count: int, on_time: int, off_time: int
+        ) -> CommandResult:
+            if index == 6:
+                time.sleep(timeout * 0.75)
+            return accept_select(index, code, count, on_time, off_time)
+
+        handler.select_binary_output = select_point_6_slowly  # type: ignore[method-assign]
+        both = _crob_block((5, 1000), (6, 6000))
+        assert _statuses(_select(outstation, MASTER_A, 0, both)) == [(5, SUCCESS), (6, SUCCESS)]
+
+        # Past the timer started with the SELECT, though not yet past the moment point 6 was accepted.
+        time.sleep(timeout * 0.5)
+        assert _statuses(_operate(outstation, MASTER_A, 1, both)) == [(5, NO_SELECT), (6, NO_SELECT)]
+        assert handler.operates == []
+
 
 class TestOtherRequestsBetweenSelectAndOperate:
     """Any other request from the selecting peer ends its selection, except CONFIRM."""
