@@ -99,7 +99,7 @@ class TestReadmeOutstationQuickStart:
             assert port > 0
         finally:
             serve_task.cancel()
-            with pytest.raises((asyncio.CancelledError, TimeoutError)):
+            with pytest.raises(asyncio.CancelledError):
                 await asyncio.wait_for(serve_task, timeout=POLL_TIMEOUT)
 
 
@@ -126,5 +126,5 @@ class TestReadmeMasterQuickStart:
             assert capsys.readouterr().out == "True\n42.0\n"
         finally:
             serve_task.cancel()
-            with pytest.raises((asyncio.CancelledError, TimeoutError)):
+            with pytest.raises(asyncio.CancelledError):
                 await asyncio.wait_for(serve_task, timeout=POLL_TIMEOUT)
