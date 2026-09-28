@@ -5,6 +5,7 @@ processes them according to the DNP3 protocol, and generates responses.
 """
 
 import logging
+import math
 import struct
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -27,7 +28,7 @@ from dnp3.application.qualifiers import (
     StartStopRange,
 )
 from dnp3.core.enums import CommandStatus, ControlCode, FunctionCode
-from dnp3.core.flags import IIN
+from dnp3.core.flags import IIN, AnalogQuality
 from dnp3.core.timestamp import DNP3Timestamp
 from dnp3.database import AnalogEvent, BinaryEvent, CounterEvent, Database, EventClass
 from dnp3.objects.analog_input import AnalogInput32, AnalogInputEvent32
@@ -81,6 +82,7 @@ GROUP_FROZEN_COUNTER = 21
 GROUP_COUNTER_EVENT = 22
 GROUP_ANALOG_INPUT = 30
 GROUP_ANALOG_INPUT_EVENT = 32
+GROUP_ANALOG_OUTPUT_STATUS = 40
 GROUP_ANALOG_OUTPUT = 41
 GROUP_IIN = 80  # g80 - Internal Indications
 GROUP_CLASS_DATA = 60
@@ -112,6 +114,22 @@ _AO_VALUE_SIZES: dict[int, int] = {
     AO_VAR_FLOAT32: 4,  # Group 41 Var 3: single-precision float
     AO_VAR_FLOAT64: 8,  # Group 41 Var 4: double-precision float
 }
+
+# Group 40 (Analog Output Status) per-point wire size: the g41 value size plus
+# the leading flag octet every g40 variation carries (IEEE 1815-2012 A.19).
+_AO_STATUS_SIZES: dict[int, int] = {variation: size + 1 for variation, size in _AO_VALUE_SIZES.items()}
+
+# Signed integer range of each g40 int variation, for the 11.6.1.1
+# clamp: a value outside this range is reported as the nearer bound.
+_AO_STATUS_INT_LIMITS: dict[int, tuple[int, int]] = {
+    AO_VAR_INT32: (-(2**31), 2**31 - 1),
+    AO_VAR_INT16: (-(2**15), 2**15 - 1),
+}
+
+# Largest finite IEEE 754 binary32 magnitude (bit pattern 0x7F7FFFFF), the g40v3
+# clamp limit: struct.pack("<f", ...) raises OverflowError above this for any
+# finite value, so it is the bound 11.6.1.1 clamps to.
+_FLOAT32_MAX = struct.unpack("<f", b"\xff\xff\x7f\x7f")[0]
 
 # Index size thresholds
 MAX_1_BYTE_INDEX = 255  # 0xFF
@@ -329,6 +347,47 @@ def _build_static_blocks(
                 data.extend(serialize(point))
             blocks.append(ObjectBlock(header=header, data=range_data + bytes(data)))
     return blocks
+
+
+def _serialize_analog_output_status(point: Any, variation: int) -> bytes:
+    """Serialize one analog output status point to its g40 variation's wire bytes.
+
+    IEEE 1815-2012 11.6.1.1 rules 2 and 3: a value outside the
+    variation's range is reported as the variation's limit value with
+    OVER_RANGE set in the flag octet, rather than raised or wrapped. For the
+    int variations (v1, v2) the range check runs before int(), because a
+    stored value may be infinite and int(inf) raises OverflowError.
+
+    Args:
+        point: An AnalogOutputPoint with `quality` and `value`.
+        variation: 1 (32-bit int), 2 (16-bit int), 3 (float32), or 4 (float64).
+
+    Returns:
+        The flag octet followed by the variation's little-endian value field.
+    """
+    quality = point.quality
+    value = point.value
+
+    if variation in _AO_STATUS_INT_LIMITS:
+        min_value, max_value = _AO_STATUS_INT_LIMITS[variation]
+        if value > max_value or value < min_value:
+            quality = quality | AnalogQuality.OVER_RANGE
+            clamped = max_value if value > 0 else min_value
+        else:
+            clamped = int(value)
+        return bytes([int(quality)]) + clamped.to_bytes(_AO_VALUE_SIZES[variation], "little", signed=True)
+
+    if variation == AO_VAR_FLOAT32:
+        # Infinity packs into binary32 without error, so only a finite value
+        # too large for binary32 (e.g. 1e40) triggers the clamp.
+        if math.isfinite(value) and abs(value) > _FLOAT32_MAX:
+            quality = quality | AnalogQuality.OVER_RANGE
+            value = _FLOAT32_MAX if value > 0 else -_FLOAT32_MAX
+        return bytes([int(quality)]) + struct.pack("<f", value)
+
+    # AO_VAR_FLOAT64: every double this point can hold, infinity included,
+    # packs into binary64 without overflow.
+    return bytes([int(quality)]) + struct.pack("<d", value)
 
 
 def _crob_count_index_sizes(qualifier: int) -> tuple[int, int]:
@@ -824,6 +883,11 @@ class Outstation:
             elif group == GROUP_ANALOG_INPUT_EVENT:
                 event_objects = self._read_analog_input_events()
                 objects.extend(event_objects)
+            # Analog Output Status (Group 40)
+            elif group == GROUP_ANALOG_OUTPUT_STATUS:
+                ao_objects, ao_error = self._read_analog_outputs(block)
+                objects.extend(ao_objects)
+                error_iin |= ao_error
             # Counters (Group 20)
             elif group == GROUP_COUNTER:
                 ctr_objects, ctr_error = self._read_counters(block)
@@ -891,6 +955,11 @@ class Outstation:
         if ai_points:
             objects.extend(self._build_analog_input_blocks(ai_points))
 
+        # Analog Output Status
+        ao_points = self.database.get_all_analog_outputs()
+        if ao_points:
+            objects.extend(self._build_analog_output_blocks(ao_points, self.config.analog_output_static_variation))
+
         # Counters
         ctr_points = self.database.get_all_counters()
         if ctr_points:
@@ -946,6 +1015,21 @@ class Outstation:
             points=points,
             serialize=lambda p: AnalogInput32(quality=p.quality, value=int(p.value)).to_bytes(),
             max_points_per_block=_static_block_capacity(self.config.max_fragment_size, 5),
+        )
+
+    def _build_analog_output_blocks(self, points: list[Any], variation: int) -> list[ObjectBlock]:
+        """Build ObjectBlocks for analog output status static data (group 40).
+
+        Delegates to _build_static_blocks which splits sparse index sets into
+        contiguous runs, each encoded with its own start/stop range header per
+        IEEE 1815-2012 Table 4-2.
+        """
+        return _build_static_blocks(
+            group=GROUP_ANALOG_OUTPUT_STATUS,
+            variation=variation,
+            points=points,
+            serialize=lambda p: _serialize_analog_output_status(p, variation),
+            max_points_per_block=_static_block_capacity(self.config.max_fragment_size, _AO_STATUS_SIZES[variation]),
         )
 
     def _build_counter_blocks(self, points: list[Any]) -> list[ObjectBlock]:
@@ -1138,6 +1222,24 @@ class Outstation:
     def _read_analog_input_events(self) -> list[ObjectBlock]:
         """Read all analog input events."""
         return self._read_class_events(EventClass.CLASS_2)
+
+    def _read_analog_outputs(self, block: ObjectBlock) -> tuple[list[ObjectBlock], IIN]:
+        """Read analog output status (group 40) for a request block.
+
+        IEEE 1815-2012 4.2.2.7.2.1: variation 0 answers in the configured
+        default variation. 4.2.2.7.2.2: 1-4 are served as requested; any
+        other variation is unknown.
+        """
+        variation = block.header.variation
+        if variation == 0:
+            variation = self.config.analog_output_static_variation
+        elif variation not in _AO_STATUS_SIZES:
+            return [], IIN.OBJECT_UNKNOWN
+
+        points = self.database.get_all_analog_outputs()
+        if not points:
+            return [], IIN(0)
+        return self._build_analog_output_blocks(points, variation), IIN(0)
 
     def _read_counters(self, block: ObjectBlock) -> tuple[list[ObjectBlock], IIN]:
         """Read counters for a request block."""

@@ -57,6 +57,9 @@ class OutstationConfig:
         max_controls_per_request: Maximum control operations per request.
         enable_self_address: Accept messages to self address (0xFFFC).
         time_sync_required: Start with NEED_TIME IIN flag.
+        analog_output_static_variation: Group 40 variation served for a
+            variation-0 read and for Class 0 (IEEE 1815-2012 Clause 14,
+            Table 14-3 lists g40v2 for a Level 2 outstation).
     """
 
     address: int = 1
@@ -70,6 +73,7 @@ class OutstationConfig:
     max_controls_per_request: int = 16
     enable_self_address: bool = False
     time_sync_required: bool = True
+    analog_output_static_variation: int = 2
 
     def __post_init__(self) -> None:
         """Validate configuration values."""
@@ -90,4 +94,8 @@ class OutstationConfig:
             raise ValueError(msg)
         if self.max_controls_per_request <= 0:
             msg = f"Max controls must be > 0, got {self.max_controls_per_request}"
+            raise ValueError(msg)
+        variation = self.analog_output_static_variation
+        if type(variation) is not int or variation not in (1, 2):
+            msg = f"Analog output static variation must be 1 or 2, got {variation!r}"
             raise ValueError(msg)
