@@ -10,6 +10,7 @@ from datetime import UTC, datetime
 
 import pytest
 
+from dnp3.application.fragment import Truncation, TruncationReason
 from dnp3.core.flags import DoubleBitState
 from dnp3.master import DefaultSOEHandler, DoubleBitInputHandler, DoubleBitValue, Master
 from dnp3.master.handler import BinaryValue, ResponseInfo, SOEHandler
@@ -138,21 +139,20 @@ class TestG3v1Packed:
 
         assert handler.double_bit_calls == []
 
-    def test_trailing_block_shorter_than_its_range_delivers_the_points_present(self) -> None:
-        # Range 0 to 7 needs two octets; the response ends after one, so only points 0 to 3 exist.
+    def test_trailing_block_shorter_than_its_range_delivers_no_double_bit_values(self) -> None:
+        # Range 0 to 7 needs two octets and the response ends after one. An object header
+        # carries no length (4.2.2.7), so none of the block's points is known to be real.
         handler = DoubleBitRecorder()
+        body = _range_block(1, 2, 0, 0, bytes([0x81])) + _range_block(3, 1, 0, 7, bytes([0xE4]))
 
-        _process(handler, _range_block(1, 2, 0, 0, bytes([0x81])) + _range_block(3, 1, 0, 7, bytes([0xE4])))
+        info = Master(handler=handler).process_response(RESPONSE_HEADER + body)
 
-        assert handler.double_bit_calls == [
-            [
-                DoubleBitValue(index=0, state=DoubleBitState.INTERMEDIATE, quality=ONLINE),
-                DoubleBitValue(index=1, state=DoubleBitState.OFF, quality=ONLINE),
-                DoubleBitValue(index=2, state=DoubleBitState.ON, quality=ONLINE),
-                DoubleBitValue(index=3, state=DoubleBitState.INDETERMINATE, quality=ONLINE),
-            ]
-        ]
+        assert info is not None
+        assert handler.double_bit_calls == []
         assert handler.calls == [("on_binary_input", [BinaryValue(index=0, value=True, quality=ONLINE)])]
+        assert info.truncation == Truncation(
+            reason=TruncationReason.DATA_SHORTER_THAN_DECLARED, offset=6, group=3, variation=1, qualifier=RANGE_8
+        )
 
 
 class TestG4Events:
