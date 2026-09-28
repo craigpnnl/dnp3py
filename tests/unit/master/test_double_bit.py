@@ -232,3 +232,20 @@ class TestDelivery:
 
         handler.clear()
         assert handler.double_bit_inputs == {}
+
+    def test_default_handler_gets_one_value_by_index(self) -> None:
+        handler = DefaultSOEHandler()
+
+        _process(handler, _range_block(3, 2, 4, 4, bytes([0x41])))
+
+        assert handler.get_double_bit_input(4) == DoubleBitValue(index=4, state=DoubleBitState.OFF, quality=ONLINE)
+        assert handler.get_double_bit_input(5) is None
+
+    def test_default_handler_returns_a_copy_of_its_values(self) -> None:
+        handler = DefaultSOEHandler()
+        _process(handler, _range_block(3, 2, 0, 0, bytes([0x81])))
+
+        handler.double_bit_inputs[0] = DoubleBitValue(index=0, state=DoubleBitState.OFF)
+        handler.double_bit_inputs.clear()
+
+        assert handler.get_double_bit_input(0) == DoubleBitValue(index=0, state=DoubleBitState.ON, quality=ONLINE)

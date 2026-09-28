@@ -322,6 +322,10 @@ class DefaultSOEHandler:
         """Get a specific frozen counter value."""
         return self._frozen_counters.get(index)
 
+    def get_double_bit_input(self, index: int) -> "DoubleBitValue | None":
+        """Get a specific double-bit binary input value."""
+        return self._double_bit_inputs.get(index)
+
     def clear(self) -> None:
         """Clear all stored values."""
         self._binary_inputs.clear()
