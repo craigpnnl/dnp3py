@@ -1,5 +1,7 @@
 """Tests for event buffer."""
 
+from collections import deque
+
 import pytest
 from hypothesis import given
 from hypothesis import strategies as st
@@ -741,12 +743,12 @@ class TestClassBufferSerials:
         assert buffer.read_with_serials() == [(serial, event)]
 
     def test_remove_by_serials_identity_not_value(self) -> None:
-        """Two equal-valued events in one buffer: removing the earlier serial
-        leaves the later one, proving removal is by identity, not by value.
-
-        BinaryEvent compares equal by field value with no timestamp (F1), so
-        a value-based removal (`==` or `deque.remove`) cannot tell these two
-        apart and could delete the wrong one.
+        """Two equal-valued events in one buffer: removing either one's
+        serial removes exactly that object and leaves the other, in either
+        order. A value-based removal (`==` or `deque.remove`) cannot tell
+        these two apart and always removes the first match by position,
+        regardless of which serial was named; asserting both directions
+        rules that out.
         """
         buffer = ClassBuffer()
         first = BinaryEvent(index=7, value=True, quality=BinaryQuality.ONLINE)
@@ -755,7 +757,7 @@ class TestClassBufferSerials:
 
         buffer.add(first)
         buffer.add(second)
-        first_serial, _ = buffer.read_with_serials()[0]
+        first_serial, _second_serial = (serial for serial, _event in buffer.read_with_serials())
 
         removed = buffer.remove_by_serials([first_serial])
 
@@ -763,6 +765,28 @@ class TestClassBufferSerials:
         remaining = buffer.read_with_serials()
         assert len(remaining) == 1
         assert remaining[0][1] is second
+
+    def test_remove_by_serials_identity_removes_the_later_one(self) -> None:
+        """Removing the LATER of two equal-valued events' serials leaves the
+        EARLIER object. A first-match-by-value removal would instead delete
+        the earlier object here, since it always matches the first
+        position regardless of which serial was named; this is the
+        direction that catches that mistake (the reverse direction, in
+        test_remove_by_serials_identity_not_value, cannot).
+        """
+        buffer = ClassBuffer()
+        first = BinaryEvent(index=7, value=True, quality=BinaryQuality.ONLINE)
+        second = BinaryEvent(index=7, value=True, quality=BinaryQuality.ONLINE)
+        buffer.add(first)
+        buffer.add(second)
+        _first_serial, second_serial = (serial for serial, _event in buffer.read_with_serials())
+
+        removed = buffer.remove_by_serials([second_serial])
+
+        assert removed == 1
+        remaining = buffer.read_with_serials()
+        assert len(remaining) == 1
+        assert remaining[0][1] is first
 
     def test_remove_by_serials_removes_exactly_named_serials(self) -> None:
         """remove_by_serials removes only the named serials, in order."""
@@ -817,6 +841,59 @@ class TestClassBufferSerials:
         assert removed_again == 1
         assert [event.index for _serial, event in buffer.read_with_serials()] == [2]
 
+    def test_explicit_serial_advances_standalone_counter(self) -> None:
+        """A ClassBuffer used standalone (no EventBuffer) that is given an
+        explicit serial advances its own counter past it, so the next
+        default-serial add does not collide with the one just given.
+        """
+        buffer = ClassBuffer()
+        buffer.add(BinaryEvent(index=0, value=True, quality=BinaryQuality.ONLINE), serial=10)
+        buffer.add(BinaryEvent(index=1, value=True, quality=BinaryQuality.ONLINE))
+
+        serials = [serial for serial, _event in buffer.read_with_serials()]
+        assert serials == [10, 11]
+
+    def test_read_with_serials_after_partial_pop_stays_in_step(self) -> None:
+        """A partial pop leaves the remaining events and serials in step:
+        popping the first 2 of 4 events must not shift or drop a serial
+        belonging to one of the 2 that stayed.
+        """
+        buffer = ClassBuffer()
+        for i in range(4):
+            buffer.add(BinaryEvent(index=i, value=True, quality=BinaryQuality.ONLINE))
+        before = buffer.read_with_serials()
+
+        buffer.pop()
+        buffer.pop()
+
+        assert buffer.read_with_serials() == before[2:]
+
+    def test_read_with_serials_after_clear_is_empty_and_resyncs_on_add(self) -> None:
+        """clear() must drop the serials along with the events: a stale
+        serial left behind would pair with the wrong event on the next add
+        and read.
+        """
+        buffer = ClassBuffer()
+        buffer.add(BinaryEvent(index=0, value=True, quality=BinaryQuality.ONLINE))
+
+        cleared = buffer.clear()
+
+        assert cleared == 1
+        assert buffer.read_with_serials() == []
+
+        buffer.add(BinaryEvent(index=1, value=True, quality=BinaryQuality.ONLINE))
+        entries = buffer.read_with_serials()
+        assert len(entries) == 1
+        assert entries[0][1].index == 1
+
+    def test_events_field_is_not_a_constructor_parameter(self) -> None:
+        """`events` is init=False: a caller cannot construct a ClassBuffer
+        with pre-populated events that would start out of step with
+        `_serials`.
+        """
+        with pytest.raises(TypeError):
+            ClassBuffer(events=deque([BinaryEvent(index=0, value=True, quality=BinaryQuality.ONLINE)]))  # type: ignore[call-arg]
+
 
 class TestEventBufferSerials:
     """Tests for EventBuffer-level serial read and cross-class remove."""
@@ -833,8 +910,8 @@ class TestEventBufferSerials:
         assert set(class1_serials).isdisjoint(class2_serials)
 
     def test_remove_events_by_serials_does_not_cross_classes(self) -> None:
-        """The plan's proof: queue A (class 1) and queue B (class 2) hold a
-        value-equal event each. Removing A's serial removes only A; B stays,
+        """Class 1 and class 2 each hold one value-equal event. Removing
+        class 1's serial removes only that event; class 2's stays,
         proving the removal is by identity, not by value or by position.
         """
         buffer = EventBuffer()
@@ -853,6 +930,36 @@ class TestEventBufferSerials:
         assert len(queue_b_after) == 1
         assert queue_b_after[0][1] is queue_b_before[0][1]
 
+    def test_remove_events_by_serials_removes_one_per_class_in_one_call(self) -> None:
+        """remove_events_by_serials sums a per-class removal across class 1,
+        2 and 3. Give each class one event to remove and one to keep, name
+        one serial per class in a SINGLE call, and check both the total and
+        that each class kept exactly its own unnamed event, by identity:
+        dropping the class 2 or class 3 term from the sum would leave that
+        class's "removed" event still there and its count at 2, not 1.
+        """
+        buffer = EventBuffer()
+        to_remove: list[int] = []
+        kept_events: dict[EventClass, BinaryEvent] = {}
+        for event_class, index in (
+            (EventClass.CLASS_1, 1),
+            (EventClass.CLASS_2, 2),
+            (EventClass.CLASS_3, 3),
+        ):
+            buffer.add_binary_event(event_class=event_class, index=index, value=True, quality=BinaryQuality.ONLINE)
+            buffer.add_binary_event(event_class=event_class, index=index + 10, value=True, quality=BinaryQuality.ONLINE)
+            entries = buffer.read_class_events_with_serials(event_class)
+            to_remove.append(entries[0][0])
+            kept_events[event_class] = entries[1][1]  # type: ignore[assignment]
+
+        removed = buffer.remove_events_by_serials(to_remove)
+
+        assert removed == 3
+        for event_class, kept_event in kept_events.items():
+            remaining = buffer.read_class_events_with_serials(event_class)
+            assert len(remaining) == 1
+            assert remaining[0][1] is kept_event
+
     def test_read_class_events_with_serials_none_returns_empty(self) -> None:
         """read_class_events_with_serials with NONE returns empty list."""
         buffer = EventBuffer()
@@ -867,6 +974,31 @@ class TestEventBufferSerials:
 
         assert removed == 0
         assert buffer.total_count == 1
+
+    def test_read_class_events_with_serials_after_partial_pop_and_clear(self) -> None:
+        """Read-with-serials, EventBuffer-facing: a partial pop_class_events
+        leaves the surviving pairs in step, and clear_class empties them so
+        a later add pairs the new event with its own new serial.
+        """
+        buffer = EventBuffer()
+        for i in range(4):
+            buffer.add_binary_event(event_class=EventClass.CLASS_1, index=i, value=True, quality=BinaryQuality.ONLINE)
+        before = buffer.read_class_events_with_serials(EventClass.CLASS_1)
+
+        popped = buffer.pop_class_events(EventClass.CLASS_1, max_count=2)
+        assert len(popped) == 2
+        assert buffer.read_class_events_with_serials(EventClass.CLASS_1) == before[2:]
+
+        cleared = buffer.clear_class(EventClass.CLASS_1)
+        assert cleared == 2
+        assert buffer.read_class_events_with_serials(EventClass.CLASS_1) == []
+
+        buffer.add_binary_event(event_class=EventClass.CLASS_1, index=99, value=True, quality=BinaryQuality.ONLINE)
+        entries = buffer.read_class_events_with_serials(EventClass.CLASS_1)
+        assert len(entries) == 1
+        removed = buffer.remove_events_by_serials([entries[0][0]])
+        assert removed == 1
+        assert buffer.read_class_events_with_serials(EventClass.CLASS_1) == []
 
     def test_existing_get_and_pop_class_events_unaffected_by_serials(self) -> None:
         """Adding serial bookkeeping does not change the existing read/pop API."""

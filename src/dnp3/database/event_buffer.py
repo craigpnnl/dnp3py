@@ -119,12 +119,13 @@ class ClassBuffer:
         overflow_count: Number of events dropped due to overflow.
     """
 
-    events: deque[Event] = field(default_factory=deque)
+    # init=False: a caller must go through `add` to get a serial recorded,
+    # so a buffer built with pre-populated events can never start with
+    # `events` and `_serials` out of step.
+    events: deque[Event] = field(default_factory=deque, init=False)
     max_size: int = 100
     overflow_count: int = 0
     # Serial for each entry in `events`, same length and order as `events`.
-    # Not a constructor parameter: a caller adds events through `add`, which
-    # assigns the serial.
     _serials: deque[int] = field(default_factory=deque, init=False, repr=False, compare=False)
     # Used only when `add` is called with no explicit serial (a ClassBuffer
     # used standalone, outside an EventBuffer). EventBuffer supplies its own
