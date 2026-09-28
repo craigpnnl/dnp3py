@@ -360,6 +360,36 @@ class TestAnalogOutputOperations:
         with pytest.raises(ValueError, match=r"EventClass\.NONE"):
             AnalogOutputPoint(index=0, config=config)
 
+    def test_add_analog_output_accepts_positive_infinity(self) -> None:
+        """Positive infinity is a valid analog output value."""
+        db = Database()
+        point = db.add_analog_output(index=0, value=float("inf"))
+        assert point.value == float("inf")
+
+    def test_add_analog_output_accepts_negative_infinity(self) -> None:
+        """Negative infinity is a valid analog output value."""
+        db = Database()
+        point = db.add_analog_output(index=0, value=float("-inf"))
+        assert point.value == float("-inf")
+
+    def test_update_analog_output_accepts_positive_infinity(self) -> None:
+        """Positive infinity is a valid update value."""
+        db = Database()
+        db.add_analog_output(index=0)
+        db.update_analog_output(index=0, value=float("inf"))
+        point = db.get_analog_output(0)
+        assert point is not None
+        assert point.value == float("inf")
+
+    def test_update_analog_output_accepts_negative_infinity(self) -> None:
+        """Negative infinity is a valid update value."""
+        db = Database()
+        db.add_analog_output(index=0)
+        db.update_analog_output(index=0, value=float("-inf"))
+        point = db.get_analog_output(0)
+        assert point is not None
+        assert point.value == float("-inf")
+
     def test_update_analog_output_sets_value(self) -> None:
         """Updating an analog output sets its value and quality."""
         db = Database()
