@@ -12,7 +12,8 @@ from collections.abc import Callable
 
 import pytest
 
-from dnp3.application.fragment import ResponseFragment
+from dnp3.application.fragment import ResponseFragment, TruncationReason
+from dnp3.application.parser import parse_request
 from dnp3.core.enums import CommandStatus, ControlCode, FunctionCode
 from dnp3.core.flags import IIN
 from dnp3.outstation import Outstation
@@ -76,6 +77,21 @@ _EXECUTED = [
     (FunctionCode.DELAY_MEASURE, _G60V1_ALL + _TRAILING),
 ]
 _NO_ACK = {FunctionCode.DIRECT_OPERATE_NO_ACK, FunctionCode.IMMEDIATE_FREEZE_NO_ACK, FunctionCode.FREEZE_CLEAR_NO_ACK}
+# A request for each reason framing stops, after a first block that frames, and the IIN2
+# octet of its refusal: IIN2.1 for an object of unknown width, IIN2.2 for every other reason.
+_REFUSALS = [
+    (TruncationReason.UNKNOWN_WIDTH, FunctionCode.SELECT, _crob(1) + _G12V2, 0x02),
+    # Range code 3: a virtual address start-stop range.
+    (TruncationReason.UNSUPPORTED_RANGE, FunctionCode.READ, _G60V1_ALL + bytes.fromhex("01 02 03 00 00"), 0x04),
+    # Prefix code 4: a 1-octet object size prefix, with a 1-octet count.
+    (TruncationReason.SIZE_PREFIX, FunctionCode.READ, _G60V1_ALL + bytes.fromhex("01 02 47 01"), 0x04),
+    (TruncationReason.RESERVED_QUALIFIER, FunctionCode.READ, _G60V1_ALL + bytes.fromhex("1E 01 0A"), 0x04),
+    # g80v1 is packed, so a 1-octet index prefix before each bit cannot be laid out.
+    (TruncationReason.PACKED_WITH_INDEX_PREFIX, FunctionCode.WRITE, _G50V1 + bytes.fromhex("50 01 17 01 07 00"), 0x04),
+    (TruncationReason.RANGE_NAMES_NO_OBJECT, FunctionCode.WRITE, _G50V1 + bytes.fromhex("50 01 00 07 06"), 0x04),
+    (TruncationReason.DATA_SHORTER_THAN_DECLARED, FunctionCode.SELECT, _crob(1) + _crob(2, count=2), 0x04),
+    (TruncationReason.TRAILING_OCTETS, FunctionCode.READ, _G60V1_ALL + _TRAILING, 0x04),
+]
 # Every other request function but CONFIRM. One the outstation starts to execute fails here
 # until it joins _EXECUTED.
 _UNSUPPORTED = [
@@ -308,6 +324,28 @@ class TestUnframeableRequestRunsNothing:
         response = _only(_send(outstation, FunctionCode.READ, bytes.fromhex("01 02 00 00 00  1E 01 0A"), seq=1))
 
         assert response.to_bytes() == _null_response(1, 0x04)
+
+    @pytest.mark.parametrize(
+        ("reason", "function", "objects", "iin2"),
+        _REFUSALS,
+        ids=[reason.name for reason, *_ in _REFUSALS],
+    )
+    def test_refusal_sets_the_iin2_bit_of_its_reason(
+        self, reason: TruncationReason, function: FunctionCode, objects: bytes, iin2: int
+    ) -> None:
+        outstation, handler = _outstation()
+        request = bytes([0xC7, function.value]) + objects
+        truncation = parse_request(request).truncation
+        assert truncation is not None
+        assert truncation.reason is reason
+
+        response = _only(outstation.process_request(request, peer=MASTER_A))
+
+        assert response.to_bytes() == _null_response(7, iin2)
+        assert handler.calls == 0
+
+    def test_every_truncation_reason_has_a_refusal_case(self) -> None:
+        assert {reason for reason, *_ in _REFUSALS} == set(TruncationReason)
 
     @pytest.mark.parametrize(
         ("function", "objects"),
