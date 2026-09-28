@@ -5,8 +5,10 @@ including polling, commands, and unsolicited response handling.
 """
 
 import struct
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
+from types import MappingProxyType
+from typing import Generic, Protocol, TypeVar
 
 from dnp3.application.builder import (
     build_delay_measure_request,
@@ -40,31 +42,11 @@ from dnp3.master.polling import (
     RangePollTask,
 )
 from dnp3.master.state import MasterState, MasterStateManager
-
-# DNP3 group numbers for parsing
-GROUP_BINARY_INPUT = 1
-GROUP_BINARY_INPUT_EVENT = 2
-GROUP_BINARY_OUTPUT = 10
-GROUP_BINARY_OUTPUT_EVENT = 11
-GROUP_ANALOG_INPUT = 30
-GROUP_ANALOG_INPUT_EVENT = 32
-GROUP_ANALOG_OUTPUT = 40
-GROUP_ANALOG_OUTPUT_EVENT = 42
-GROUP_COUNTER = 20
-GROUP_COUNTER_EVENT = 22
-GROUP_FROZEN_COUNTER = 21
-GROUP_TIME_DELAY = 52
+from dnp3.objects.layout import PointKind, ValueCodec, WireLayout, layout_for
 
 # Quality flag mask
 QUALITY_ONLINE = 0x01
 QUALITY_STATE = 0x80
-
-# Variation 1 of groups 1 and 10 is bit-packed. Other variations are resolved
-# through the per-group width and spec tables below, which is why there is no
-# flat VARIATION_* set here: the same variation number means different layouts
-# in different groups (g30v1 is a 32-bit value, g1v1 is packed bits), and a
-# single table keyed on the number alone is what made event blocks misparse.
-VARIATION_PACKED = 1
 
 
 # Qualifier field masks (IEEE 1815-2012 Table 4-1).
@@ -198,44 +180,6 @@ def _iter_object_slots(
         ordinal += 1
 
 
-# Groups whose variation 1 is genuinely bit-packed (1 bit per point). Event
-# groups (2, 11, 22, 32, 42) also number a variation 1, but it is one flags byte
-# per point, so packed decoding must be keyed on the group as well.
-PACKED_FORMAT_GROUPS = frozenset({GROUP_BINARY_INPUT, GROUP_BINARY_OUTPUT})
-
-# Per-object widths in bytes for binary variations, excluding any index prefix.
-_BINARY_FLAGS_WIDTH = 1
-_ABSOLUTE_TIMESTAMP_WIDTH = 6
-_RELATIVE_TIME_WIDTH = 2
-
-# Static groups 1 and 10: variation 2 is a bare flags byte.
-_STATIC_BINARY_WIDTHS = {
-    2: _BINARY_FLAGS_WIDTH,
-}
-
-# Event groups 2 and 11: variation 1 is a bare flags byte, 2 appends a 48-bit
-# absolute timestamp, 3 appends a 16-bit time relative to the fragment's CTO.
-_EVENT_BINARY_WIDTHS = {
-    1: _BINARY_FLAGS_WIDTH,
-    2: _BINARY_FLAGS_WIDTH + _ABSOLUTE_TIMESTAMP_WIDTH,
-    3: _BINARY_FLAGS_WIDTH + _RELATIVE_TIME_WIDTH,
-}
-
-_BINARY_EVENT_GROUPS = frozenset({GROUP_BINARY_INPUT_EVENT, GROUP_BINARY_OUTPUT_EVENT})
-
-
-def _binary_object_width(group: int, variation: int) -> int | None:
-    """Per-object width for a binary group/variation, or None if unsupported.
-
-    Resolved per group because variation 2 means different things either side of
-    the static/event split: a bare flags byte for g1v2/g10v2, but flags plus a
-    48-bit timestamp for g2v2/g11v2.
-    """
-    if group in _BINARY_EVENT_GROUPS:
-        return _EVENT_BINARY_WIDTHS.get(variation)
-    return _STATIC_BINARY_WIDTHS.get(variation)
-
-
 def _decode_signed_int(raw: bytes) -> float:
     """Decode a little-endian signed integer as a float."""
     return float(int.from_bytes(raw, "little", signed=True))
@@ -251,141 +195,14 @@ def _decode_float64(raw: bytes) -> float:
     return float(struct.unpack("<d", raw)[0])
 
 
-@dataclass(frozen=True, slots=True)
-class AnalogValueSpec:
-    """How to decode one analog object.
-
-    Attributes:
-        value_width: Bytes of value payload.
-        has_flags: Whether a quality flags byte precedes the value.
-        decode: Converts the value bytes to a float.
-        timestamp_width: Bytes of trailing timestamp to skip.
-    """
-
-    value_width: int
-    has_flags: bool
-    decode: "Callable[[bytes], float]"
-    timestamp_width: int = 0
-
-    @property
-    def object_width(self) -> int:
-        """Total bytes per object, excluding any index prefix."""
-        flags_width = 1 if self.has_flags else 0
-        return flags_width + self.value_width + self.timestamp_width
-
-
-@dataclass(frozen=True, slots=True)
-class CounterValueSpec:
-    """How to decode one counter object."""
-
-    value_width: int
-    has_flags: bool
-    timestamp_width: int = 0
-
-    @property
-    def object_width(self) -> int:
-        """Total bytes per object, excluding any index prefix."""
-        flags_width = 1 if self.has_flags else 0
-        return flags_width + self.value_width + self.timestamp_width
-
-
-# Static analog input variations (group 30).
-_STATIC_ANALOG_SPECS = {
-    1: AnalogValueSpec(value_width=4, has_flags=True, decode=_decode_signed_int),
-    2: AnalogValueSpec(value_width=2, has_flags=True, decode=_decode_signed_int),
-    3: AnalogValueSpec(value_width=4, has_flags=False, decode=_decode_signed_int),
-    4: AnalogValueSpec(value_width=2, has_flags=False, decode=_decode_signed_int),
-    5: AnalogValueSpec(value_width=4, has_flags=True, decode=_decode_float32),
-    6: AnalogValueSpec(value_width=8, has_flags=True, decode=_decode_float64),
-}
-
-# Static analog output status variations (group 40).
-# v3 is single-precision float (with flag) and v4 is double (with flag) - not the
-# int-without-flag layouts group 30 uses for v3/v4.
-_STATIC_AO_SPECS = {
-    1: AnalogValueSpec(value_width=4, has_flags=True, decode=_decode_signed_int),
-    2: AnalogValueSpec(value_width=2, has_flags=True, decode=_decode_signed_int),
-    3: AnalogValueSpec(value_width=4, has_flags=True, decode=_decode_float32),
-    4: AnalogValueSpec(value_width=8, has_flags=True, decode=_decode_float64),
-}
-
-# Analog event variations (groups 32, 42). Variations 3, 4, 7 and 8 repeat
-# 1, 2, 5 and 6 with a 48-bit timestamp appended.
-_EVENT_ANALOG_SPECS = {
-    1: AnalogValueSpec(value_width=4, has_flags=True, decode=_decode_signed_int),
-    2: AnalogValueSpec(value_width=2, has_flags=True, decode=_decode_signed_int),
-    3: AnalogValueSpec(
-        value_width=4,
-        has_flags=True,
-        decode=_decode_signed_int,
-        timestamp_width=_ABSOLUTE_TIMESTAMP_WIDTH,
-    ),
-    4: AnalogValueSpec(
-        value_width=2,
-        has_flags=True,
-        decode=_decode_signed_int,
-        timestamp_width=_ABSOLUTE_TIMESTAMP_WIDTH,
-    ),
-    5: AnalogValueSpec(value_width=4, has_flags=True, decode=_decode_float32),
-    6: AnalogValueSpec(value_width=8, has_flags=True, decode=_decode_float64),
-    7: AnalogValueSpec(
-        value_width=4,
-        has_flags=True,
-        decode=_decode_float32,
-        timestamp_width=_ABSOLUTE_TIMESTAMP_WIDTH,
-    ),
-    8: AnalogValueSpec(
-        value_width=8,
-        has_flags=True,
-        decode=_decode_float64,
-        timestamp_width=_ABSOLUTE_TIMESTAMP_WIDTH,
-    ),
-}
-
-# Static counter variations (group 20). v5/v6 carry no flag or time.
-_STATIC_COUNTER_SPECS = {
-    1: CounterValueSpec(value_width=4, has_flags=True),
-    2: CounterValueSpec(value_width=2, has_flags=True),
-    5: CounterValueSpec(value_width=4, has_flags=False),
-    6: CounterValueSpec(value_width=2, has_flags=False),
-}
-
-# Frozen counter variations (group 21). Unlike g20, v5/v6 carry a flag and a
-# 48-bit time-of-occurrence (IEEE 1815-2012 A.11.5, A.11.6): they are not the
-# g20v5/v6 layout despite sharing a variation number. The time-of-occurrence
-# is skipped, not decoded; CounterValue.timestamp stays None until #81.
-_STATIC_FROZEN_COUNTER_SPECS = {
-    1: CounterValueSpec(value_width=4, has_flags=True),
-    2: CounterValueSpec(value_width=2, has_flags=True),
-    5: CounterValueSpec(value_width=4, has_flags=True, timestamp_width=_ABSOLUTE_TIMESTAMP_WIDTH),
-    6: CounterValueSpec(value_width=2, has_flags=True, timestamp_width=_ABSOLUTE_TIMESTAMP_WIDTH),
-}
-
-# Counter event variations (group 22). 5 and 6 add a 48-bit timestamp.
-_EVENT_COUNTER_SPECS = {
-    1: CounterValueSpec(value_width=4, has_flags=True),
-    2: CounterValueSpec(value_width=2, has_flags=True),
-    5: CounterValueSpec(value_width=4, has_flags=True, timestamp_width=_ABSOLUTE_TIMESTAMP_WIDTH),
-    6: CounterValueSpec(value_width=2, has_flags=True, timestamp_width=_ABSOLUTE_TIMESTAMP_WIDTH),
-}
-
-
-def _analog_value_spec(group: int, variation: int) -> AnalogValueSpec | None:
-    """Look up the decoding spec for an analog group/variation, or None."""
-    if group in {GROUP_ANALOG_INPUT_EVENT, GROUP_ANALOG_OUTPUT_EVENT}:
-        return _EVENT_ANALOG_SPECS.get(variation)
-    if group == GROUP_ANALOG_OUTPUT:
-        return _STATIC_AO_SPECS.get(variation)
-    return _STATIC_ANALOG_SPECS.get(variation)
-
-
-def _counter_value_spec(group: int, variation: int) -> CounterValueSpec | None:
-    """Look up the decoding spec for a counter group/variation, or None."""
-    if group == GROUP_COUNTER_EVENT:
-        return _EVENT_COUNTER_SPECS.get(variation)
-    if group == GROUP_FROZEN_COUNTER:
-        return _STATIC_FROZEN_COUNTER_SPECS.get(variation)
-    return _STATIC_COUNTER_SPECS.get(variation)
+# Analog value codecs the master decodes; a layout with any other codec yields no values.
+_ANALOG_DECODERS: Mapping[ValueCodec, Callable[[bytes], float]] = MappingProxyType(
+    {
+        ValueCodec.INT: _decode_signed_int,
+        ValueCodec.FLOAT32: _decode_float32,
+        ValueCodec.FLOAT64: _decode_float64,
+    }
+)
 
 
 def _read_quality(data: bytes, payload: int, *, has_flags: bool) -> tuple[int, int]:
@@ -417,6 +234,137 @@ def _parse_packed_binary(layout: ObjectLayout, data: bytes) -> list[BinaryValue]
             )
         )
     return values
+
+
+def _block_slots(block: ObjectBlock) -> ObjectLayout | None:
+    """Decode a block's range and prefix, or None if it carries nothing decodable."""
+    if not block.data:
+        return None
+    return _decode_object_layout(block.header.qualifier, block.data)
+
+
+def _decode_binary(block: ObjectBlock, wire: WireLayout) -> list[BinaryValue]:
+    """Decode binary input or output points: packed bits, or one flag octet per point."""
+    slots = _block_slots(block)
+    if slots is None:
+        return []
+    data = block.data
+    if wire.is_packed:
+        # A.2.1 and A.6.1 pack bits over a contiguous index range; a prefixed block has no bit layout.
+        if slots.index_prefix_width:
+            return []
+        return _parse_packed_binary(slots, data)
+
+    values: list[BinaryValue] = []
+    for index, payload in _iter_object_slots(slots, data, wire.width):
+        flags = data[payload]
+        values.append(
+            BinaryValue(
+                index=index,
+                value=bool(flags & QUALITY_STATE),
+                quality=flags & ~QUALITY_STATE,
+            )
+        )
+    return values
+
+
+def _decode_analog(block: ObjectBlock, wire: WireLayout) -> list[AnalogValue]:
+    """Decode analog input or output points; any trailing time field is skipped."""
+    decode = _ANALOG_DECODERS.get(wire.codec)
+    slots = _block_slots(block)
+    if decode is None or slots is None:
+        return []
+    data = block.data
+
+    values: list[AnalogValue] = []
+    for index, payload in _iter_object_slots(slots, data, wire.width):
+        quality, value_offset = _read_quality(data, payload, has_flags=wire.has_flags)
+        values.append(
+            AnalogValue(
+                index=index,
+                value=decode(data[value_offset : value_offset + wire.value_width]),
+                quality=quality,
+            )
+        )
+    return values
+
+
+def _decode_counter(block: ObjectBlock, wire: WireLayout) -> list[CounterValue]:
+    """Decode counter or frozen counter points; any trailing time field is skipped."""
+    slots = _block_slots(block)
+    if wire.codec is not ValueCodec.UINT or slots is None:
+        return []
+    data = block.data
+
+    values: list[CounterValue] = []
+    for index, payload in _iter_object_slots(slots, data, wire.width):
+        quality, value_offset = _read_quality(data, payload, has_flags=wire.has_flags)
+        raw = int.from_bytes(data[value_offset : value_offset + wire.value_width], "little", signed=False)
+        values.append(CounterValue(index=index, value=raw, quality=quality))
+    return values
+
+
+_V = TypeVar("_V")
+
+
+class _Batch(Protocol):
+    """Values of one point kind gathered across a response's blocks."""
+
+    def add(self, block: ObjectBlock, wire: WireLayout) -> None:
+        """Decode a block into the batch."""
+
+    def deliver(self, handler: SOEHandler, info: ResponseInfo) -> None:
+        """Hand the gathered values to the handler, if there are any."""
+
+
+class _Delivery(Protocol):
+    """How one point kind is decoded and delivered."""
+
+    def batch(self) -> _Batch:
+        """Start an empty batch for one response."""
+
+
+@dataclass(frozen=True, slots=True)
+class _KindDelivery(Generic[_V]):
+    """A point kind's decode function and the handler callback its values go to."""
+
+    decode: Callable[[ObjectBlock, WireLayout], list[_V]]
+    deliver: Callable[[SOEHandler, list[_V], ResponseInfo], None]
+
+    def batch(self) -> "_KindBatch[_V]":
+        """Start an empty batch for one response."""
+        return _KindBatch(self)
+
+
+@dataclass(slots=True)
+class _KindBatch(Generic[_V]):
+    """One response's values for a point kind, in block order."""
+
+    delivery: _KindDelivery[_V]
+    values: list[_V] = field(default_factory=list)
+
+    def add(self, block: ObjectBlock, wire: WireLayout) -> None:
+        """Decode a block into the batch."""
+        self.values.extend(self.delivery.decode(block, wire))
+
+    def deliver(self, handler: SOEHandler, info: ResponseInfo) -> None:
+        """Hand the gathered values to the handler, if there are any."""
+        if self.values:
+            self.delivery.deliver(handler, self.values, info)
+
+
+# Point kinds the master decodes, in the order their callbacks run for a response.
+# A kind absent here (double-bit input, commands, time, class) is framed but not delivered.
+_DELIVERIES: Mapping[PointKind, _Delivery] = MappingProxyType(
+    {
+        PointKind.BINARY_INPUT: _KindDelivery(_decode_binary, lambda h, v, i: h.on_binary_input(v, i)),
+        PointKind.BINARY_OUTPUT: _KindDelivery(_decode_binary, lambda h, v, i: h.on_binary_output(v, i)),
+        PointKind.ANALOG_INPUT: _KindDelivery(_decode_analog, lambda h, v, i: h.on_analog_input(v, i)),
+        PointKind.ANALOG_OUTPUT: _KindDelivery(_decode_analog, lambda h, v, i: h.on_analog_output(v, i)),
+        PointKind.COUNTER: _KindDelivery(_decode_counter, lambda h, v, i: h.on_counter(v, i)),
+        PointKind.FROZEN_COUNTER: _KindDelivery(_decode_counter, lambda h, v, i: h.on_frozen_counter(v, i)),
+    }
+)
 
 
 @dataclass
@@ -698,146 +646,18 @@ class Master:
             objects: Object blocks from response.
             info: Response information.
         """
-        binary_inputs: list[BinaryValue] = []
-        binary_outputs: list[BinaryValue] = []
-        analog_inputs: list[AnalogValue] = []
-        analog_outputs: list[AnalogValue] = []
-        counters: list[CounterValue] = []
-        frozen_counters: list[CounterValue] = []
+        batches = {kind: delivery.batch() for kind, delivery in _DELIVERIES.items()}
 
         for block in objects:
-            group = block.header.group
+            wire = layout_for(block.header.group, block.header.variation)
+            if wire is None:
+                continue
+            batch = batches.get(wire.point_kind)
+            if batch is not None:
+                batch.add(block, wire)
 
-            if group in {GROUP_BINARY_INPUT, GROUP_BINARY_INPUT_EVENT}:
-                binary_inputs.extend(self._parse_binary_values(block))
-            elif group in {GROUP_BINARY_OUTPUT, GROUP_BINARY_OUTPUT_EVENT}:
-                binary_outputs.extend(self._parse_binary_values(block))
-            elif group in {GROUP_ANALOG_INPUT, GROUP_ANALOG_INPUT_EVENT}:
-                analog_inputs.extend(self._parse_analog_values(block))
-            elif group in {GROUP_ANALOG_OUTPUT, GROUP_ANALOG_OUTPUT_EVENT}:
-                analog_outputs.extend(self._parse_analog_values(block))
-            elif group in {GROUP_COUNTER, GROUP_COUNTER_EVENT}:
-                counters.extend(self._parse_counter_values(block))
-            elif group == GROUP_FROZEN_COUNTER:
-                frozen_counters.extend(self._parse_counter_values(block))
-
-        # Call handler methods
-        if binary_inputs:
-            self.handler.on_binary_input(binary_inputs, info)
-        if binary_outputs:
-            self.handler.on_binary_output(binary_outputs, info)
-        if analog_inputs:
-            self.handler.on_analog_input(analog_inputs, info)
-        if analog_outputs:
-            self.handler.on_analog_output(analog_outputs, info)
-        if counters:
-            self.handler.on_counter(counters, info)
-        if frozen_counters:
-            self.handler.on_frozen_counter(frozen_counters, info)
-
-    def _parse_binary_values(self, block: ObjectBlock) -> list[BinaryValue]:
-        """Parse binary values from object block.
-
-        Args:
-            block: Object block containing binary data.
-
-        Returns:
-            List of parsed binary values.
-        """
-        data = block.data
-        if not data:
-            return []
-
-        header = block.header
-        layout = _decode_object_layout(header.qualifier, data)
-        if layout is None:
-            return []
-
-        # Packed format is group 1 variation 1 only (and group 10 variation 1 for
-        # outputs). Event groups also number their first variation 1, but it is
-        # one flags byte per point, so keying off variation alone would decode
-        # every event block as bit-packed and fabricate points.
-        if header.variation == VARIATION_PACKED and header.group in PACKED_FORMAT_GROUPS:
-            return _parse_packed_binary(layout, data)
-
-        object_width = _binary_object_width(header.group, header.variation)
-        if object_width is None:
-            return []
-
-        values: list[BinaryValue] = []
-        for index, payload in _iter_object_slots(layout, data, object_width):
-            flags = data[payload]
-            values.append(
-                BinaryValue(
-                    index=index,
-                    value=bool(flags & QUALITY_STATE),
-                    quality=flags & ~QUALITY_STATE,
-                )
-            )
-        return values
-
-    def _parse_analog_values(self, block: ObjectBlock) -> list[AnalogValue]:
-        """Parse analog values from object block.
-
-        Args:
-            block: Object block containing analog data.
-
-        Returns:
-            List of parsed analog values.
-        """
-        data = block.data
-        if not data:
-            return []
-
-        header = block.header
-        spec = _analog_value_spec(header.group, header.variation)
-        if spec is None:
-            return []
-
-        layout = _decode_object_layout(header.qualifier, data)
-        if layout is None:
-            return []
-
-        values: list[AnalogValue] = []
-        for index, payload in _iter_object_slots(layout, data, spec.object_width):
-            quality, value_offset = _read_quality(data, payload, has_flags=spec.has_flags)
-            values.append(
-                AnalogValue(
-                    index=index,
-                    value=spec.decode(data[value_offset : value_offset + spec.value_width]),
-                    quality=quality,
-                )
-            )
-        return values
-
-    def _parse_counter_values(self, block: ObjectBlock) -> list[CounterValue]:
-        """Parse counter values from object block.
-
-        Args:
-            block: Object block containing counter data.
-
-        Returns:
-            List of parsed counter values.
-        """
-        data = block.data
-        if not data:
-            return []
-
-        header = block.header
-        spec = _counter_value_spec(header.group, header.variation)
-        if spec is None:
-            return []
-
-        layout = _decode_object_layout(header.qualifier, data)
-        if layout is None:
-            return []
-
-        values: list[CounterValue] = []
-        for index, payload in _iter_object_slots(layout, data, spec.object_width):
-            quality, value_offset = _read_quality(data, payload, has_flags=spec.has_flags)
-            raw = int.from_bytes(data[value_offset : value_offset + spec.value_width], "little", signed=False)
-            values.append(CounterValue(index=index, value=raw, quality=quality))
-        return values
+        for batch in batches.values():
+            batch.deliver(self.handler, info)
 
     # -------------------------------------------------------------------------
     # Convenience Methods
