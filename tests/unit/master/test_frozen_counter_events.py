@@ -124,3 +124,31 @@ class TestFrozenCounterBlockAheadOfAnalogBlock:
         }
         assert handler.analog_inputs[0].value == 2401.0
         assert handler.analog_inputs[0].quality == 0x01
+
+
+class TestGroup23TwoObjectsWithIndexPrefix:
+    """Qualifier 0x17: 1-byte count, 1-byte index prefix per object (A.13.5.2.2).
+
+    The first object's value has the top bit set (0x80000001): a decoder that
+    reads the UINT32 count as signed misreads it as negative and fails this
+    test on its own, without a separate mutation run.
+    """
+
+    def test_g23v5_two_objects_uint8_count_uint8_index(self) -> None:
+        data = (
+            bytes([23, 5, 0x17])
+            + bytes([2])
+            + bytes([12])
+            + bytes([0x21])
+            + (0x80000001).to_bytes(4, "little")
+            + _TIME_OCTETS
+            + bytes([200])
+            + bytes([0x03])
+            + (0x12345678).to_bytes(4, "little")
+            + _TIME_OCTETS
+        )
+        handler = _deliver(data)
+        assert handler.frozen_counters == {
+            12: CounterValue(index=12, value=0x80000001, quality=0x21, timestamp=_EXPECTED_TIME),
+            200: CounterValue(index=200, value=0x12345678, quality=0x03, timestamp=_EXPECTED_TIME),
+        }
