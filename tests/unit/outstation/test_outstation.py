@@ -1861,10 +1861,11 @@ class TestWriteIINHardenPass:
         assert IIN.DEVICE_RESTART in outstation.iin, "Writing bit value 1 must not clear DEVICE_RESTART"
 
     def test_write_short_data_does_not_raise_or_clear_restart(self) -> None:
-        """A g80v1 block with fewer than 2 data bytes is silently ignored.
+        """A g80v1 block with fewer than 2 data bytes never reaches the outstation.
 
-        The guard `if len(data) < MIN_IIN_WRITE_DATA: return` must prevent
-        an index error and must not alter IIN state.
+        Request framing refuses it as DATA_SHORTER_THAN_DECLARED before
+        _handle_write runs (IIN2.2, IEEE 1815-2012 4.5.11), so no index
+        error and no IIN state change is possible.
         """
         outstation = Outstation()
         assert IIN.DEVICE_RESTART in outstation.iin
@@ -1877,10 +1878,11 @@ class TestWriteIINHardenPass:
     def test_write_non_0x00_qualifier_does_not_clear_restart(self) -> None:
         """A g80v1 block with qualifier != 0x00 answers IIN2.2 and clears nothing.
 
-        Qualifier 0x01 (2-byte start-stop) would misinterpret the data bytes
-        as 2-byte fields if the guard were absent. Confirm the fix: DEVICE_RESTART
-        stays set, no exception is raised, and Rule W's framing refusal
-        (A.28 fixes g80v1 to qualifier 0x00) reports PARAMETER_ERROR.
+        Qualifier 0x01 (2-byte start-stop) declares 4 range bytes plus data,
+        so a 3-byte block frames as DATA_SHORTER_THAN_DECLARED and request
+        framing refuses it (IIN2.2, 4.5.11) before _handle_write's own
+        Rule W check ever runs. DEVICE_RESTART stays set and no exception
+        is raised.
         """
         outstation = Outstation()
         assert IIN.DEVICE_RESTART in outstation.iin

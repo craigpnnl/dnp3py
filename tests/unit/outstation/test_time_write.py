@@ -2,7 +2,8 @@
 
 IEEE 1815-2012 4.5.5 and 10.3.3.1: NEED_TIME clears only on an applied time
 write or a WRITE of g80v1 index 4 = 0; DELAY_MEASURE never clears it. Rule W
-(4.4.4.3 Rule 7): every WRITE block is checked before any is applied.
+is this outstation's own policy, mirroring #130's control rule: every WRITE
+block is checked before any is applied.
 """
 
 import pytest
