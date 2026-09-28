@@ -99,7 +99,7 @@ IIN_BIT_DEVICE_RESTART = 7  # Bit 7 of IIN byte 1
 MIN_IIN_WRITE_DATA = 2  # start + stop bytes
 
 # Analog output value sizes in bytes, keyed by variation number.
-# Used by both _process_ao_direct_operate and _echo_ao_block so the mapping
+# Used by both _parse_ao_block and _echo_ao_block so the mapping
 # is defined exactly once (parallel to _CROB_BODY_BYTES for CROB).
 _AO_VALUE_SIZES: dict[int, int] = {
     AO_VAR_INT32: 4,  # Group 41 Var 1: 32-bit signed integer
@@ -1605,7 +1605,7 @@ class Outstation:
             Tuple of (ObjectBlock with status bytes updated, truncation flag).
         """
         variation = block.header.variation
-        # Unknown variations are returned unchanged; _process_ao_direct_operate
+        # Unknown variations are returned unchanged; _parse_ao_block
         # already produced no results for them, so there is nothing meaningful
         # to echo. No silent size default: a wrong size would corrupt the wire frame.
         value_size = _AO_VALUE_SIZES.get(variation)
