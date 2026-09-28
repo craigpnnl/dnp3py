@@ -5,9 +5,10 @@ state, unsolicited response state, and IIN flags.
 """
 
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum, auto
 
+from dnp3.application.fragment import ResponseFragment
 from dnp3.core.enums import ControlCode
 from dnp3.core.flags import IIN
 from dnp3.outstation.peer import UNSPECIFIED_PEER, PeerId
@@ -110,6 +111,35 @@ class SelectState:
             True if the OPERATE matches the SELECT.
         """
         return not self.is_binary and self.index == index and self.analog_value == value
+
+
+PointKey = tuple[int, int]
+"""(object group, point index) of a selected point."""
+
+CROB_GROUP = 12
+
+
+@dataclass
+class PeerSelection:
+    """One peer's selection in effect: the SELECT request and the points it armed.
+
+    A peer has at most one, since IEEE 1815-2012 Table 4-9 judges the peer's
+    next request against the whole SELECT request, not against one point.
+
+    Attributes:
+        sequence: Application sequence number of the SELECT.
+        body: Octets after the function code of the SELECT. None when the
+            selection was stored without a request, which no request matches.
+        response: Response sent to the SELECT, repeated on a valid retry.
+        started: time.monotonic() when the selection began.
+        points: Selected points by (group, index).
+    """
+
+    sequence: int
+    body: bytes | None
+    response: ResponseFragment | None
+    started: float
+    points: dict[PointKey, SelectState] = field(default_factory=dict)
 
 
 @dataclass
@@ -216,9 +246,9 @@ class OutstationStateManager:
     state: OutstationState = OutstationState.IDLE
     sequences: SequenceState = field(default_factory=SequenceState)
     unsolicited: UnsolicitedState = field(default_factory=UnsolicitedState)
-    # Keyed by peer as well as index so one master can never operate,
-    # overwrite or clear another master's selection.
-    select_states: dict[tuple[PeerId, int], SelectState] = field(default_factory=dict)
+    # Keyed by peer so one master can never operate, overwrite or clear
+    # another master's selection.
+    selections: dict[PeerId, PeerSelection] = field(default_factory=dict)
     iin: IIN = field(default_factory=lambda: IIN.DEVICE_RESTART)
     need_time: bool = True
     last_broadcast: bool = False
@@ -277,51 +307,77 @@ class OutstationStateManager:
         """Clear the event buffer overflow IIN flag."""
         self.iin &= ~IIN.EVENT_BUFFER_OVERFLOW
 
-    def add_select(self, select: SelectState, *, peer: PeerId = UNSPECIFIED_PEER) -> None:
-        """Add a SELECT state, replacing any selection this peer holds on the index.
+    def add_select(self, select: SelectState, *, peer: PeerId = UNSPECIFIED_PEER, group: int = CROB_GROUP) -> None:
+        """Add a point to a peer's selection, replacing any entry for the same point.
+
+        Opens a selection for the peer if it has none, taking its sequence
+        and start time from ``select``. A point added to a selection begun for
+        a SELECT request is stored with that selection's start time, so every
+        point expires on the one timer the SELECT started.
 
         Args:
             select: The select state to add.
             peer: The peer that made the selection.
+            group: Object group of the selected point.
         """
-        self.select_states[(peer, select.index)] = select
+        selection = self.selections.get(peer)
+        if selection is None:
+            selection = PeerSelection(sequence=select.sequence, body=None, response=None, started=select.timestamp)
+            self.selections[peer] = selection
+        elif selection.body is not None:
+            select = replace(select, timestamp=selection.started)
+        selection.points[(group, select.index)] = select
 
-    def get_select(self, index: int, *, peer: PeerId = UNSPECIFIED_PEER) -> SelectState | None:
-        """Get a peer's SELECT state for a point index.
+    def get_select(self, index: int, *, peer: PeerId = UNSPECIFIED_PEER, group: int = CROB_GROUP) -> SelectState | None:
+        """Get a peer's SELECT state for a point.
 
         Args:
             index: Point index.
             peer: The peer whose selection to return.
+            group: Object group of the point.
 
         Returns:
             SelectState if found, None otherwise.
         """
-        return self.select_states.get((peer, index))
+        selection = self.selections.get(peer)
+        if selection is None:
+            return None
+        return selection.points.get((group, index))
 
-    def remove_select(self, index: int, *, peer: PeerId = UNSPECIFIED_PEER) -> None:
-        """Remove a peer's SELECT state for a point index.
+    def remove_select(self, index: int, *, peer: PeerId = UNSPECIFIED_PEER, group: int = CROB_GROUP) -> None:
+        """Remove a peer's SELECT state for a point, ending the selection if it was the last.
 
         Args:
             index: Point index.
             peer: The peer whose selection to remove.
+            group: Object group of the point.
         """
-        self.select_states.pop((peer, index), None)
+        selection = self.selections.get(peer)
+        if selection is None:
+            return
+        selection.points.pop((group, index), None)
+        if not selection.points:
+            del self.selections[peer]
 
-    def held_by_other_peer(self, index: int, peer: PeerId, timeout: float) -> bool:
+    def held_by_other_peer(self, index: int, peer: PeerId, timeout: float, *, group: int = CROB_GROUP) -> bool:
         """Check whether a peer other than ``peer`` holds an unexpired selection on a point.
 
         Args:
             index: Point index.
             peer: The peer asking.
             timeout: Selection timeout in seconds.
+            group: Object group of the point.
 
         Returns:
-            True if another peer's selection on the index has not expired.
+            True if another peer's selection on the point has not expired.
         """
-        return any(
-            holder != peer and held_index == index and not select.is_expired(timeout)
-            for (holder, held_index), select in self.select_states.items()
-        )
+        for holder, selection in self.selections.items():
+            if holder == peer:
+                continue
+            select = selection.points.get((group, index))
+            if select is not None and not select.is_expired(timeout):
+                return True
+        return False
 
     def release_connection(self, connection: int) -> None:
         """Remove every selection made by any peer on a transport connection.
@@ -329,9 +385,9 @@ class OutstationStateManager:
         Args:
             connection: The connection id carried in each peer's PeerId.
         """
-        released = [key for key in self.select_states if key[0].connection == connection]
-        for key in released:
-            del self.select_states[key]
+        released = [peer for peer in self.selections if peer.connection == connection]
+        for peer in released:
+            del self.selections[peer]
 
     def clear_expired_selects(self, timeout: float) -> None:
         """Clear all expired SELECT states, for every peer.
@@ -339,9 +395,58 @@ class OutstationStateManager:
         Args:
             timeout: Selection timeout in seconds.
         """
-        expired = [key for key, select in self.select_states.items() if select.is_expired(timeout)]
-        for key in expired:
-            del self.select_states[key]
+        for peer, selection in list(self.selections.items()):
+            expired = [key for key, select in selection.points.items() if select.is_expired(timeout)]
+            for key in expired:
+                del selection.points[key]
+            # A selection begun for a SELECT still being processed has no points yet.
+            if expired and not selection.points:
+                del self.selections[peer]
+
+    def selection_of(self, peer: PeerId) -> PeerSelection | None:
+        """Return the selection a peer has in effect, if any.
+
+        Args:
+            peer: The peer asking.
+
+        Returns:
+            The peer's selection, or None.
+        """
+        return self.selections.get(peer)
+
+    def begin_selection(self, peer: PeerId, sequence: int, body: bytes) -> PeerSelection:
+        """End any selection the peer holds and open an empty one for a SELECT request.
+
+        Args:
+            peer: The peer sending the SELECT.
+            sequence: Application sequence number of the SELECT.
+            body: Octets after the function code of the SELECT.
+
+        Returns:
+            The new selection.
+        """
+        selection = PeerSelection(sequence=sequence, body=body, response=None, started=time.monotonic())
+        self.selections[peer] = selection
+        return selection
+
+    def set_response(self, peer: PeerId, response: ResponseFragment) -> None:
+        """Record the response to a peer's SELECT, for repeating on a retry.
+
+        Args:
+            peer: The peer whose selection answered.
+            response: The response sent.
+        """
+        selection = self.selections.get(peer)
+        if selection is not None:
+            selection.response = response
+
+    def terminate(self, peer: PeerId) -> None:
+        """End a peer's selection, every point of it.
+
+        Args:
+            peer: The peer whose selection ends.
+        """
+        self.selections.pop(peer, None)
 
     def get_current_iin(self) -> IIN:
         """Get the current IIN flags.

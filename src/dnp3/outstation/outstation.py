@@ -571,13 +571,14 @@ class Outstation:
             For READ requests with large databases, may return multiple
             fragments respecting max_fragment_size.
         """
+        resolved_peer = peer if peer is not None else UNSPECIFIED_PEER
         try:
             request = parse_request(data)
         except Exception:
-            # Parse error - return null response with PARAMETER_ERROR
+            # No retry or OPERATE can match what failed to parse, so it ends the sender's selection (Table 4-9).
+            self._state.terminate(resolved_peer)
             return [build_null_response(iin=self.iin | IIN.PARAMETER_ERROR)]
 
-        resolved_peer = peer if peer is not None else UNSPECIFIED_PEER
         return self._process_request_fragment(request, resolved_peer, data[2:])
 
     def new_connection_id(self) -> int:
@@ -609,28 +610,79 @@ class Outstation:
         Args:
             request: Parsed request fragment.
             peer: The peer that sent this request (see process_request).
-            body: Raw octets after the function code, for a later change to
-                #72 adding a Table 4-9 octet-equality check; unused before
-                then.
+            body: Raw octets after the function code, compared with the
+                SELECT's under IEEE 1815-2012 Table 4-9.
 
         Returns:
             List of response fragments. Empty list if no response needed.
         """
         header = request.header
-        function = header.function
 
         # Track request sequence
         self._state.sequences.last_request_seq = header.control.seq
 
-        # Dispatch based on function code
+        return self._apply_select_sequence_rules(request, peer, body)
+
+    def _apply_select_sequence_rules(
+        self, request: RequestFragment, peer: PeerId, body: bytes
+    ) -> list[ResponseFragment]:
+        """Judge a request against the peer's selection in effect (IEEE 1815-2012 Table 4-9).
+
+        Only the requesting peer's selection is read or ended. A CONFIRM leaves
+        it in effect: it acknowledges an earlier response rather than following
+        the SELECT as a request.
+        """
+        function = request.header.function
+        seq = request.header.control.seq
+        self._state.clear_expired_selects(self.config.select_timeout)
+        selection = self._state.selection_of(peer)
+
+        if function == FunctionCode.SELECT:
+            if selection is not None and seq == selection.sequence:
+                if selection.body == body and selection.response is not None:
+                    return [selection.response]
+                return []
+            selection = self._state.begin_selection(peer, seq, body)
+            try:
+                response = self._handle_select(request, peer=peer)
+            except BaseException:
+                # A record with no response would swallow every retry, and its points were never answered.
+                self._state.terminate(peer)
+                raise
+            if selection.points:
+                self._state.set_response(peer, response)
+            else:
+                self._state.terminate(peer)
+            return [response]
+
+        if function == FunctionCode.OPERATE:
+            follows_select = (
+                selection is not None
+                and seq == (selection.sequence + 1) % (MAX_APP_SEQUENCE + 1)
+                and selection.body == body
+            )
+            if not follows_select:
+                # Ended first, so every object answers NO_SELECT and none reaches the handler.
+                self._state.terminate(peer)
+            try:
+                return [self._handle_operate(request, peer=peer)]
+            finally:
+                # Even if the handler raised, the points it never reached must not stay armed.
+                self._state.terminate(peer)
+
+        if function != FunctionCode.CONFIRM:
+            self._state.terminate(peer)
+        return self._dispatch(request)
+
+    def _dispatch(self, request: RequestFragment) -> list[ResponseFragment]:
+        """Dispatch a request that is neither SELECT nor OPERATE by function code."""
+        header = request.header
+        function = header.function
+
         if function == FunctionCode.READ:
             return self._handle_read(request)
         if function == FunctionCode.WRITE:
             return [self._handle_write(request)]
-        if function == FunctionCode.SELECT:
-            return [self._handle_select(request, peer=peer)]
-        if function == FunctionCode.OPERATE:
-            return [self._handle_operate(request, peer=peer)]
         if function == FunctionCode.DIRECT_OPERATE:
             return [self._handle_direct_operate(request)]
         if function == FunctionCode.DIRECT_OPERATE_NO_ACK:
@@ -1152,6 +1204,7 @@ class Outstation:
                     off_time=crob.off_time,
                     sequence=seq,
                 )
+                # The store stamps the point with the selection's start time.
                 self._state.add_select(select_state, peer=peer)
 
             results.append((crob.index, result.status))
