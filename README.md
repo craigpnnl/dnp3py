@@ -1,7 +1,7 @@
 # dnp3py
 
-[![CI](https://github.com/craig8/dnp3py/actions/workflows/ci.yml/badge.svg)](https://github.com/craig8/dnp3py/actions/workflows/ci.yml)
-[![codecov](https://codecov.io/gh/craig8/dnp3py/graph/badge.svg)](https://codecov.io/gh/craig8/dnp3py)
+[![CI](https://github.com/craigpnnl/dnp3py/actions/workflows/ci.yml/badge.svg)](https://github.com/craigpnnl/dnp3py/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/craigpnnl/dnp3py/graph/badge.svg)](https://codecov.io/gh/craigpnnl/dnp3py)
 [![PyPI version](https://img.shields.io/pypi/v/dnp3py.svg)](https://pypi.org/project/dnp3py/)
 [![Python versions](https://img.shields.io/pypi/pyversions/dnp3py.svg)](https://pypi.org/project/dnp3py/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
@@ -14,10 +14,12 @@ MESA IEEE 1815.2 DER outstation simulator introduced in v0.2.0.
 ## Features
 
 - **Pure Python** - No C/C++ dependencies, works anywhere Python runs
-- **Level 2 Subset** - RTU-class functionality for SCADA applications
+- **Level 2 object model** - targets the IEEE 1815-2012 clause 14.4 (Table 14-3)
+  subset for RTU-class SCADA use; see [Protocol Conformance](#protocol-conformance)
+  for the one known gap
 - **Async I/O** - Built on asyncio for efficient network communication
 - **Type Safe** - Full type annotations with strict mypy compliance
-- **Well Tested** - Comprehensive test suite with 98%+ code coverage
+- **Well Tested** - see the CI and codecov badges above for current numbers
 - **MESA IEEE 1815.2 Outstation** - Profile-driven DER outstation simulator for
   meters, DERs, inverters, and batteries
 
@@ -35,13 +37,19 @@ pixi add dnp3py
 
 ## Quick Start
 
+Run the outstation script in one terminal, then the master script in a
+second; both use `127.0.0.1:20000`, so the master's integrity poll returns
+the two points the outstation set.
+
 ### Outstation (Server)
 
 ```python
 import asyncio
-from dnp3.database import Database, BinaryInputConfig, AnalogInputConfig
-from dnp3.outstation import Outstation
-from dnp3.transport_io import TcpServer
+import logging
+from dnp3.database import AnalogInputConfig, BinaryInputConfig, Database
+from dnp3.outstation import Outstation, OutstationConfig, OutstationTcpRunner
+
+logging.basicConfig(level=logging.INFO)
 
 async def main():
     # Create database with points
@@ -51,16 +59,14 @@ async def main():
 
     # Update values
     database.update_binary_input(0, value=True)
-    database.update_analog_input(0, value=25.5)
+    # Static Analog Input transmits as a 32-bit integer by default (g30v1);
+    # a fractional value here is silently truncated on the wire.
+    database.update_analog_input(0, value=42)
 
-    # Create outstation
-    outstation = Outstation(database=database)
-
-    # Start TCP server
-    server = TcpServer(host="0.0.0.0", port=20000)
-    await server.start()
-
-    # Handle connections...
+    # Create outstation and run it over TCP
+    outstation = Outstation(database=database, config=OutstationConfig(address=1))
+    runner = OutstationTcpRunner(outstation=outstation, host="127.0.0.1", port=20000)
+    await runner.run()  # serves connections until runner.stop() is called
 
 asyncio.run(main())
 ```
@@ -69,21 +75,19 @@ asyncio.run(main())
 
 ```python
 import asyncio
-from dnp3.master import Master, DefaultSOEHandler
-from dnp3.transport_io import TcpClientChannel
+from dnp3.master import DefaultSOEHandler, Master, MasterConfig, MasterTcpRunner
 
 async def main():
     # Create master with event handler
     handler = DefaultSOEHandler()
-    master = Master(handler=handler)
+    master = Master(handler=handler, config=MasterConfig(address=2, outstation_address=1))
 
-    # Connect to outstation
-    channel = TcpClientChannel(host="localhost", port=20000)
-    await channel.open()
+    # Connect and perform an integrity poll
+    async with MasterTcpRunner(master=master, host="127.0.0.1", port=20000) as runner:
+        await runner.integrity_poll()
 
-    # Perform integrity poll
-    request = master.build_integrity_poll()
-    # Send request, receive response...
+    print(handler.binary_inputs[0].value)   # True
+    print(handler.analog_inputs[0].value)   # 42.0
 
 asyncio.run(main())
 ```
@@ -91,12 +95,13 @@ asyncio.run(main())
 ## MESA IEEE 1815.2 Outstation
 
 The `dnp3.mesa` module is a DER-oriented outstation built on mesa-tool's
-PicsProfile format, the same profile shape mesa-tool's Rust conformance
-control station uses. It supports meters, DERs (distributed energy
-resources), inverters, and batteries, plus counters, curves, and schedules.
-You describe the device by loading a PicsProfile JSON file; the module builds
-the DNP3 database and command handler automatically, scaling analog values
-from engineering units to DNP3 transmission integers on load.
+PicsProfile format (the companion Rust conformance control station); see
+[docs/mesa-outstation.md](docs/mesa-outstation.md) for the format and the
+adoption rationale. It supports meters, DERs (distributed energy resources),
+inverters, and batteries, plus counters, curves, and schedules. You describe
+the device by loading a PicsProfile JSON file; the module builds the DNP3
+database and command handler automatically, scaling analog values from
+engineering units to DNP3 transmission integers on load.
 
 Four bundled profiles ship inside the package
 (`full`, `mandatory_1815`, `mandatory_1547`, `minimal_1547`); `full` is the
@@ -105,53 +110,19 @@ path.
 
 ### Quick start (CLI)
 
-```
-usage: python -m dnp3.mesa [-h] [--profile PROFILE]
-                           [--profile-name {full,mandatory_1815,mandatory_1547,minimal_1547}]
-                           [--host HOST] [--port PORT] [--address ADDRESS]
-                           [--master-address MASTER_ADDRESS] [--meters METERS]
-                           [--ders DERS] [--inverters INVERTERS]
-                           [--batteries BATTERIES]
-
-options:
-  --profile PROFILE           Path to a PicsProfile JSON file (default: bundled full.json)
-  --profile-name {full,mandatory_1815,mandatory_1547,minimal_1547}
-                              Select a bundled profile by name instead of --profile
-                              (mutually exclusive with --profile)
-  --host HOST                 Listen address (default: 0.0.0.0)
-  --port PORT                 Listen port (default: 20000)
-  --address ADDRESS           DNP3 outstation address (default: 1)
-  --master-address MASTER_ADDRESS
-                              Expected master address (default: 0)
-  --meters METERS             Number of meter instances to include
-  --ders DERS                 Number of DER instances to include
-  --inverters INVERTERS       Number of inverter instances to include
-  --batteries BATTERIES       Number of battery instances to include
-```
-
-Run the simulator against the bundled full profile (the default, so
-`--profile`/`--profile-name` can be omitted):
-
 ```bash
+# Run against the bundled full profile (the default)
 python -m dnp3.mesa
-```
 
-Run against a conformance subset, or a custom profile:
-
-```bash
+# Run against a conformance subset
 python -m dnp3.mesa --profile-name minimal_1547
-python -m dnp3.mesa --profile my_device_profile.json
+
+# Run a custom profile, limited to the first meter and no DERs/inverters/batteries
+python -m dnp3.mesa --profile my_device_profile.json --meters 1 --ders 0 --inverters 0 --batteries 0
 ```
 
-The `--meters`, `--ders`, `--inverters`, and `--batteries` flags include only
-the first N instances of that equipment type, letting a single shared
-profile serve devices with different hardware configurations without editing
-the file:
-
-```bash
-# Include only the first meter; exclude DERs, inverters, and batteries.
-python -m dnp3.mesa --profile-name full --meters 1 --ders 0 --inverters 0 --batteries 0
-```
+For the full flag reference and defaults, see
+[docs/mesa-outstation.md](docs/mesa-outstation.md).
 
 ### Programmatic API
 
@@ -182,25 +153,47 @@ For a full description of the PicsProfile format, the bundled profiles, the
 engineering-to-transmission scaling contract, and CTR/curve/schedule
 handling, see [docs/mesa-outstation.md](docs/mesa-outstation.md).
 
-## Supported Features
+## Protocol Conformance
 
 ### Function Codes
-- READ, WRITE
-- SELECT, OPERATE, DIRECT_OPERATE
-- COLD_RESTART, WARM_RESTART
-- ENABLE_UNSOLICITED, DISABLE_UNSOLICITED
-- DELAY_MEASURE
 
-### Object Groups
+`CONFIRM`, `READ`, `WRITE`, `SELECT`, `OPERATE`, `DIRECT_OPERATE`,
+`DIRECT_OPERATE_NO_ACK`, `COLD_RESTART`, `WARM_RESTART`, `DELAY_MEASURE`,
+`ENABLE_UNSOLICITED`, `DISABLE_UNSOLICITED`, `IMMEDIATE_FREEZE`,
+`IMMEDIATE_FREEZE_NO_ACK`, `FREEZE_CLEAR`, `FREEZE_CLEAR_NO_ACK` (IEEE
+1815-2012 Clause 4). Control commands are covered in detail, with wire-level
+request/response encoding, in
+[docs/control-commands.md](docs/control-commands.md).
+
+### Object Groups (outstation)
+
 | Group | Description |
 |-------|-------------|
 | 1, 2 | Binary Input (static, event) |
-| 10, 11, 12 | Binary Output (static, event, CROB) |
+| 10 | Binary Output (static) |
+| 12 | Control Relay Output Block (select, operate, direct operate) |
 | 20, 21, 22 | Counter (static, frozen, event) |
 | 30, 32 | Analog Input (static, event) |
-| 40, 41, 42 | Analog Output (static, command, event) |
-| 50, 51, 52 | Time objects |
+| 40, 41 | Analog Output (status, command: select, operate, direct operate) |
+| 52 | Time Delay (response to DELAY_MEASURE) |
 | 60 | Class data |
+| 80 | Internal Indications (WRITE to clear DEVICE_RESTART) |
+
+Wire layout follows IEEE 1815-2012 Annex A. The master additionally decodes
+and delivers Double-Bit Binary Input (groups 3, 4) from a peer that sends it,
+on its own handler callback (`DoubleBitInputHandler`); a few other groups the
+wire layout recognizes (command events, frozen analog input, deadband, time)
+are framed but not delivered to any handler.
+
+### Level 2 (clause 14.4, Table 14-3)
+
+The outstation does not yet parse WRITE requests for Group 50 (time
+synchronization): the write is silently ignored, and the outstation answers
+with a null response carrying no error IIN, so a master reading only the
+response sees success. DELAY_MEASURE (function code 23) is implemented and
+clears the outstation's NEED_TIME flag on its own, independent of any time
+write. Tracked in #140 (the Group 50 write and the Group 80 NEED_TIME clear)
+and #142 (RECORD_CURRENT_TIME and Group 50 Variation 3).
 
 ## Development
 
@@ -208,7 +201,7 @@ handling, see [docs/mesa-outstation.md](docs/mesa-outstation.md).
 
 ```bash
 # Clone repository
-git clone https://github.com/craig8/dnp3py.git
+git clone https://github.com/craigpnnl/dnp3py.git
 cd dnp3py
 
 # Install with pixi
@@ -227,33 +220,36 @@ pixi run test-cov
 # Lint and type check
 pixi run check
 
-# Test with specific Python version
-pixi run -e py310 test
+# Test with a specific Python version (default, py311, py312, py313, py314)
+pixi run -e py311 test
 pixi run -e py312 test
 
 # Test all Python versions (via nox)
 pixi run nox
 ```
 
+See [CHANGELOG.md](CHANGELOG.md) for release notes and upgrade notes between
+versions.
+
 ### Project Structure
 
 ```
 dnp3py/
-├── src/dnp3/
-│   ├── core/           # CRC, types, enums, flags
-│   ├── datalink/       # Data link layer (frames, parsing)
-│   ├── transport/      # Transport layer (segmentation)
-│   ├── application/    # Application layer (messages)
-│   ├── objects/        # DNP3 object definitions
-│   ├── database/       # Point database and events
-│   ├── outstation/     # Outstation implementation
-│   ├── master/         # Master implementation
-│   ├── mesa/           # MESA IEEE 1815.2 DER outstation
-│   │   └── data/profiles/  # Bundled PicsProfile JSON files (full.json default)
-│   └── transport_io/   # TCP/simulator channels
-└── tests/
-    ├── unit/           # Unit tests
-    └── integration/    # Integration tests
++-- src/dnp3/
+|   +-- core/           # CRC, types, enums, flags
+|   +-- datalink/       # Data link layer (frames, parsing)
+|   +-- transport/      # Transport layer (segmentation)
+|   +-- application/    # Application layer (messages)
+|   +-- objects/        # DNP3 object definitions
+|   +-- database/       # Point database and events
+|   +-- outstation/     # Outstation implementation
+|   +-- master/         # Master implementation
+|   +-- mesa/           # MESA IEEE 1815.2 DER outstation
+|   |   +-- data/profiles/  # Bundled PicsProfile JSON files (full.json default)
+|   +-- transport_io/   # TCP/simulator channels
++-- tests/
+    +-- unit/           # Unit tests
+    +-- integration/    # Integration tests
 ```
 
 ## License
