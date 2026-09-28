@@ -197,8 +197,9 @@ class TestTwoPeersSelectAndOperate:
         assert _select(outstation, MASTER_A, (5, 1000)) == [(5, SUCCESS)]
         assert _select(outstation, MASTER_B, (5, 5000)) == [(5, BLOCKED)]
         assert _operate(outstation, MASTER_A, (5, 1000)) == [(5, SUCCESS)]
-        assert _select(outstation, MASTER_B, (5, 5000)) == [(5, SUCCESS)]
-        assert _operate(outstation, MASTER_B, (5, 5000)) == [(5, SUCCESS)]
+        assert _select(outstation, MASTER_B, (5, 5000)) == [(5, BLOCKED)]
+        assert _select(outstation, MASTER_B, (5, 5000), seq=2) == [(5, SUCCESS)]
+        assert _operate(outstation, MASTER_B, (5, 5000), seq=3) == [(5, SUCCESS)]
 
         assert handler.selects == [(5, 1000), (5, 5000)]
         assert handler.operates == [(5, 1000), (5, 5000)]
@@ -393,7 +394,8 @@ class TestRunnerReleasesSelectionsOnDisconnect:
         await asyncio.wait_for(task, timeout=2.0)
 
         assert outstation._state.get_select(5, peer=MASTER_A) is None
-        assert _select(outstation, MASTER_B, (5, 5000)) == [(5, SUCCESS)]
+        assert _select(outstation, MASTER_B, (5, 5000)) == [(5, BLOCKED)]
+        assert _select(outstation, MASTER_B, (5, 5000), seq=1) == [(5, SUCCESS)]
         assert outstation._state.get_select(6, peer=other_connection) is not None
 
 

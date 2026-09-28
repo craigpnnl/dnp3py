@@ -174,14 +174,16 @@ def _echo(objects: bytes, seq: int, statuses: dict[int, CommandStatus], iin2: in
     return _null_response(seq, iin2) + bytes(echoed)
 
 
-# Offsets of each object's status octet in _crob(a, b) and in _crob(a) + _crob(b).
+# Offsets of each object's status octet in _crob(a, b), _crob(a) + _crob(b) and _g41v2(a, b).
 _ONE_BLOCK_STATUS = (4 + 11, 4 + 12 + 11)
 _TWO_BLOCK_STATUS = (4 + 11, 16 + 4 + 11)
+_ONE_AO_BLOCK_STATUS = (4 + 1 + 2, 4 + 4 + 1 + 2)
+_STATUS_OFFSETS_BY_KIND = {"bo_select": _ONE_BLOCK_STATUS, "ao_select": _ONE_AO_BLOCK_STATUS}
 # SELECTs of index 1 then index 2, the handler kind each calls, and each status octet offset.
 _PARTLY_REFUSED = [
     pytest.param(_crob(1, 2), "bo_select", _ONE_BLOCK_STATUS, id="one-crob-block"),
     pytest.param(_crob(1) + _crob(2), "bo_select", _TWO_BLOCK_STATUS, id="two-crob-blocks"),
-    pytest.param(_g41v2(1, 2), "ao_select", (4 + 1 + 2, 4 + 4 + 1 + 2), id="one-analog-output-block"),
+    pytest.param(_g41v2(1, 2), "ao_select", _ONE_AO_BLOCK_STATUS, id="one-analog-output-block"),
 ]
 
 
@@ -413,6 +415,66 @@ class TestPartlyRefusedSelectRetry:
         outstation, handler = _outstation(select_timeout=timeout)
         objects = _crob(1, 2)
         self._select_then_accept_every_point(outstation, handler, objects)
+
+        time.sleep(timeout * 1.5)
+        retry = _only(_send(outstation, FunctionCode.SELECT, objects, seq=2))
+
+        assert retry == _echo(objects, 2, {})
+        assert handler.calls == [("bo_select", 1), ("bo_select", 2)]
+
+
+# SELECTs of index 1 and index 2 in one block, and the handler kind each calls.
+_FULLY_REFUSED = [
+    pytest.param(_crob(1, 2), "bo_select", id="crob-block"),
+    pytest.param(_g41v2(1, 2), "ao_select", id="analog-output-block"),
+]
+
+
+class TestFullyRefusedSelectRetry:
+    """A SELECT refused in every object is also the request a retry is judged against (Table 4-9)."""
+
+    @staticmethod
+    def _select_then_accept_every_point(
+        outstation: Outstation, handler: _RecordingHandler, objects: bytes, kind: str
+    ) -> bytes:
+        """SELECT with both points refused, then let the handler accept every point."""
+        handler.statuses[(kind, 1)] = REFUSED
+        handler.statuses[(kind, 2)] = REFUSED
+        first = _only(_send(outstation, FunctionCode.SELECT, objects, seq=2))
+        handler.statuses.clear()
+        handler.calls.clear()
+        return first
+
+    @pytest.mark.parametrize(("objects", "kind"), _FULLY_REFUSED)
+    def test_retry_repeats_the_first_response_without_the_handlers(self, objects: bytes, kind: str) -> None:
+        outstation, handler = _outstation()
+        first = self._select_then_accept_every_point(outstation, handler, objects, kind)
+
+        retry = _only(_send(outstation, FunctionCode.SELECT, objects, seq=2))
+
+        assert retry == first
+        assert handler.calls == []
+        selection = outstation._state.selection_of(MASTER_A)
+        assert selection is not None
+        assert selection.points == {}
+
+    @pytest.mark.parametrize(("objects", "kind"), _FULLY_REFUSED)
+    def test_operate_after_the_retry_is_no_select_for_every_object(self, objects: bytes, kind: str) -> None:
+        outstation, handler = _outstation()
+        self._select_then_accept_every_point(outstation, handler, objects, kind)
+        _send(outstation, FunctionCode.SELECT, objects, seq=2)
+
+        response = _only(_send(outstation, FunctionCode.OPERATE, objects, seq=3))
+
+        first, second = _STATUS_OFFSETS_BY_KIND[kind]
+        assert response == _echo(objects, 3, {first: NO_SELECT, second: NO_SELECT})
+        assert handler.calls == []
+
+    def test_record_expires_on_the_selection_timer(self) -> None:
+        timeout = 0.2
+        outstation, handler = _outstation(select_timeout=timeout)
+        objects = _crob(1, 2)
+        self._select_then_accept_every_point(outstation, handler, objects, "bo_select")
 
         time.sleep(timeout * 1.5)
         retry = _only(_send(outstation, FunctionCode.SELECT, objects, seq=2))

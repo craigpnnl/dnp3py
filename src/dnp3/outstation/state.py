@@ -133,8 +133,8 @@ class PeerSelection:
         response: Response sent to the SELECT, repeated on a valid retry.
         started: time.monotonic() when the selection began.
         points: Selected points by (group, index).
-        cancelled: True when a non-zero status cancelled the points the SELECT
-            armed (IEEE 1815-2012 4.4.4.3 Rule 3). The record stays, with no
+        cancelled: True when a non-zero status in the SELECT cancelled its
+            points (IEEE 1815-2012 4.4.4.3 Rule 3). The record stays, with no
             points, so a retry repeats the response.
     """
 
@@ -457,15 +457,15 @@ class OutstationStateManager:
     def cancel_points(self, peer: PeerId) -> None:
         """End every point of a peer's selection, as IEEE 1815-2012 4.4.4.3 Rule 3 requires.
 
-        A selection begun for a SELECT request that armed a point stays as a record
-        with no points, so a retry of that request repeats its response rather than
-        running again (Table 4-9). Any other selection ends, as with terminate.
+        A selection begun for a SELECT request stays as a record with no points, so a
+        retry of that request repeats its response rather than running again
+        (Table 4-9). A selection stored without a request ends, as with terminate.
 
         Args:
             peer: The peer whose selection is cancelled.
         """
         selection = self.selections.get(peer)
-        if selection is None or selection.body is None or not selection.points:
+        if selection is None or selection.body is None:
             self.selections.pop(peer, None)
             return
         selection.points.clear()

@@ -225,15 +225,16 @@ class TestSelectRetryDiscardOverride:
         assert _statuses(_operate(outstation, MASTER_A, operate_seq, POINT_5)) == [(5, expected)]
         assert handler.operates == ([(5, 1000, 1)] if expected == SUCCESS else [])
 
-    def test_select_that_stores_nothing_leaves_no_selection_to_retry(self) -> None:
+    def test_refused_select_repeats_on_retry_and_a_new_sequence_selects(self) -> None:
         outstation, handler = _outstation()
         _select(outstation, MASTER_B, 0, _crob_block((5, 5000)))
         assert _statuses(_select(outstation, MASTER_A, 3, POINT_5)) == [(5, BLOCKED)]
         _operate(outstation, MASTER_B, 1, _crob_block((5, 5000)))
 
-        assert _statuses(_select(outstation, MASTER_A, 3, POINT_5)) == [(5, SUCCESS)]
-        assert _statuses(_operate(outstation, MASTER_A, 4, POINT_5)) == [(5, SUCCESS)]
-        assert handler.operates == [(5, 5000, 0), (5, 1000, 3)]
+        assert _statuses(_select(outstation, MASTER_A, 3, POINT_5)) == [(5, BLOCKED)]
+        assert _statuses(_select(outstation, MASTER_A, 4, POINT_5)) == [(5, SUCCESS)]
+        assert _statuses(_operate(outstation, MASTER_A, 5, POINT_5)) == [(5, SUCCESS)]
+        assert handler.operates == [(5, 5000, 0), (5, 1000, 4)]
 
     def test_expired_selection_is_not_retried(self) -> None:
         timeout = 0.2

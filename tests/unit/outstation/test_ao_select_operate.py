@@ -170,7 +170,10 @@ class TestSelectAnalogOutput:
         assert _objects_on_wire(response) == _echo(block, [OUT_OF_RANGE])
         assert handler.ao_selects == [(5, value)]
         assert outstation._state.get_select(5, peer=MASTER_A, group=41) is None
-        assert outstation._state.selection_of(MASTER_A) is None
+        selection = outstation._state.selection_of(MASTER_A)
+        assert selection is not None
+        assert selection.response == response
+        assert selection.points == {}
 
     def test_status_is_per_object(self) -> None:
         outstation, handler = _outstation()
