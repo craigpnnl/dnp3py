@@ -8,6 +8,7 @@ Maximum fragment size is typically 2048 bytes for Level 2 devices.
 """
 
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import TYPE_CHECKING
 
 from dnp3.application.header import (
@@ -51,6 +52,47 @@ class ObjectBlock:
     def size(self) -> int:
         """Total size in bytes."""
         return OBJECT_HEADER_SIZE + len(self.data)
+
+
+class TruncationReason(Enum):
+    """Why response parsing stopped before the end of the object data."""
+
+    # Gaps in this library: the frame may be valid, but its width is not known here.
+    UNKNOWN_WIDTH = "unknown_width"  # no layout row and no registered size
+    SIZE_PREFIX = "size_prefix"  # prefix codes 4 to 6, variable-format objects
+    UNSUPPORTED_RANGE = "unsupported_range"  # range codes 3 to 5 and 0xB
+
+    # Invalid frames.
+    RESERVED_QUALIFIER = "reserved_qualifier"  # range code 0xA or 0xC to 0xF, or prefix code 7
+    PACKED_WITH_INDEX_PREFIX = "packed_with_index_prefix"  # A.2.1 packs only over a contiguous range
+    RANGE_NAMES_NO_OBJECT = "range_names_no_object"  # start-stop range with stop below start
+    DATA_SHORTER_THAN_DECLARED = "data_shorter_than_declared"  # range field or object data past the end
+    TRAILING_OCTETS = "trailing_octets"  # 1 or 2 octets left, too few for an object header
+
+
+@dataclass(frozen=True, slots=True)
+class Truncation:
+    """Where and why response parsing stopped.
+
+    The stopping block is not among the parsed blocks; the blocks before it are.
+    An over-declared count whose data still fits inside the fragment frames as a
+    valid block and cannot be detected (IEEE 1815-2012 4.2.2.7: object headers
+    carry no length).
+
+    Attributes:
+        reason: Why parsing stopped.
+        offset: Index of the stopping block's first octet within the object data,
+            which starts after the response header.
+        group: The stopping block's group, or None for TRAILING_OCTETS.
+        variation: The stopping block's variation, or None for TRAILING_OCTETS.
+        qualifier: The stopping block's qualifier, or None for TRAILING_OCTETS.
+    """
+
+    reason: TruncationReason
+    offset: int
+    group: int | None = None
+    variation: int | None = None
+    qualifier: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -109,10 +151,13 @@ class ResponseFragment:
     Attributes:
         header: Response header (4 bytes).
         objects: List of object blocks.
+        truncation: Set when parsing stopped before the end of the object data.
+            ``to_bytes()`` then does not reproduce the parsed input.
     """
 
     header: ResponseHeader
     objects: "Sequence[ObjectBlock]" = field(default_factory=tuple)
+    truncation: Truncation | None = None
 
     def to_bytes(self) -> bytes:
         """Serialize to bytes.
