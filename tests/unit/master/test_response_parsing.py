@@ -349,13 +349,12 @@ class TestMalformedBlocks:
 
         assert delivered(block, "on_binary_input") == []
 
-    def test_truncated_object_payload_stops_early(self) -> None:
-        """A count promising three objects with two present yields two."""
+    def test_truncated_object_payload_yields_no_values(self) -> None:
+        """A count promising three objects with two present yields none."""
         header = ObjectHeader(group=2, variation=1, qualifier=0x17)
         data = bytes([0x03, 0x00, FLAGS_ON, 0x01, FLAGS_OFF])
-        values = delivered(ObjectBlock(header=header, data=data), "on_binary_input")
 
-        assert indexed_values(values) == {0: True, 1: False}
+        assert delivered(ObjectBlock(header=header, data=data), "on_binary_input") == []
 
     def test_unsupported_binary_variation_yields_no_values(self) -> None:
         header = ObjectHeader(group=1, variation=99, qualifier=0x00)

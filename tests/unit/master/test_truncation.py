@@ -8,9 +8,11 @@ Tables 4-3 and 4-5.
 
 import pytest
 
-from dnp3.application.fragment import Truncation, TruncationReason
+from dnp3.application.fragment import ObjectBlock, Truncation, TruncationReason
+from dnp3.application.qualifiers import ObjectHeader
 from dnp3.master.handler import AnalogValue, BinaryValue, CounterValue, ResponseInfo
 from dnp3.master.master import Master
+from tests.unit.master.delivery import delivered
 
 # FIR+FIN, seq 0, RESPONSE, IIN 00 00.
 RESPONSE_HEADER = bytes([0xC0, 0x81, 0x00, 0x00])
@@ -167,3 +169,40 @@ class TestValidFramesUnchanged:
             "counter": [(2, 0x12345678, 0x01)],
         }
         assert info.truncation is None
+
+
+class TestShortBlockRefusedByDecoder:
+    """A block handed to the master with less data than it declares delivers nothing.
+
+    The parser never frames such a block, so these build the block directly.
+    """
+
+    def test_count_block_short_by_one_object(self) -> None:
+        # g2v1, count 3, two (index, flag) objects present.
+        header = ObjectHeader(group=2, variation=1, qualifier=0x17)
+        block = ObjectBlock(header=header, data=bytes([0x03, 0x00, 0x81, 0x01, 0x01]))
+
+        assert delivered(block, "on_binary_input") == []
+
+    def test_packed_block_short_by_one_octet(self) -> None:
+        # g1v1, start-stop 0..17: 18 points need 3 octets, 2 present.
+        header = ObjectHeader(group=1, variation=1, qualifier=0x00)
+        block = ObjectBlock(header=header, data=bytes([0x00, 0x11, 0x0F, 0xAA]))
+
+        assert delivered(block, "on_binary_input") == []
+
+    def test_complete_blocks_deliver(self) -> None:
+        """The same objects with a count and range that match their data are delivered."""
+        count_block = ObjectBlock(
+            header=ObjectHeader(group=2, variation=1, qualifier=0x17),
+            data=bytes([0x02, 0x00, 0x81, 0x01, 0x01]),
+        )
+        packed_block = ObjectBlock(
+            header=ObjectHeader(group=1, variation=1, qualifier=0x00),
+            data=bytes([0x00, 0x0F, 0x0F, 0xAA]),
+        )
+
+        assert [(v.index, v.value) for v in delivered(count_block, "on_binary_input")] == [(0, True), (1, False)]
+        packed = delivered(packed_block, "on_binary_input")
+        assert [v.index for v in packed] == list(range(16))
+        assert [v.value for v in packed] == [True] * 4 + [False] * 4 + [False, True] * 4

@@ -166,15 +166,18 @@ def _iter_object_slots(
 
     The index comes from the object's own prefix when the qualifier carries one,
     and from consecutive numbering off `first_index` otherwise. Iteration stops
-    at the declared count or when the remaining bytes cannot hold another whole
-    object, so a truncated or over-long block yields only the objects actually
-    present.
+    at the declared count. A block whose data is shorter than its declared count
+    yields nothing: an object header carries no length (IEEE 1815-2012 4.2.2.7),
+    so no object in it is known to be real.
     """
+    entry_width = layout.index_prefix_width + object_width
     offset = layout.data_offset
     ordinal = 0
 
+    if layout.count is not None and offset + layout.count * entry_width > len(data):
+        return
+
     while layout.count is None or ordinal < layout.count:
-        entry_width = layout.index_prefix_width + object_width
         if offset + entry_width > len(data):
             return
 
@@ -255,16 +258,17 @@ def _parse_packed_binary(layout: ObjectLayout, data: bytes) -> list[BinaryValue]
     """Parse bit-packed binary points (g1v1 / g10v1), 8 points per byte.
 
     Bounded by the range's declared count so the unused high bits of the final
-    byte are not reported as real points.
+    byte are not reported as real points. A payload shorter than the declared
+    count needs yields nothing, as in `_iter_object_slots`.
     """
     values: list[BinaryValue] = []
     payload = data[layout.data_offset :]
     total = layout.count if layout.count is not None else len(payload) * 8
+    if len(payload) < (total + 7) // 8:
+        return values
 
     for ordinal in range(total):
         byte_index, bit = divmod(ordinal, 8)
-        if byte_index >= len(payload):
-            break
         values.append(
             BinaryValue(
                 index=layout.first_index + ordinal,
