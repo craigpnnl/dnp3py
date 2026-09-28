@@ -553,9 +553,10 @@ class TestBlockFollowingALayoutFramedBlock:
 
         EX 4-10 prints qualifier 01 with the 2-octet range 00 11. Qualifier 01 needs a
         4-octet range, and only qualifier 00 gives 18 points in 3 data octets, so the
-        test uses 00. Expected values are the example prose: indexes 0-3 are 1, 4-7
-        are 0, 8-15 alternate starting at 0, 16 and 17 are 1; then 5000, 20000, -1200
-        and 96 at indexes 4-7.
+        test uses 00. Binary values are the EX 4-10 prose: indexes 0-3 are 1, 4-7 are
+        0, 8-15 alternate starting at 0, 16 and 17 are 1. EX 4-9 gives octets only;
+        read as INT16 per 11.3.4 (little-endian, twos complement) they are 5000, 20000,
+        -1200 and 96 at indexes 4-7.
         """
         handler = CollectingHandler()
         master = Master(handler=handler)
@@ -600,3 +601,4 @@ class TestBlockFollowingALayoutFramedBlock:
 
         assert handler.analog_outputs == {0: -70000.0}
         assert handler.analog_inputs == {2: 2401.0}
+
