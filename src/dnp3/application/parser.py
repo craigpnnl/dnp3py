@@ -394,13 +394,13 @@ def frame_response_object_blocks(data: bytes) -> tuple[list[ObjectBlock], Trunca
         header = ObjectHeader.from_bytes(remaining)
         if _has_reserved_code(header.qualifier):
             return blocks, _stopped_at(TruncationReason.RESERVED_QUALIFIER, offset, header)
-        sized = _lookup_data_length(header)
+        length_or_reason = _lookup_data_length(header)
 
         length_of: _DataLength | None = None
-        if not isinstance(sized, TruncationReason):
-            length_of = sized
+        if not isinstance(length_or_reason, TruncationReason):
+            length_of = length_or_reason
         elif header.range_code != RangeCode.ALL_OBJECTS:
-            return blocks, _stopped_at(sized, offset, header)
+            return blocks, _stopped_at(length_or_reason, offset, header)
         # Otherwise an all-objects block of unknown width: no range field and no
         # objects, so it frames as its header alone. One of known width goes
         # through its length, so a packed layout with an index prefix stops.

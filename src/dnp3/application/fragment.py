@@ -57,13 +57,14 @@ class ObjectBlock:
 class TruncationReason(Enum):
     """Why response parsing stopped before the end of the object data."""
 
-    # Gaps in this library: the frame may be valid, but its width is not known here.
-    UNKNOWN_WIDTH = "unknown_width"  # no layout row and no registered size
-    SIZE_PREFIX = "size_prefix"  # prefix codes 4 to 6, variable-format objects
-    UNSUPPORTED_RANGE = "unsupported_range"  # range codes 3 to 5 and 0xB
+    # Gaps in this library: the frame may be valid, but this library cannot size it.
+    UNKNOWN_WIDTH = "unknown_width"  # no layout row and no usable registered size
+    # Range codes 3 to 5 (virtual addresses) and 0xB (variable format, valid as 0x4B, 0x5B and 0x6B).
+    UNSUPPORTED_RANGE = "unsupported_range"
 
-    # Invalid frames.
-    RESERVED_QUALIFIER = "reserved_qualifier"  # range code 0xA or 0xC to 0xF, or prefix code 7
+    # Invalid frames (IEEE 1815-2012 Tables 4-4 to 4-6).
+    SIZE_PREFIX = "size_prefix"  # prefix codes 4 to 6 with a range code other than 0xB
+    RESERVED_QUALIFIER = "reserved_qualifier"  # prefix code 7, or range code 0xA or 0xC to 0xF
     PACKED_WITH_INDEX_PREFIX = "packed_with_index_prefix"  # A.2.1 packs only over a contiguous range
     RANGE_NAMES_NO_OBJECT = "range_names_no_object"  # start-stop range with stop below start
     DATA_SHORTER_THAN_DECLARED = "data_shorter_than_declared"  # range field or object data past the end

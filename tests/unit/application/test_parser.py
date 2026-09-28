@@ -1,7 +1,10 @@
 """Tests for application layer parser."""
 
+import dataclasses
+
 import pytest
 
+import dnp3.application
 from dnp3.application import parser
 from dnp3.application.fragment import (
     ObjectBlock,
@@ -744,3 +747,16 @@ class TestResponseFramingStops:
 
         assert fragment.objects == (_block(_B1), _block(_G7))
         assert fragment.truncation is None
+
+
+class TestTruncationType:
+    def test_exported_from_the_application_package(self) -> None:
+        assert dnp3.application.Truncation is Truncation
+        assert dnp3.application.TruncationReason is TruncationReason
+        assert {"Truncation", "TruncationReason"} <= set(dnp3.application.__all__)
+
+    def test_is_frozen(self) -> None:
+        truncation = Truncation(TruncationReason.TRAILING_OCTETS, 6)
+
+        with pytest.raises(dataclasses.FrozenInstanceError):
+            truncation.offset = 0  # type: ignore[misc]
