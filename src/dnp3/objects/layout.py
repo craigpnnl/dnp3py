@@ -219,6 +219,8 @@ _TABLE: dict[tuple[int, int], WireLayout] = {
     (33, 5): _octets(_FAI, 4, _F32),
     (33, 6): _octets(_FAI, 8, _F64),
     (33, 7): _octets(_FAI, 4, _F32, time=_ABS),
+    # A.17.8's formal structure prints FLT32; FLT64 follows its own description
+    # ("double-precision") and value range, and matches every sibling row.
     (33, 8): _octets(_FAI, 8, _F64, time=_ABS),
     # A.18: deadband value alone, no flags.
     (34, 1): _octets(PointKind.ANALOG_DEADBAND, 2, _UINT, flags=False),
