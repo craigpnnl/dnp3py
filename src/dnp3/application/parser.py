@@ -44,6 +44,9 @@ _INDEX_PREFIX_CODES = frozenset(
     }
 )
 
+_START_STOP_CODES = frozenset({RangeCode.UINT8_START_STOP, RangeCode.UINT16_START_STOP, RangeCode.UINT32_START_STOP})
+
+
 # Response function codes (0x81-0x83)
 RESPONSE_FUNCTION_CODES = frozenset(
     {
@@ -126,12 +129,7 @@ def _parse_range(data: bytes, range_code: RangeCode) -> ParsedRange:
         return ParsedRange(start=0, stop=0, count=0, bytes_consumed=0)
 
     # Start-stop ranges
-    start_stop_codes = {
-        RangeCode.UINT8_START_STOP,
-        RangeCode.UINT16_START_STOP,
-        RangeCode.UINT32_START_STOP,
-    }
-    if range_code in start_stop_codes:
+    if range_code in _START_STOP_CODES:
         return _parse_start_stop_range(data, range_code, required)
 
     # Count ranges
@@ -144,6 +142,10 @@ def _parse_range(data: bytes, range_code: RangeCode) -> ParsedRange:
 
 
 def _fixed_width_length(width: int, count: int, prefix_width: int) -> int:
+    # The octet-aligned case of dnp3.objects.layout.data_length, for registry-only objects.
+    if count < 0 or prefix_width < 0:
+        msg = f"count and prefix width must be non-negative, got {count} and {prefix_width}"
+        raise ValueError(msg)
     return (prefix_width + width) * count
 
 
@@ -168,6 +170,7 @@ def _parse_object_block(
 
     Raises:
         ParseError: If data is too short.
+        ValueError: If a sized block's start-stop range names no object.
     """
     if len(data) < OBJECT_HEADER_SIZE:
         msg = f"Object header requires {OBJECT_HEADER_SIZE} bytes, got {len(data)}"
@@ -184,6 +187,11 @@ def _parse_object_block(
 
     if length_of is None and object_size is not None:
         length_of = partial(_fixed_width_length, object_size)
+    if length_of is not None and header.range_code in _START_STOP_CODES and parsed_range.count < 1:
+        # IEEE 1815-2012 4.2.2.7.3.3: a start-stop range holds the start index through the stop
+        # index, so a stop below the start is malformed and gives no length to find the next header.
+        msg = f"Start-stop range {parsed_range.start}..{parsed_range.stop} names no object"
+        raise ValueError(msg)
     total_object_size = None
     if length_of is not None:
         total_object_size = length_of(parsed_range.count, get_prefix_size(header.prefix_code))
@@ -289,8 +297,8 @@ def _lookup_data_length(header: ObjectHeader) -> _DataLength | None:
     The length comes from the wire-layout table, which also covers bit-packed
     variations (g1v1, g3v1, g10v1), whose length depends on the object count
     rather than a per-object width. A pair with no layout row falls back to the
-    object registry, so an object registered by an application is still
-    bounded by its registered size.
+    object registry, so an object registered by an application is bounded by
+    its registered size and its index prefix.
 
     Returns None for a pair neither knows. Callers then fall back to consuming
     the rest of the fragment, which is correct when the block is last.
@@ -364,15 +372,17 @@ def parse_response_object_blocks(data: bytes) -> list[ObjectBlock]:
         try:
             block, consumed = _parse_object_block(remaining, length_of=length_of)
         except (ParseError, ValueError):
-            # Declared object count exceeds the bytes available. Keep the block
-            # with the data present, then stop: the next boundary is unknowable.
+            # The declared object count exceeds the bytes available, or the range
+            # names no object. Keep the block with the data present, then stop:
+            # the next boundary is unknowable.
             blocks.append(ObjectBlock(header=header, data=remaining[OBJECT_HEADER_SIZE:]))
             break
 
         blocks.append(block)
         if consumed <= 0:  # pragma: no cover - defensive
-            # Unreachable: _parse_object_block always consumes the 3-byte header.
-            # Kept so a future change to its return contract cannot spin here.
+            # Unreachable while every length function refuses a negative count, so
+            # a block consumes at least its 3-byte header. Kept so a change to that
+            # contract cannot spin here.
             break
         offset += consumed
 

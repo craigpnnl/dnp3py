@@ -602,3 +602,18 @@ class TestBlockFollowingALayoutFramedBlock:
         assert handler.analog_outputs == {0: -70000.0}
         assert handler.analog_inputs == {2: 2401.0}
 
+
+class TestStartStopRangeBelowOneObject:
+    """A block whose stop index is below its start index (IEEE 1815-2012 4.2.2.7.3.3) names no object."""
+
+    @pytest.mark.parametrize("stop", [0x04, 0x03], ids=["stop-is-start-minus-1", "stop-is-start-minus-2"])
+    def test_block_before_is_delivered(self, stop: int) -> None:
+        handler = CollectingHandler()
+        master = Master(handler=handler)
+        body = bytes([0x1E, 0x01, 0x00, 0x00, 0x00, 0x01, 0x61, 0x09, 0x00, 0x00]) + bytes(
+            [0x1E, 0x01, 0x00, 0x05, stop, 0x01, 0x10, 0x00, 0x00, 0x00]
+        )
+
+        assert master.process_response(RESPONSE_HEADER + body) is not None
+
+        assert handler.analog_inputs == {0: 2401.0}

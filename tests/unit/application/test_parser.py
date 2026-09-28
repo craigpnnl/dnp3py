@@ -550,3 +550,41 @@ def _register_g99v1_width_2(monkeypatch: pytest.MonkeyPatch) -> None:
     sizes = {(99, 1): 2}
     monkeypatch.setattr(parser.registry, "get_size", lambda group, variation: sizes.get((group, variation)))
 
+
+class TestStartStopRangeBelowOneObject:
+    """IEEE 1815-2012 4.2.2.7.3.3: a start-stop range runs from the start index up to the stop index.
+
+    Identical indexes name one object, so a stop index below the start index describes no
+    object sequence at all, and the block's length cannot locate the next header.
+    """
+
+    @pytest.mark.parametrize(
+        ("group", "variation", "tail"),
+        [
+            (30, 1, bytes([0x01, 0x61, 0x09, 0x00, 0x00])),
+            (1, 1, bytes([0xFF])),
+            (99, 1, bytes([0xAB, 0xCD, 0x00, 0x00, 0x00])),
+        ],
+        ids=["g30v1-layout", "g1v1-packed", "g99v1-registry"],
+    )
+    @pytest.mark.parametrize("stop", [0x04, 0x03], ids=["stop-is-start-minus-1", "stop-is-start-minus-2"])
+    def test_block_before_is_kept_and_nothing_is_framed_from_the_malformed_block(
+        self, monkeypatch: pytest.MonkeyPatch, group: int, variation: int, tail: bytes, stop: int
+    ) -> None:
+        _register_g99v1_width_2(monkeypatch)
+        data = _G30V1_BLOCK + bytes([group, variation, 0x00, 0x05, stop]) + tail + _G30V1_BLOCK
+
+        blocks = parse_response_object_blocks(data)
+
+        assert (blocks[0].header.group, blocks[0].header.variation) == (30, 1)
+        assert blocks[0].data == _G30V1_BLOCK[3:]
+        assert {(b.header.group, b.header.variation) for b in blocks[1:]} <= {(group, variation)}
+        assert len(blocks) <= 2
+
+    def test_registry_length_refuses_a_negative_count(self) -> None:
+        with pytest.raises(ValueError, match="non-negative"):
+            parser._fixed_width_length(2, -1, 0)
+
+    def test_registry_length_refuses_a_negative_prefix_width(self) -> None:
+        with pytest.raises(ValueError, match="non-negative"):
+            parser._fixed_width_length(2, 1, -1)
