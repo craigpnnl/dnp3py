@@ -414,7 +414,7 @@ class _Delivery(Protocol):
     """How one point kind is decoded and delivered."""
 
     def batch(self) -> _Batch:
-        """Start an empty batch for one response."""
+        """Start an empty batch for one run of consecutive blocks of this kind."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -425,7 +425,7 @@ class _KindDelivery(Generic[_V]):
     deliver: Callable[[SOEHandler, list[_V], ResponseInfo], None]
 
     def batch(self) -> "_KindBatch[_V]":
-        """Start an empty batch for one response."""
+        """Start an empty batch for one run of consecutive blocks of this kind."""
         return _KindBatch(self)
 
 
