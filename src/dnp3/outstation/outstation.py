@@ -662,6 +662,33 @@ def _parse_ao_block(block: ObjectBlock) -> tuple[list[tuple[int, float]], bool]:
     return points, len(points) < count
 
 
+def _control_block_error(block: ObjectBlock) -> IIN | None:
+    """Return the IIN error bit a control request answers for ``block``, or None when it decodes.
+
+    The control objects are g12v1 and g41v1 to g41v4; any other object is one the control
+    path does not know (IIN2.1, IEEE 1815-2012 Table 4-14). A qualifier other than 0x17 or
+    0x28, or data that is not exactly the declared count of objects, is malformed (IIN2.2).
+    """
+    header = block.header
+    if header.group == GROUP_CROB and header.variation == 1:
+        object_size = _CROB_BODY_BYTES
+    elif header.group == GROUP_ANALOG_OUTPUT and header.variation in _AO_VALUE_SIZES:
+        object_size = _AO_VALUE_SIZES[header.variation] + 1
+    else:
+        return IIN.OBJECT_UNKNOWN
+    try:
+        count_bytes, index_bytes = _crob_count_index_sizes(header.qualifier)
+    except ValueError:
+        return IIN.PARAMETER_ERROR
+    data = block.data
+    if len(data) < count_bytes:
+        return IIN.PARAMETER_ERROR
+    count = int.from_bytes(data[:count_bytes], "little")
+    if len(data) != count_bytes + count * (index_bytes + object_size):
+        return IIN.PARAMETER_ERROR
+    return None
+
+
 @dataclass
 class Outstation:
     """DNP3 Outstation implementation.
@@ -1357,12 +1384,28 @@ class Outstation:
             if bit_index == IIN_BIT_DEVICE_RESTART and bit_value == 0:
                 self._state.clear_restart()
 
+    def _refuse_undecodable(self, request: RequestFragment) -> ResponseFragment | None:
+        """Answer a control request carrying a block the control path cannot use, or return None.
+
+        Every block is checked before any point runs, and the answer carries no objects
+        (IEEE 1815-2012 4.4.4.3 Rule 6 item 1) and the IIN bit of the first failing block (Rule 7).
+        """
+        for block in request.objects:
+            error = _control_block_error(block)
+            if error is not None:
+                return build_null_response(iin=self.iin | error, seq=request.header.control.seq)
+        return None
+
     def _handle_select(self, request: RequestFragment, *, peer: PeerId = UNSPECIFIED_PEER) -> ResponseFragment:
         """Handle SELECT request."""
         results: list[tuple[int, CommandStatus]] = []
         seq = request.header.control.seq
 
         self._state.clear_expired_selects(self.config.select_timeout)
+
+        refusal = self._refuse_undecodable(request)
+        if refusal is not None:
+            return refusal
 
         ao_parse_error = False
 
@@ -1434,6 +1477,10 @@ class Outstation:
 
         # Clear expired selects first
         self._state.clear_expired_selects(self.config.select_timeout)
+
+        refusal = self._refuse_undecodable(request)
+        if refusal is not None:
+            return refusal
 
         ao_parse_error = False
 
@@ -1555,6 +1602,10 @@ class Outstation:
 
     def _handle_direct_operate(self, request: RequestFragment) -> ResponseFragment:
         """Handle DIRECT_OPERATE request."""
+        refusal = self._refuse_undecodable(request)
+        if refusal is not None:
+            return refusal
+
         results: list[tuple[int, CommandStatus]] = []
         ao_parse_error = False
 
