@@ -181,8 +181,7 @@ class TestSelectAnalogOutput:
 
         assert _objects_on_wire(response) == _echo(block, [SUCCESS, NOT_SUPPORTED])
         assert handler.ao_selects == [(5, 1.5), (6, 2.5)]
-        assert outstation._state.get_select(5, peer=MASTER_A, group=41) is not None
-        assert outstation._state.get_select(6, peer=MASTER_A, group=41) is None
+        assert outstation._state.selection_of(MASTER_A) is None
 
     @pytest.mark.parametrize(("variation", "fmt", "value"), VARIATIONS)
     def test_point_held_by_another_master_is_17_without_the_handler(
@@ -360,7 +359,7 @@ class TestOperateAnalogOutput:
         assert _objects_on_wire(response) == _echo(block, [NO_SELECT])
         assert handler.ao_operates == []
 
-    def test_operate_of_a_rejected_point_is_no_select_and_its_neighbour_operates(self) -> None:
+    def test_operate_after_a_partly_rejected_select_is_no_select_for_every_point(self) -> None:
         outstation, handler = _outstation()
         handler.statuses[("ao_select", 6)] = OUT_OF_RANGE
         block = _ao_block(3, "<f", [(5, 1.5), (6, 2.5)])
@@ -368,8 +367,8 @@ class TestOperateAnalogOutput:
 
         response = _operate(outstation, MASTER_A, block)
 
-        assert _objects_on_wire(response) == _echo(block, [SUCCESS, NO_SELECT])
-        assert handler.ao_operates == [(5, 1.5, 0)]
+        assert _objects_on_wire(response) == _echo(block, [NO_SELECT, NO_SELECT])
+        assert handler.ao_operates == []
 
 
 class TestGroupsDoNotSatisfyEachOther:

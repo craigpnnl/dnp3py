@@ -3,7 +3,8 @@
 Request octets are built from IEEE 1815-2012 Annex A rather than this library's encoders.
 Every control block is decoded before any point runs, so a block the control path cannot
 use refuses the whole request with no objects (4.4.4.3 Rule 6 item 1): IIN2.1 for an
-object that is not a control (Table 4-14), IIN2.2 for a malformed block.
+object that is not a control (Table 4-14), IIN2.2 for a malformed block. A SELECT answered
+with a non-zero status in any object arms nothing (4.4.4.3 Rule 3).
 """
 
 from __future__ import annotations
@@ -23,6 +24,9 @@ MASTER_A = PeerId(source=3, connection=1)
 MASTER_B = PeerId(source=9, connection=2)
 
 SUCCESS = CommandStatus.SUCCESS
+NO_SELECT = CommandStatus.NO_SELECT
+BLOCKED = CommandStatus.BLOCKED_OTHER_MASTER
+REFUSED = CommandStatus.NOT_AUTHORIZED
 
 _IIN1_RESTART = 0x80
 _IIN2_OBJECT_UNKNOWN = 0x02
@@ -157,6 +161,17 @@ def _echo(objects: bytes, seq: int, statuses: dict[int, CommandStatus]) -> bytes
     return _null_response(seq, 0x00) + bytes(echoed)
 
 
+# Offsets of each object's status octet in _crob(a, b) and in _crob(a) + _crob(b).
+_ONE_BLOCK_STATUS = (4 + 11, 4 + 12 + 11)
+_TWO_BLOCK_STATUS = (4 + 11, 16 + 4 + 11)
+# SELECTs of index 1 then index 2, the handler kind each calls, and each status octet offset.
+_PARTLY_REFUSED = [
+    pytest.param(_crob(1, 2), "bo_select", _ONE_BLOCK_STATUS, id="one-crob-block"),
+    pytest.param(_crob(1) + _crob(2), "bo_select", _TWO_BLOCK_STATUS, id="two-crob-blocks"),
+    pytest.param(_g41v2(1, 2), "ao_select", (4 + 1 + 2, 4 + 4 + 1 + 2), id="one-analog-output-block"),
+]
+
+
 class TestUndecodableBlockRunsNothing:
     """A block the control path cannot use refuses the request before any point runs."""
 
@@ -238,3 +253,69 @@ class TestHandBuiltBlockRunsNothing:
 
         assert response.to_bytes() == _null_response(2, iin2)
         assert handler.calls == []
+
+
+class TestSelectWithAnyRefusalArmsNothing:
+    """A non-zero status in any object of a SELECT response cancels the entire selection."""
+
+    @pytest.mark.parametrize(("objects", "kind", "status_offsets"), _PARTLY_REFUSED)
+    def test_echo_carries_each_status_and_no_point_stays_armed(
+        self, objects: bytes, kind: str, status_offsets: tuple[int, int]
+    ) -> None:
+        outstation, handler = _outstation()
+        handler.statuses[(kind, 2)] = REFUSED
+
+        response = _only(_send(outstation, FunctionCode.SELECT, objects, seq=2))
+
+        first, second = status_offsets
+        assert response == _echo(objects, 2, {first: SUCCESS, second: REFUSED})
+        assert handler.calls == [(kind, 1), (kind, 2)]
+        assert outstation._state.selection_of(MASTER_A) is None
+
+    @pytest.mark.parametrize(("objects", "kind", "status_offsets"), _PARTLY_REFUSED)
+    def test_identical_operate_is_no_select_for_every_object(
+        self, objects: bytes, kind: str, status_offsets: tuple[int, int]
+    ) -> None:
+        outstation, handler = _outstation()
+        handler.statuses[(kind, 2)] = REFUSED
+        _send(outstation, FunctionCode.SELECT, objects, seq=2)
+        handler.calls.clear()
+
+        response = _only(_send(outstation, FunctionCode.OPERATE, objects, seq=3))
+
+        first, second = status_offsets
+        assert response == _echo(objects, 3, {first: NO_SELECT, second: NO_SELECT})
+        assert handler.calls == []
+
+    def test_another_master_can_select_the_point_that_succeeded(self) -> None:
+        outstation, handler = _outstation()
+        handler.statuses[("bo_select", 2)] = REFUSED
+        _send(outstation, FunctionCode.SELECT, _crob(1, 2), seq=2)
+
+        response = _only(_send(outstation, FunctionCode.SELECT, _crob(1), seq=9, peer=MASTER_B))
+
+        assert response == _echo(_crob(1), 9, {})
+
+    def test_a_point_blocked_by_another_master_cancels_the_rest(self) -> None:
+        outstation, handler = _outstation()
+        _send(outstation, FunctionCode.SELECT, _crob(2), seq=0, peer=MASTER_B)
+        objects = _crob(1, 2)
+
+        response = _only(_send(outstation, FunctionCode.SELECT, objects, seq=4))
+        operate = _only(_send(outstation, FunctionCode.OPERATE, objects, seq=5))
+
+        first, second = _ONE_BLOCK_STATUS
+        assert response == _echo(objects, 4, {first: SUCCESS, second: BLOCKED})
+        assert operate == _echo(objects, 5, {first: NO_SELECT, second: NO_SELECT})
+        assert ("bo_operate", 1) not in handler.calls
+        assert outstation._state.get_select(2, peer=MASTER_B) is not None
+
+    def test_select_whose_every_point_succeeds_still_operates(self) -> None:
+        outstation, handler = _outstation()
+        objects = _crob(1, 2)
+        _send(outstation, FunctionCode.SELECT, objects, seq=2)
+
+        response = _only(_send(outstation, FunctionCode.OPERATE, objects, seq=3))
+
+        assert response == _echo(objects, 3, {})
+        assert handler.calls[-2:] == [("bo_operate", 1), ("bo_operate", 2)]

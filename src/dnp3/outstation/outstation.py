@@ -1419,6 +1419,10 @@ class Outstation:
                 results.extend(block_results)
                 ao_parse_error = ao_parse_error or block_parse_error
 
+        if any(status != CommandStatus.SUCCESS for _, status in results):
+            # A non-zero status in any object cancels the entire selection (IEEE 1815-2012 4.4.4.3 Rule 3).
+            self._state.terminate(peer)
+
         # Build response with command status
         return self._build_control_response(request, results, ao_parse_error=ao_parse_error)
 
