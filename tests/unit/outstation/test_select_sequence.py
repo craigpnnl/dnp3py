@@ -275,6 +275,27 @@ class TestOtherRequestsBetweenSelectAndOperate:
         assert _statuses(_operate(outstation, MASTER_A, 1, POINT_5)) == [(5, NO_SELECT)]
         assert [op for op in handler.operates if op[0] == 5] == []
 
+    @pytest.mark.parametrize(
+        "fragment",
+        [bytes([0xC0]), bytes([0xC1, 0x70])],
+        ids=["shorter-than-a-header", "unknown-function-code"],
+    )
+    def test_request_that_fails_to_parse_ends_the_selection(self, fragment: bytes) -> None:
+        outstation, handler = _outstation()
+        _select(outstation, MASTER_A, 0, POINT_5)
+        outstation.process_request(fragment, peer=MASTER_A)
+
+        assert _statuses(_operate(outstation, MASTER_A, 1, POINT_5)) == [(5, NO_SELECT)]
+        assert handler.operates == []
+
+    def test_another_peers_unparseable_request_never_ends_the_selection(self) -> None:
+        outstation, handler = _outstation()
+        _select(outstation, MASTER_A, 0, POINT_5)
+        outstation.process_request(bytes([0xC1, 0x70]), peer=MASTER_B)
+
+        assert _statuses(_operate(outstation, MASTER_A, 1, POINT_5)) == [(5, SUCCESS)]
+        assert handler.operates == [(5, 1000, 0)]
+
     def test_confirm_does_not_end_the_selection(self) -> None:
         """A CONFIRM from the selecting master only acknowledges an earlier response.
 

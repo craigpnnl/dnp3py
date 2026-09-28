@@ -572,13 +572,14 @@ class Outstation:
             For READ requests with large databases, may return multiple
             fragments respecting max_fragment_size.
         """
+        resolved_peer = peer if peer is not None else UNSPECIFIED_PEER
         try:
             request = parse_request(data)
         except Exception:
-            # Parse error - return null response with PARAMETER_ERROR
+            # No retry or OPERATE can match what failed to parse, so it ends the sender's selection (Table 4-9).
+            self._state.terminate(resolved_peer)
             return [build_null_response(iin=self.iin | IIN.PARAMETER_ERROR)]
 
-        resolved_peer = peer if peer is not None else UNSPECIFIED_PEER
         return self._process_request_fragment(request, resolved_peer, data[2:])
 
     def new_connection_id(self) -> int:
