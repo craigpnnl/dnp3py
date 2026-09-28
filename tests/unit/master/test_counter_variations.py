@@ -68,7 +68,7 @@ class TestGroup20Delta:
         assert handler.counters == [CounterValue(index=3, value=0x1234, quality=0x03)]
 
     def test_g20v7_32bit_without_flag_delta(self) -> None:
-        # A.10.7.2.2: UINT32 count, no flag octet; quality defaults to online (0).
+        # A.10.7.2.2: UINT32 count, no flag octet; quality defaults to QUALITY_ONLINE.
         handler = _deliver(_block(20, 7, 0, struct.pack("<I", 0x89ABCDEF)))
         assert handler.counters == [CounterValue(index=0, value=0x89ABCDEF, quality=QUALITY_ONLINE)]
 
