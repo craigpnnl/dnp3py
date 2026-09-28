@@ -653,6 +653,12 @@ class Outstation:
             return [self._handle_freeze(request, clear=False)]
         if function == FunctionCode.FREEZE_CLEAR:
             return [self._handle_freeze(request, clear=True)]
+        if function == FunctionCode.IMMEDIATE_FREEZE_NO_ACK:
+            self._handle_freeze(request, clear=False)
+            return []  # No response for NO_ACK
+        if function == FunctionCode.FREEZE_CLEAR_NO_ACK:
+            self._handle_freeze(request, clear=True)
+            return []  # No response for NO_ACK
 
         # Unsupported function code
         return [
