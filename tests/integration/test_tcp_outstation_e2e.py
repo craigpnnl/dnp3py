@@ -207,8 +207,7 @@ class _RaisingOnCancelOnceHandler:
 class _ImmediateFailureHandler:
     """Connection handler that turns its own cancellation into an ordinary
     exception with no further await: the shape needed to race an outer
-    cancellation of run() against the child's own completion (issue #68
-    fix round 1)."""
+    cancellation of run() against the child's own completion (issue #68)."""
 
     async def __call__(self, channel: object) -> None:
         try:
@@ -243,11 +242,9 @@ def _force_outer_cancel_race(
     handoff/shutdown call) defers to the next loop iteration and, in that
     same iteration, calls `run_task.cancel()` before the real cancel(),
     which is what lets Task.cancelling() register on run_task without
-    forcing `Task._must_cancel` (the guard proven by an executed probe
-    against plain asyncio primitives before being wired to the real
-    runner). Any later call to `connection_task.cancel()` (run_task's own
-    delegation once it is cancelled) is passed straight through, so the
-    forcing does not recurse.
+    forcing `Task._must_cancel`. Any later call to `connection_task.cancel()`
+    (run_task's own delegation once it is cancelled) is passed straight
+    through, so the forcing does not recurse.
     """
     loop = asyncio.get_running_loop()
     real_cancel = connection_task.cancel
@@ -309,8 +306,9 @@ class TestOutstationTcpRunnerCancellation:
                     await run_task
 
         assert run_task.done() and run_task.cancelled(), "run_task must end cancelled, not merely raise"
-        with pytest.raises((ConnectionRefusedError, OSError)):
+        with pytest.raises((ConnectionRefusedError, OSError)) as exc_info:
             await asyncio.wait_for(asyncio.open_connection(host, port), timeout=2.0)
+        assert not isinstance(exc_info.value, TimeoutError), "connect must be refused promptly, not merely time out"
 
     @pytest.mark.asyncio
     async def test_cancel_during_shutdown_finally_propagates(self) -> None:
@@ -365,8 +363,9 @@ class TestOutstationTcpRunnerCancellation:
         # run()'s own teardown can have closed it here, since nothing else
         # called stop().
         try:
-            with pytest.raises((ConnectionRefusedError, OSError)):
+            with pytest.raises((ConnectionRefusedError, OSError)) as exc_info:
                 await asyncio.wait_for(asyncio.open_connection(host, port), timeout=2.0)
+            assert not isinstance(exc_info.value, TimeoutError), "connect must be refused promptly, not merely time out"
         finally:
             await runner.stop()  # hygiene: close the listener for real if the bug left it open
 
@@ -527,7 +526,10 @@ class TestOutstationTcpRunnerCancellation:
             error_records = [
                 r
                 for r in caplog.records
-                if r.exc_info is not None and isinstance(r.exc_info[1], RuntimeError) and "boom" in str(r.exc_info[1])
+                if r.getMessage() == "Connection task failed during shutdown"
+                and r.exc_info is not None
+                and isinstance(r.exc_info[1], RuntimeError)
+                and "boom" in str(r.exc_info[1])
             ]
             assert error_records, "the connection task's real error during shutdown must be logged"
         finally:
@@ -578,7 +580,10 @@ class TestOutstationTcpRunnerCancellation:
             error_records = [
                 r
                 for r in caplog.records
-                if r.exc_info is not None and isinstance(r.exc_info[1], RuntimeError) and "boom" in str(r.exc_info[1])
+                if r.getMessage() == "Connection task failed during handoff"
+                and r.exc_info is not None
+                and isinstance(r.exc_info[1], RuntimeError)
+                and "boom" in str(r.exc_info[1])
             ]
             assert error_records, "the pre-empted connection task's real error must be logged"
         finally:
