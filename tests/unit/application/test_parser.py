@@ -572,6 +572,10 @@ class TestStartStopRangeBelowOneObject:
         with pytest.raises(ValueError, match="non-negative"):
             parser._fixed_width_length(2, -1, 0)
 
+    def test_registry_length_refuses_a_negative_width(self) -> None:
+        with pytest.raises(ValueError, match="non-negative"):
+            parser._fixed_width_length(-1, 1, 0)
+
     def test_registry_length_refuses_a_negative_prefix_width(self) -> None:
         with pytest.raises(ValueError, match="non-negative"):
             parser._fixed_width_length(2, 1, -1)
@@ -671,6 +675,16 @@ class TestResponseFramingStops:
 
         with pytest.raises(ValueError, match="registered size failed"):
             self._parse(_B1 + bytes([0x63, 0x01, 0x00, 0x00, 0x00, 0xAB, 0xCD]))
+
+    @pytest.mark.parametrize("size", [-1, -10])
+    def test_negative_registered_size_stops(self, monkeypatch: pytest.MonkeyPatch, size: int) -> None:
+        """A negative width gives no usable length, so no bytes are framed with the block."""
+        monkeypatch.setattr(parser.registry, "get_size", lambda group, variation: size if group == 99 else None)
+
+        fragment = self._parse(_B1 + bytes([0x63, 0x01, 0x00, 0x00, 0x00, 0xAB, 0xCD]) + _G7)
+
+        assert fragment.objects == (_block(_B1),)
+        assert fragment.truncation == Truncation(TruncationReason.UNKNOWN_WIDTH, 6, 99, 1, 0x00)
 
     def test_packed_block_with_index_prefix_stops(self) -> None:
         """IEEE 1815-2012 A.2.1 packs bits only over a contiguous range, so an index-prefixed g1v1 has no length."""

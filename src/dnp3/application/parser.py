@@ -161,8 +161,8 @@ def _parse_range(data: bytes, range_code: RangeCode) -> ParsedRange:
 
 def _fixed_width_length(width: int, count: int, prefix_width: int) -> int:
     # The octet-aligned case of dnp3.objects.layout.data_length, for registry-only objects.
-    if count < 0 or prefix_width < 0:
-        msg = f"count and prefix width must be non-negative, got {count} and {prefix_width}"
+    if width < 0 or count < 0 or prefix_width < 0:
+        msg = f"width, count and prefix width must be non-negative, got {width}, {count} and {prefix_width}"
         raise ValueError(msg)
     return (prefix_width + width) * count
 
@@ -335,7 +335,8 @@ def _lookup_data_length(header: ObjectHeader) -> _DataLength | TruncationReason:
     if layout is not None:
         return partial(data_length, layout)
     size = registry.get_size(header.group, header.variation)
-    if size is None:
+    if size is None or size < 0:
+        # A negative registered size would move the next header backwards.
         return TruncationReason.UNKNOWN_WIDTH
     return partial(_fixed_width_length, size)
 
@@ -412,12 +413,11 @@ def frame_response_object_blocks(data: bytes) -> tuple[list[ObjectBlock], Trunca
         except ParseError:
             return blocks, _stopped_at(TruncationReason.DATA_SHORTER_THAN_DECLARED, offset, header)
 
-        blocks.append(block)
         if consumed <= 0:  # pragma: no cover - defensive
-            # Unreachable while every length function refuses a negative count, so
-            # a block consumes at least its 3-byte header. Kept so a change to that
-            # contract cannot spin here.
-            break
+            # Unreachable while every length is non-negative, so a block consumes at
+            # least its header. Kept so a change to that contract cannot spin here.
+            return blocks, _stopped_at(TruncationReason.UNKNOWN_WIDTH, offset, header)
+        blocks.append(block)
         offset += consumed
 
     return blocks, None
