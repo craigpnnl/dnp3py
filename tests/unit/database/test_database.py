@@ -17,6 +17,7 @@ from dnp3.database.event_buffer import (
 from dnp3.database.point import (
     AnalogInputConfig,
     AnalogOutputConfig,
+    AnalogOutputPoint,
     BinaryInputConfig,
     CounterConfig,
     EventClass,
@@ -338,6 +339,26 @@ class TestAnalogOutputOperations:
         config = AnalogOutputConfig(event_class=EventClass.CLASS_1)
         with pytest.raises(ValueError, match=r"EventClass\.NONE"):
             db.add_analog_output(index=0, config=config)
+
+    def test_add_analog_output_nan_raises(self) -> None:
+        """A NaN initial value is refused, and nothing is stored."""
+        db = Database()
+        with pytest.raises(ValueError, match="NaN"):
+            db.add_analog_output(index=0, value=float("nan"))
+
+        assert db.analog_output_count == 0
+        assert db.get_analog_output(0) is None
+
+    def test_construct_analog_output_point_nan_raises(self) -> None:
+        """Constructing the point directly with NaN is refused too."""
+        with pytest.raises(ValueError, match="NaN"):
+            AnalogOutputPoint(index=0, value=float("nan"))
+
+    def test_construct_analog_output_point_event_class_raises(self) -> None:
+        """Constructing the point directly with a non-NONE class is refused too."""
+        config = AnalogOutputConfig(event_class=EventClass.CLASS_1)
+        with pytest.raises(ValueError, match=r"EventClass\.NONE"):
+            AnalogOutputPoint(index=0, config=config)
 
     def test_update_analog_output_sets_value(self) -> None:
         """Updating an analog output sets its value and quality."""

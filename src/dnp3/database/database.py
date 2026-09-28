@@ -216,9 +216,9 @@ class Database:
             The created point.
 
         Raises:
-            ValueError: If index already exists, exceeds max, or config
-                requests an event class other than NONE (analog output
-                events, group 42, are not implemented yet).
+            ValueError: If index already exists, exceeds max, value is
+                NaN, or config requests an event class other than NONE
+                (analog output events, group 42, are not implemented yet).
         """
         if index in self.analog_outputs:
             msg = f"Analog output index {index} already exists"

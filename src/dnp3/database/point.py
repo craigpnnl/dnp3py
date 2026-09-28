@@ -282,6 +282,20 @@ class AnalogOutputPoint:
     timestamp: DNP3Timestamp | None = None
     config: AnalogOutputConfig = field(default_factory=AnalogOutputConfig)
 
+    def __post_init__(self) -> None:
+        """Validate the initial value and configuration.
+
+        Raises:
+            ValueError: If value is NaN, or config requests an event class
+                other than NONE (group 42 events are not implemented).
+        """
+        if math.isnan(self.value):
+            msg = "Analog output value must not be NaN"
+            raise ValueError(msg)
+        if self.config.event_class != EventClass.NONE:
+            msg = "Analog output points support only EventClass.NONE: group 42 events are not implemented"
+            raise ValueError(msg)
+
     def update(
         self,
         value: float,
