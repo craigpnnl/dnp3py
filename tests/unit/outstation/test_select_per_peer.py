@@ -299,6 +299,16 @@ class TestSameSourceOnTwoConnections:
         assert _operate(outstation, first, (5, 1000)) == [(5, SUCCESS)]
         assert handler.operates == [(5, 1000)]
 
+    def test_select_on_connection_2_is_blocked_by_connection_1(self) -> None:
+        outstation, handler = _outstation()
+        first = PeerId(source=3, connection=1)
+        second = PeerId(source=3, connection=2)
+        assert _select(outstation, first, (5, 1000)) == [(5, SUCCESS)]
+
+        assert _select(outstation, second, (5, 1000)) == [(5, BLOCKED)]
+        assert handler.selects == [(5, 1000)]
+        assert outstation._state.get_select(5, peer=second) is None
+
 
 class TestSingleMasterUnchanged:
     """A caller that passes no peer keeps the behaviour it had before peers existed."""
