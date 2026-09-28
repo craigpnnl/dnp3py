@@ -220,6 +220,14 @@ class TestTwoPeersSelectAndOperate:
         assert _operate(outstation, MASTER_A, (5, 1000)) == [(5, SUCCESS)]
         assert handler.operates == [(5, 1000)]
 
+    def test_mismatched_operate_disarms_the_holders_selection(self) -> None:
+        outstation, handler = _outstation()
+        assert _select(outstation, MASTER_A, (5, 1000)) == [(5, SUCCESS)]
+
+        assert _operate(outstation, MASTER_A, (5, 2000)) == [(5, NO_SELECT)]
+        assert _operate(outstation, MASTER_A, (5, 1000)) == [(5, NO_SELECT)]
+        assert handler.operates == []
+
 
 class TestSelectOnPointAnotherPeerHolds:
     """A SELECT on a point another peer holds returns BLOCKED_OTHER_MASTER (17)."""
