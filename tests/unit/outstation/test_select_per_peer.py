@@ -8,6 +8,8 @@ that connection closes.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import time
 
 import pytest
@@ -16,10 +18,15 @@ from dnp3.application.builder import build_operate_request, build_select_request
 from dnp3.application.fragment import ObjectBlock, ResponseFragment
 from dnp3.application.qualifiers import ObjectHeader
 from dnp3.core.enums import CommandStatus, ControlCode
-from dnp3.outstation import Outstation
+from dnp3.database import Database
+from dnp3.datalink.builder import build_unconfirmed_user_data
+from dnp3.outstation import Outstation, OutstationConfig
 from dnp3.outstation.handler import CommandResult, DefaultCommandHandler
 from dnp3.outstation.peer import UNSPECIFIED_PEER, PeerId
 from dnp3.outstation.state import OutstationStateManager, SelectState
+from dnp3.outstation.tcp_runner import OutstationTcpRunner
+from dnp3.transport.segment import TransportSegment
+from dnp3.transport_io.simulator import SimulatorChannel, create_channel_pair
 
 MASTER_A = PeerId(source=3, connection=1)
 MASTER_B = PeerId(source=9, connection=2)
@@ -286,3 +293,60 @@ class TestSingleMasterUnchanged:
 
         assert handler.selects == [(5, 1000), (5, 2000), (5, 3000)]
         assert handler.operates == [(5, 3000)]
+
+
+OUTSTATION_ADDR = 1
+
+
+def _frame(source: int, request_bytes: bytes) -> bytes:
+    segment = TransportSegment.build(fir=True, fin=True, seq=0, payload=request_bytes)
+    frame = build_unconfirmed_user_data(
+        destination=OUTSTATION_ADDR,
+        source=source,
+        dir_from_master=True,
+        user_data=segment.to_bytes(),
+    )
+    return frame.to_bytes()
+
+
+async def _drain(channel: SimulatorChannel, timeout: float = 1.0) -> None:
+    with contextlib.suppress(TimeoutError):
+        while True:
+            chunk = await asyncio.wait_for(channel.read(4096), timeout=timeout)
+            if not chunk:
+                break
+            timeout = 0.2
+
+
+class TestRunnerReleasesSelectionsOnDisconnect:
+    """When a connection closes, the runner releases every selection made on it."""
+
+    @pytest.mark.asyncio
+    async def test_closed_connection_releases_its_selection(self) -> None:
+        handler = _RecordingHandler()
+        config = OutstationConfig(address=OUTSTATION_ADDR, master_address=MASTER_A.source)
+        outstation = Outstation(config=config, database=Database(), handler=handler)
+        outstation.database.add_binary_output(5)
+        outstation.database.add_binary_output(6)
+        runner = OutstationTcpRunner(outstation=outstation)
+        other_connection = PeerId(source=MASTER_B.source, connection=99)
+        assert _select(outstation, other_connection, (6, 6000)) == [(6, SUCCESS)]
+
+        master_ch, outstation_ch = create_channel_pair()
+        await master_ch.open()
+        await outstation_ch.open()
+        task = asyncio.create_task(runner._handle_connection(outstation_ch))
+        select = build_select_request(objects=(_crob_block((5, 1000)),), seq=0)
+        await master_ch.write_all(_frame(MASTER_A.source, select.to_bytes()))
+        await _drain(master_ch)
+
+        assert handler.selects == [(6, 6000), (5, 1000)]
+        assert outstation._state.get_select(5, peer=MASTER_A) is not None
+        assert _select(outstation, MASTER_B, (5, 5000)) == [(5, BLOCKED)]
+
+        await master_ch.close()
+        await asyncio.wait_for(task, timeout=2.0)
+
+        assert outstation._state.get_select(5, peer=MASTER_A) is None
+        assert _select(outstation, MASTER_B, (5, 5000)) == [(5, SUCCESS)]
+        assert outstation._state.get_select(6, peer=other_connection) is not None

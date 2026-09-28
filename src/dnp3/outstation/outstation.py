@@ -579,6 +579,17 @@ class Outstation:
         resolved_peer = peer if peer is not None else UNSPECIFIED_PEER
         return self._process_request_fragment(request, resolved_peer, data[2:])
 
+    def release_connection(self, connection: int) -> None:
+        """Release every SELECT made on a transport connection.
+
+        A transport calls this when the connection closes, so a selection
+        cannot outlive the connection that made it.
+
+        Args:
+            connection: The connection id the transport put in each PeerId.
+        """
+        self._state.release_connection(connection)
+
     def _process_request_fragment(self, request: RequestFragment, peer: PeerId, body: bytes) -> list[ResponseFragment]:
         """Process a parsed request fragment.
 
