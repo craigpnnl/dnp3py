@@ -79,11 +79,15 @@ class TestWriteTimeMalformedQualifier:
         outstation = Outstation(time_handler=delivered.append)
 
         block = _g50v1(0x08, (1).to_bytes(2, "little") + _TIME_OCTETS)
-        response = _send(outstation, block, seq=5)
+        response = _send(outstation, block, seq=7)
 
         assert delivered == []
         assert IIN.PARAMETER_ERROR in response.header.iin
         assert IIN.NEED_TIME in outstation.iin
+        # Pin the refusal by wire bytes: seq 7, IIN carries PARAMETER_ERROR
+        # plus the DEVICE_RESTART and NEED_TIME bits a fresh outstation
+        # already had set, and no objects.
+        assert response.to_bytes() == bytes.fromhex("c7819004")
 
     def test_qualifier_0x07_count_2_answers_parameter_error(self) -> None:
         delivered: list[DNP3Timestamp] = []
@@ -102,6 +106,22 @@ class TestWriteTimeMalformedQualifier:
 
         block = _g50v1(0x17, bytes([1, 0]) + _TIME_OCTETS)
         response = _send(outstation, block, seq=5)
+
+        assert delivered == []
+        assert IIN.PARAMETER_ERROR in response.header.iin
+        assert IIN.NEED_TIME in outstation.iin
+
+    def test_qualifier_0x87_reserved_bit_answers_parameter_error(self) -> None:
+        """A qualifier with a reserved bit set is refused only by the qualifier check.
+
+        Count 1 and 6 octets is exactly the length a valid write has, so
+        this frames cleanly and does not also trip the length check.
+        """
+        delivered: list[DNP3Timestamp] = []
+        outstation = Outstation(time_handler=delivered.append)
+
+        block = _g50v1_write(qualifier=0x87)
+        response = _send(outstation, block, seq=9)
 
         assert delivered == []
         assert IIN.PARAMETER_ERROR in response.header.iin
