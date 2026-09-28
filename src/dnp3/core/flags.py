@@ -52,9 +52,10 @@ class CounterQuality(IntFlag):
 
 
 class DoubleBitState(IntEnum):
-    """Double-bit binary states (Table 4-10).
+    """Double-bit binary input states (IEEE 1815-2012 11.9.6, Table 11-14).
 
-    2-bit value representing 4 possible states.
+    2-bit value representing 4 possible states. OFF and ON are the standard's
+    DETERMINED_OFF and DETERMINED_ON.
     """
 
     INTERMEDIATE = 0  # Transitioning between states
@@ -64,9 +65,9 @@ class DoubleBitState(IntEnum):
 
 
 class DoubleBitQuality(IntFlag):
-    """Double-bit binary quality flags (Table 4-10).
+    """Double-bit binary input flag octet (IEEE 1815-2012 A.4.2.2.2).
 
-    Single byte with quality indicators and 2-bit state.
+    Six flag bits, then the 2-bit state in bits 6 and 7.
     """
 
     ONLINE = 0x01
