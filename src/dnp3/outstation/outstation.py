@@ -510,6 +510,68 @@ def _parse_crob_block(block: ObjectBlock) -> list[ParsedCrob]:
     return parsed
 
 
+def _parse_ao_block(block: ObjectBlock) -> tuple[list[tuple[int, float]], bool]:
+    """Parse an Analog Output block (Group 41) into (index, value) pairs.
+
+    Supports variations 1-4:
+        Var 1: 32-bit signed integer (4 bytes value + 1 byte status)
+        Var 2: 16-bit signed integer (2 bytes value + 1 byte status)
+        Var 3: single-precision float (4 bytes value + 1 byte status)
+        Var 4: double-precision float (8 bytes value + 1 byte status)
+
+    Qualifiers follow the same 0x17/0x28 scheme as CROB (IEEE 1815-2012 Table 4-3).
+    Unknown qualifiers and unknown variations fail closed, matching the CROB path.
+
+    Returns:
+        Tuple of (points, has_parse_error). has_parse_error is True when the
+        frame is malformed (unknown variation, unknown qualifier, or truncated
+        buffer); callers must set IIN.PARAMETER_ERROR when it is True. The
+        objects before a truncation are still returned. A dummy-index sentinel
+        is never returned, so index 0 is not conflated with a parse error.
+    """
+    points: list[tuple[int, float]] = []
+    variation = block.header.variation
+
+    value_size = _AO_VALUE_SIZES.get(variation)
+    if value_size is None:
+        return points, True
+
+    try:
+        count_bytes, index_bytes = _crob_count_index_sizes(block.header.qualifier)
+    except ValueError:
+        return points, True
+
+    data = block.data
+    if len(data) < count_bytes:
+        return points, True
+
+    count = int.from_bytes(data[0:count_bytes], "little")
+    offset = count_bytes
+
+    # object size = index_bytes + value_size + 1 byte status
+    obj_size = index_bytes + value_size + 1
+
+    for _ in range(count):
+        if offset + obj_size > len(data):
+            break
+
+        index = int.from_bytes(data[offset : offset + index_bytes], "little")
+        offset += index_bytes
+
+        raw_value = data[offset : offset + value_size]
+        if variation in {AO_VAR_INT32, AO_VAR_INT16}:
+            value = float(int.from_bytes(raw_value, "little", signed=True))
+        elif variation == AO_VAR_FLOAT32:
+            value = float(struct.unpack("<f", raw_value)[0])
+        else:
+            value = float(struct.unpack("<d", raw_value)[0])
+
+        offset += value_size + 1  # skip request status byte
+        points.append((index, value))
+
+    return points, len(points) < count
+
+
 @dataclass
 class Outstation:
     """DNP3 Outstation implementation.
@@ -1315,81 +1377,18 @@ class Outstation:
     def _process_ao_direct_operate(self, block: ObjectBlock) -> tuple[list[tuple[int, CommandStatus]], bool]:
         """Process Analog Output DIRECT_OPERATE (Group 41).
 
-        Supports variations 1-4:
-            Var 1: 32-bit signed integer (4 bytes value + 1 byte status)
-            Var 2: 16-bit signed integer (2 bytes value + 1 byte status)
-            Var 3: single-precision float (4 bytes value + 1 byte status)
-            Var 4: double-precision float (8 bytes value + 1 byte status)
-
-        Qualifiers follow the same 0x17/0x28 scheme as CROB (IEEE 1815-2012 Table 4-3):
-            0x17: 1-byte count + 1-byte index prefix per object
-            0x28: 2-byte count + 2-byte index prefix per object
-        Unknown qualifiers and unknown variations fail closed, matching the CROB path.
+        Each object _parse_ao_block returns is dispatched immediately to the
+        handler with no prior SELECT required.
 
         Returns:
-            Tuple of (results, has_parse_error). has_parse_error is True when the
-            frame is malformed (unknown variation, unknown qualifier, or truncated
-            buffer); callers must set IIN.PARAMETER_ERROR when it is True.
-            A dummy-index sentinel is NOT injected into results; the flag is the
-            sole signal so index 0 is never conflated with a parse-error placeholder.
+            Tuple of (results, has_parse_error), has_parse_error as from
+            _parse_ao_block; callers must set IIN.PARAMETER_ERROR when it is True.
         """
+        points, has_parse_error = _parse_ao_block(block)
         results: list[tuple[int, CommandStatus]] = []
-        variation = block.header.variation
-
-        # Unknown variation: fail closed, no side effects, signal parse error to caller.
-        value_size = _AO_VALUE_SIZES.get(variation)
-        if value_size is None:
-            return results, True
-
-        # Derive count/index widths from qualifier, identical to the CROB path.
-        try:
-            count_bytes, index_bytes = _crob_count_index_sizes(block.header.qualifier)
-        except ValueError:
-            return results, True
-
-        data = block.data
-        if len(data) < count_bytes:
-            return results, True
-
-        count = int.from_bytes(data[0:count_bytes], "little")
-        offset = count_bytes
-
-        # object size = index_bytes + value_size + 1 byte status
-        obj_size = index_bytes + value_size + 1
-
-        echoed = 0
-        for _ in range(count):
-            if offset + obj_size > len(data):
-                # Buffer too short; remaining declared objects cannot be processed.
-                break
-
-            index = int.from_bytes(data[offset : offset + index_bytes], "little")
-            offset += index_bytes
-
-            # Parse value based on variation
-            raw_value = data[offset : offset + value_size]
-            if variation in {AO_VAR_INT32, AO_VAR_INT16}:
-                value = float(int.from_bytes(raw_value, "little", signed=True))
-            elif variation == AO_VAR_FLOAT32:
-                value = float(struct.unpack("<f", raw_value)[0])
-            elif variation == AO_VAR_FLOAT64:
-                value = float(struct.unpack("<d", raw_value)[0])
-            else:
-                value = 0.0
-
-            offset += value_size
-            offset += 1  # skip request status byte
-
-            result = self.handler.direct_operate_analog_output(
-                index=index,
-                value=value,
-            )
-
+        for index, value in points:
+            result = self.handler.direct_operate_analog_output(index=index, value=value)
             results.append((index, result.status))
-            echoed += 1
-
-        # Truncation: declared count exceeds available objects.
-        has_parse_error = echoed < count
         return results, has_parse_error
 
     def _build_control_response(
