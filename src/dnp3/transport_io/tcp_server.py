@@ -387,22 +387,15 @@ class TcpServer:
 
         self._state = ChannelState.CLOSING
 
-        # Stop accepting new connections first, synchronously: this closes
-        # the listening socket immediately, so a connection that arrives
-        # while we are closing a stalled peer below gets refused instead of
-        # being accepted, appended after the gather() snapshot, and then
-        # dropped by clear() without ever being closed.
+        # Stop accepting first: with the listener closed, a connection
+        # arriving during the bounded close below is refused, not accepted
+        # and then dropped by clear().
         if self._server is not None:
             self._server.close()
 
-        # Close every tracked connection concurrently: closing them one at a
-        # time would let a single stalled peer multiply its close_timeout
-        # bound across every other connection. Loop while the list is
-        # non-empty in case a connection already in flight when the listener
-        # closed still reaches _handle_connection after this point. Each
-        # close() already handles its own protocol-level errors; anything
-        # else it raises is a bug in that connection's close(), so log it
-        # rather than let return_exceptions=True discard it silently.
+        # Close concurrently so one stalled peer cannot multiply the bound
+        # across every connection; loop because a connection already in
+        # flight when the listener closed can still arrive here.
         while self._connections:
             pending = list(self._connections)
             results = await asyncio.gather(*(conn.close() for conn in pending), return_exceptions=True)
@@ -411,10 +404,8 @@ class TcpServer:
                     logger.error("Unexpected error closing a connection during stop()", exc_info=result)
                 self.remove_connection(conn)
 
-        # Now that every connection this server ever accepted has had its
-        # transport closed, wait_closed() can complete: it waits for both
-        # the listener to be closed and every accepted connection to be
-        # dropped, in either order.
+        # wait_closed() waits for every connection this server ever accepted
+        # to close, so it must run last.
         if self._server is not None:
             await self._server.wait_closed()
             self._server = None
@@ -500,6 +491,7 @@ async def serve(
             keepalive_idle=config.keepalive_idle,
             keepalive_interval=config.keepalive_interval,
             keepalive_count=config.keepalive_count,
+            close_timeout=config.close_timeout,
             backlog=config.backlog,
             reuse_address=config.reuse_address,
             max_connections=config.max_connections,

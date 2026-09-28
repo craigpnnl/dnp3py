@@ -610,3 +610,35 @@ class TestServeHelper:
             assert server.config.backlog == 10
         finally:
             await server.stop()
+
+    @pytest.mark.asyncio
+    async def test_serve_with_config_honors_close_timeout(self) -> None:
+        """serve(config=...) must not silently drop a non-default close_timeout."""
+        config = TcpServerConfig(close_timeout=0.2)
+        server = await serve(host="127.0.0.1", port=0, config=config)
+
+        try:
+            assert server.config.close_timeout == 0.2
+
+            addr = server.local_address
+            assert addr is not None
+            _client_reader, client_writer = await asyncio.open_connection(addr[0], addr[1])
+            channel = await asyncio.wait_for(server.accept(), timeout=2.0)
+            assert channel.config.close_timeout == 0.2
+
+            stuffing = b"\x00" * (32 * 1024 * 1024)
+            with pytest.raises(TimeoutError):
+                await asyncio.wait_for(channel.write_all(stuffing), timeout=0.3)
+
+            loop = asyncio.get_running_loop()
+            started = loop.time()
+            await asyncio.wait_for(channel.close(), timeout=5.0)
+            elapsed = loop.time() - started
+
+            assert 0.15 <= elapsed < 0.7, (
+                "close() must honor serve()'s close_timeout (0.2s), not the TcpServerConfig default of 1.0s"
+            )
+
+            client_writer.transport.abort()
+        finally:
+            await server.stop()
