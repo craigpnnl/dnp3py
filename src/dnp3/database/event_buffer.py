@@ -2,9 +2,17 @@
 
 The event buffer stores events until they are read and confirmed by the master.
 Events are organized by class (1, 2, 3) for priority-based retrieval.
+
+Events are frozen value dataclasses (see BinaryEvent/AnalogEvent/CounterEvent
+below): two events with the same index, value, quality and no timestamp
+compare equal. Removing a buffered event by value (`==` or `deque.remove`)
+could therefore remove the wrong one, so each buffered event also carries an
+internal serial, unique and increasing across the whole EventBuffer, and
+removal is by serial rather than by value.
 """
 
 from collections import deque
+from collections.abc import Collection
 from dataclasses import dataclass, field
 from enum import IntEnum
 from typing import TypeVar
@@ -111,25 +119,46 @@ class ClassBuffer:
         overflow_count: Number of events dropped due to overflow.
     """
 
-    events: deque[Event] = field(default_factory=deque)
+    # init=False: a caller must go through `add` to get a serial recorded,
+    # so a buffer built with pre-populated events can never start with
+    # `events` and `_serials` out of step.
+    events: deque[Event] = field(default_factory=deque, init=False)
     max_size: int = 100
     overflow_count: int = 0
+    # Serial for each entry in `events`, same length and order as `events`.
+    _serials: deque[int] = field(default_factory=deque, init=False, repr=False, compare=False)
+    # Used only when `add` is called with no explicit serial (a ClassBuffer
+    # used standalone, outside an EventBuffer). EventBuffer supplies its own
+    # serial to every add call so serials stay unique across its 3 classes.
+    _next_serial: int = field(default=0, init=False, repr=False, compare=False)
 
-    def add(self, event: Event) -> bool:
+    def add(self, event: Event, serial: int | None = None) -> bool:
         """Add event to buffer.
 
         Args:
             event: Event to add.
+            serial: Serial to record for this event. Defaults to this
+                buffer's own counter. EventBuffer passes one drawn from a
+                single counter shared across class1, class2 and class3, so a
+                serial is unique across the whole buffer, not just this
+                class (module docstring).
 
         Returns:
             True if event was added, False if dropped due to overflow.
         """
+        if serial is None:
+            serial = self._next_serial
+        if serial >= self._next_serial:
+            self._next_serial = serial + 1
+
         if len(self.events) >= self.max_size:
             # Buffer full - drop oldest event
             self.events.popleft()
+            self._serials.popleft()
             self.overflow_count += 1
 
         self.events.append(event)
+        self._serials.append(serial)
         return True
 
     def pop(self) -> Event | None:
@@ -139,6 +168,7 @@ class ClassBuffer:
             Oldest event, or None if buffer empty.
         """
         if self.events:
+            self._serials.popleft()
             return self.events.popleft()
         return None
 
@@ -160,7 +190,50 @@ class ClassBuffer:
         """
         count = len(self.events)
         self.events.clear()
+        self._serials.clear()
         return count
+
+    def read_with_serials(self) -> list[tuple[int, Event]]:
+        """Return every buffered event with its serial, oldest first.
+
+        Nothing is removed: repeated calls return the same entries until
+        something is added, popped or removed.
+
+        Returns:
+            (serial, event) pairs in buffer order.
+        """
+        return list(zip(self._serials, self.events, strict=True))
+
+    def remove_by_serials(self, serials: Collection[int]) -> int:
+        """Remove exactly the buffered events whose serial is in `serials`.
+
+        Matching is by serial, never by event value: two buffered events can
+        compare equal (module docstring) and only the serial tells them
+        apart. A serial not currently buffered (already dropped by overflow,
+        or naming a different class) is ignored rather than treated as an
+        error, so a confirm racing an overflow drop is harmless.
+
+        Args:
+            serials: Serials to remove.
+
+        Returns:
+            Number of events actually removed.
+        """
+        if not serials:
+            return 0
+        wanted = set(serials)
+        kept_events: deque[Event] = deque()
+        kept_serials: deque[int] = deque()
+        removed = 0
+        for serial, event in zip(self._serials, self.events, strict=True):
+            if serial in wanted:
+                removed += 1
+            else:
+                kept_events.append(event)
+                kept_serials.append(serial)
+        self.events = kept_events
+        self._serials = kept_serials
+        return removed
 
     @property
     def count(self) -> int:
@@ -206,6 +279,9 @@ class EventBuffer:
     class1: ClassBuffer = field(default_factory=ClassBuffer)
     class2: ClassBuffer = field(default_factory=ClassBuffer)
     class3: ClassBuffer = field(default_factory=ClassBuffer)
+    # Counter shared by every class through `_add_to_class`, so a serial is
+    # unique across class1, class2 and class3, not just within one of them.
+    _next_serial: int = field(default=0, init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         """Initialize class buffers with config."""
@@ -326,7 +402,9 @@ class EventBuffer:
         """
         buffer = self._get_buffer(event_class)
         if buffer is not None:
-            return buffer.add(event)
+            serial = self._next_serial
+            self._next_serial += 1
+            return buffer.add(event, serial=serial)
         return False
 
     def _get_buffer(self, event_class: EventClass) -> ClassBuffer | None:
@@ -398,6 +476,40 @@ class EventBuffer:
         if buffer is not None:
             return buffer.clear()
         return 0
+
+    def read_class_events_with_serials(self, event_class: EventClass) -> list[tuple[int, Event]]:
+        """Get all events for a class, with their serials, without removing them.
+
+        Args:
+            event_class: Event class.
+
+        Returns:
+            (serial, event) pairs in buffer order.
+        """
+        buffer = self._get_buffer(event_class)
+        if buffer is not None:
+            return buffer.read_with_serials()
+        return []
+
+    def remove_events_by_serials(self, serials: Collection[int]) -> int:
+        """Remove buffered events by serial, across every class.
+
+        A serial spanning class 1, 2 and 3 events carried in one confirmed
+        fragment is removed correctly in one call, since serials are unique
+        across all three classes (see `_add_to_class`). A serial not
+        currently buffered anywhere is ignored.
+
+        Args:
+            serials: Serials to remove.
+
+        Returns:
+            Total number of events removed across all classes.
+        """
+        return (
+            self.class1.remove_by_serials(serials)
+            + self.class2.remove_by_serials(serials)
+            + self.class3.remove_by_serials(serials)
+        )
 
     def clear_all(self) -> int:
         """Clear all events from all classes.
