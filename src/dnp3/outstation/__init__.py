@@ -14,6 +14,7 @@ from dnp3.outstation.handler import (
     DefaultCommandHandler,
 )
 from dnp3.outstation.outstation import Outstation
+from dnp3.outstation.peer import UNSPECIFIED_PEER, PeerId
 from dnp3.outstation.state import (
     OutstationState,
     SelectState,
@@ -21,6 +22,7 @@ from dnp3.outstation.state import (
 from dnp3.outstation.tcp_runner import OutstationTcpRunner
 
 __all__ = [
+    "UNSPECIFIED_PEER",
     "CommandHandler",
     "CommandResult",
     "DefaultCommandHandler",
@@ -28,6 +30,7 @@ __all__ = [
     "OutstationConfig",
     "OutstationState",
     "OutstationTcpRunner",
+    "PeerId",
     "SelectState",
     "UnsolicitedConfig",
 ]
