@@ -753,9 +753,9 @@ class TestTcpServerStopBoundedByStalledConnection:
         with pytest.raises(asyncio.CancelledError):
             await stop_task
 
-        # The cancelled close() still ends CLOSED with the disconnect counted
-        # once (round 1's guarantee), even though the outer stop() is what
-        # was cancelled, not the channel's own close() call directly.
+        # A cancelled close() still ends CLOSED with the disconnect counted
+        # exactly once, even though it is the outer stop() that was
+        # cancelled here, not the channel's own close() call directly.
         assert stalled_channel.state == ChannelState.CLOSED
         assert stalled_channel.statistics.disconnect_count == 1
 

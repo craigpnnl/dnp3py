@@ -327,6 +327,7 @@ class TestHandleConnectionRefusesWhenNotOpen:
             await asyncio.wait_for(server._handle_connection(server_reader, server_writer), timeout=2.0)
 
             assert server.connection_count == 0, "a connection arriving while not OPEN must not be tracked"
+            assert server._accept_queue.empty(), "a refused connection must not reach the accept queue"
 
             sock = server_writer.get_extra_info("socket")
             loop = asyncio.get_running_loop()
