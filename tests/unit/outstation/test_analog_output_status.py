@@ -5,6 +5,7 @@ Class 0) with g40v2. Clause 11.6 Note 4 rules 2 and 3 govern the clamp and
 OVER_RANGE behaviour asserted here.
 """
 
+import math
 import struct
 
 import pytest
@@ -228,6 +229,21 @@ class TestClampFloatVariations:
     """v3 (float32) clamps a too-large finite value; infinity packs as-is."""
 
     FLOAT32_MAX = struct.unpack("<f", b"\xff\xff\x7f\x7f")[0]
+
+    def test_float32_max_is_in_range(self) -> None:
+        outstation = Outstation()
+        outstation.database.add_analog_output(0, value=self.FLOAT32_MAX, quality=ONLINE)
+        blocks = _g40_blocks(_read_group40(outstation, variation=3))
+        assert blocks[0].data[2] == int(ONLINE)
+        assert blocks[0].data[3:7] == struct.pack("<f", self.FLOAT32_MAX)
+
+    def test_just_above_float32_max_clamps_over_range(self) -> None:
+        just_above = math.nextafter(self.FLOAT32_MAX, math.inf)
+        outstation = Outstation()
+        outstation.database.add_analog_output(0, value=just_above, quality=ONLINE)
+        blocks = _g40_blocks(_read_group40(outstation, variation=3))
+        assert blocks[0].data[2] == OVER_RANGE_FLAG
+        assert blocks[0].data[3:7] == struct.pack("<f", self.FLOAT32_MAX)
 
     def test_huge_finite_value_clamps_over_range(self) -> None:
         outstation = Outstation()
