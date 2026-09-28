@@ -1091,6 +1091,8 @@ class Outstation:
         results: list[tuple[int, CommandStatus]] = []
         seq = request.header.control.seq
 
+        self._state.clear_expired_selects(self.config.select_timeout)
+
         for block in request.objects:
             if block.header.group == GROUP_CROB and block.header.variation == 1:
                 # CROB - Control Relay Output Block

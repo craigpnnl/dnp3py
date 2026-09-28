@@ -255,6 +255,25 @@ class TestSelectOnPointAnotherPeerHolds:
         assert _operate(outstation, MASTER_B, (5, 5000)) == [(5, SUCCESS)]
         assert handler.operates == [(5, 5000)]
 
+    def test_select_purges_expired_selections_from_every_peer(self) -> None:
+        outstation, _ = _outstation()
+        expired_at = time.monotonic() - 2 * outstation.config.select_timeout
+        abandoned: list[PeerId] = []
+        for source in range(10, 15):
+            peer = PeerId(source=source, connection=1)
+            assert _select(outstation, peer, (5, 1000)) == [(5, SUCCESS)]
+            held = outstation._state.get_select(5, peer=peer)
+            assert held is not None
+            held.timestamp = expired_at
+            abandoned.append(peer)
+
+        live = PeerId(source=15, connection=1)
+        assert _select(outstation, live, (5, 1000)) == [(5, SUCCESS)]
+
+        for peer in abandoned:
+            assert outstation._state.get_select(5, peer=peer) is None
+        assert outstation._state.get_select(5, peer=live) is not None
+
     def test_the_holder_may_select_its_own_point_again(self) -> None:
         outstation, handler = _outstation()
         _select(outstation, MASTER_A, (5, 1000))
