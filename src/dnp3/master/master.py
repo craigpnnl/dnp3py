@@ -440,7 +440,8 @@ class _KindBatch(Generic[_V]):
 
 
 # Point kinds the master decodes, in the order their callbacks run for a response.
-# A kind absent here (commands, time, class) is framed but not delivered.
+# A kind absent here (commands and command events, frozen analog, deadband, time, class)
+# is framed but not delivered. Double-bit values reach only a handler with that callback.
 _DELIVERIES: Mapping[PointKind, _Delivery] = MappingProxyType(
     {
         PointKind.BINARY_INPUT: _KindDelivery(_decode_binary, lambda h, v, i: h.on_binary_input(v, i)),
