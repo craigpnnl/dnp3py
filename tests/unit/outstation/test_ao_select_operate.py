@@ -223,6 +223,29 @@ class TestSelectAnalogOutput:
         assert handler.ao_selects == [(5, 1.5)]
 
 
+class TestMalformedAnalogOutputBlock:
+    """A g41 block that cannot be parsed reaches no handler and sets IIN.PARAMETER_ERROR."""
+
+    @pytest.mark.parametrize(
+        ("variation", "qualifier"), [(5, 0x17), (3, 0x07)], ids=["unknown-variation", "unknown-qualifier"]
+    )
+    @pytest.mark.parametrize("function", ["select", "operate"])
+    def test_malformed_block_flags_parameter_error(self, function: str, variation: int, qualifier: int) -> None:
+        outstation, handler = _outstation()
+        block = ObjectBlock(
+            header=ObjectHeader(group=41, variation=variation, qualifier=qualifier),
+            data=bytes([1, 5, 0, 0, 0xC0, 0x3F, 0]),
+        )
+        send = _select if function == "select" else _operate
+
+        response = send(outstation, MASTER_A, block)
+
+        assert response.header.iin & IIN.PARAMETER_ERROR
+        assert handler.ao_selects == []
+        assert handler.ao_operates == []
+        assert outstation._state.selection_of(MASTER_A) is None
+
+
 class TestOperateAnalogOutput:
     """OPERATE of g41 reaches operate_analog_output only through this master's matching selection."""
 
