@@ -38,6 +38,9 @@ from dnp3.objects.layout import data_length, layout_for
 # block's objects cannot be laid out with that prefix.
 _DataLength = Callable[[int, int], int | None]
 
+# A block's data length function from its object header, or why it has none.
+_LengthLookup = Callable[[ObjectHeader], _DataLength | TruncationReason]
+
 # Prefix codes that prefix each object with its index. The size prefixes
 # (UINT8_SIZE and up) describe variable-format objects, whose width neither the
 # layout table nor the registry can supply.
@@ -56,6 +59,27 @@ _START_STOP_CODES = frozenset({RangeCode.UINT8_START_STOP, RangeCode.UINT16_STAR
 _RESERVED_PREFIX_CODE = 0x07
 _RESERVED_RANGE_CODES = frozenset({0x0A, 0x0C, 0x0D, 0x0E, 0x0F})
 
+
+# Request functions whose object headers carry no object data (IEEE 1815-2012 4.4): a
+# block is its header, its range field and any index list. Every other request is
+# framed by object width, as a response is.
+_HEADER_ONLY_FUNCTIONS = frozenset(
+    {
+        FunctionCode.CONFIRM,
+        FunctionCode.READ,
+        FunctionCode.IMMEDIATE_FREEZE,
+        FunctionCode.IMMEDIATE_FREEZE_NO_ACK,
+        FunctionCode.FREEZE_CLEAR,
+        FunctionCode.FREEZE_CLEAR_NO_ACK,
+        FunctionCode.COLD_RESTART,
+        FunctionCode.WARM_RESTART,
+        FunctionCode.ENABLE_UNSOLICITED,
+        FunctionCode.DISABLE_UNSOLICITED,
+        FunctionCode.ASSIGN_CLASS,
+        FunctionCode.DELAY_MEASURE,
+        FunctionCode.RECORD_CURRENT_TIME,
+    }
+)
 
 # Response function codes (0x81-0x83)
 RESPONSE_FUNCTION_CODES = frozenset(
@@ -159,6 +183,11 @@ def _parse_range(data: bytes, range_code: RangeCode) -> ParsedRange:
     return ParsedRange(start=0, stop=0, count=0, bytes_consumed=0)
 
 
+def _index_list_length(count: int, prefix_width: int) -> int:
+    # A start-stop range below its start is left to the function's handler to judge.
+    return prefix_width * max(count, 0)
+
+
 def _fixed_width_length(width: int, count: int, prefix_width: int) -> int:
     # The octet-aligned case of dnp3.objects.layout.data_length, for registry-only objects.
     if width < 0 or count < 0 or prefix_width < 0:
@@ -172,6 +201,7 @@ def _parse_object_block(
     object_size: int | None = None,
     *,
     length_of: _DataLength | None = None,
+    start_stop_may_name_no_object: bool = False,
 ) -> tuple[ObjectBlock, int]:
     """Parse a single object block from data.
 
@@ -181,6 +211,8 @@ def _parse_object_block(
             ``length_of`` is given.
         length_of: Object data length for (count, index prefix width), if known.
             If neither is known, a block carrying objects takes all remaining data.
+        start_stop_may_name_no_object: Accept a start-stop range whose stop is
+            below its start, for a block that carries no object data.
 
     Returns:
         Tuple of (ObjectBlock, bytes_consumed).
@@ -205,7 +237,12 @@ def _parse_object_block(
 
     if length_of is None and object_size is not None:
         length_of = partial(_fixed_width_length, object_size)
-    if length_of is not None and header.range_code in _START_STOP_CODES and parsed_range.count < 1:
+    if (
+        length_of is not None
+        and not start_stop_may_name_no_object
+        and header.range_code in _START_STOP_CODES
+        and parsed_range.count < 1
+    ):
         # IEEE 1815-2012 4.2.2.7.3.3: a start-stop range holds the start index through the stop
         # index, so a stop below the start is malformed and gives no length to find the next header.
         msg = f"Start-stop range {parsed_range.start}..{parsed_range.stop} names no object"
@@ -284,32 +321,41 @@ def parse_response_header(data: bytes) -> tuple[ResponseHeader, int]:
 
 
 def parse_object_headers(data: bytes) -> list[ObjectBlock]:
-    """Parse object headers from data (header + range only, no object data).
+    """Parse object headers that carry no object data.
 
-    Used for parsing requests where we only need the headers.
+    Each block is its header, its range field and any index list, as in a READ.
+    The blocks of the header-only form of `frame_request_object_blocks`, without
+    the reason framing stopped.
 
     Args:
         data: Raw bytes containing object headers.
 
     Returns:
-        List of ObjectBlocks with header and range data only.
+        List of ObjectBlocks with header, range and index data only.
+    """
+    blocks, _truncation = _frame_object_blocks(data, _lookup_index_list_length, start_stop_may_name_no_object=True)
+    return blocks
+
+
+def _unsupported_qualifier(header: ObjectHeader) -> TruncationReason | None:
+    """Why a qualifier gives no length whatever the object, or None.
 
     Raises:
-        ParseError: If parsing fails.
+        ValueError: If the qualifier holds a prefix code or range code that is
+            not an enum member. Callers reject reserved codes first.
     """
-    blocks: list[ObjectBlock] = []
-    offset = 0
+    range_code = header.range_code
+    prefix_code = header.prefix_code
+    if get_range_size(range_code) == 0 and range_code != RangeCode.ALL_OBJECTS:
+        return TruncationReason.UNSUPPORTED_RANGE
+    if get_prefix_size(prefix_code) and prefix_code not in _INDEX_PREFIX_CODES:
+        return TruncationReason.SIZE_PREFIX
+    return None
 
-    while offset < len(data):
-        remaining = data[offset:]
-        if len(remaining) < OBJECT_HEADER_SIZE:
-            break  # Not enough for another header
 
-        block, consumed = _parse_object_block(remaining, object_size=None)
-        blocks.append(block)
-        offset += consumed
-
-    return blocks
+def _lookup_index_list_length(header: ObjectHeader) -> _DataLength | TruncationReason:
+    """Length function for a block with no object data: one index prefix per object."""
+    return _unsupported_qualifier(header) or _index_list_length
 
 
 def _lookup_data_length(header: ObjectHeader) -> _DataLength | TruncationReason:
@@ -325,12 +371,9 @@ def _lookup_data_length(header: ObjectHeader) -> _DataLength | TruncationReason:
         ValueError: If the qualifier holds a prefix code or range code that is
             not an enum member. Callers reject reserved codes first.
     """
-    range_code = header.range_code
-    prefix_code = header.prefix_code
-    if get_range_size(range_code) == 0 and range_code != RangeCode.ALL_OBJECTS:
-        return TruncationReason.UNSUPPORTED_RANGE
-    if get_prefix_size(prefix_code) and prefix_code not in _INDEX_PREFIX_CODES:
-        return TruncationReason.SIZE_PREFIX
+    unsupported = _unsupported_qualifier(header)
+    if unsupported is not None:
+        return unsupported
     layout = layout_for(header.group, header.variation)
     if layout is not None:
         return partial(data_length, layout)
@@ -368,11 +411,8 @@ def _stopped_at(reason: TruncationReason, offset: int, header: ObjectHeader) -> 
 def frame_response_object_blocks(data: bytes) -> tuple[list[ObjectBlock], Truncation | None]:
     """Split a response's object data into blocks, and say why framing stopped early.
 
-    Distinct from `parse_object_headers`, which is for *requests*: a request
-    (READ, for instance) carries object headers and range specifiers but no
-    object data, so consuming a per-object width there would over-read. A
-    response carries values, so each block must be delimited by its own size
-    for the next block's header to be found.
+    A response carries values, so each block is delimited by its own object
+    width for the next block's header to be found.
 
     An object header carries no length (IEEE 1815-2012 4.2.2.7), so a block
     whose length cannot be determined, or whose declared data runs past the
@@ -383,6 +423,32 @@ def frame_response_object_blocks(data: bytes) -> tuple[list[ObjectBlock], Trunca
     Returns:
         The framed blocks, and the truncation, or None if every octet was framed.
     """
+    return _frame_object_blocks(data, _lookup_data_length)
+
+
+def frame_request_object_blocks(function: FunctionCode, data: bytes) -> tuple[list[ObjectBlock], Truncation | None]:
+    """Split a request's object data into blocks, and say why framing stopped early.
+
+    A function whose requests carry no object data (READ, the freezes, the
+    restarts, ENABLE and DISABLE_UNSOLICITED and others, IEEE 1815-2012 4.4)
+    frames each block as its header, range field and any index list. Every
+    other function frames each block by object width, as a response is framed.
+    Framing stops as `frame_response_object_blocks` describes.
+
+    Returns:
+        The framed blocks, and the truncation, or None if every octet was framed.
+    """
+    if function in _HEADER_ONLY_FUNCTIONS:
+        return _frame_object_blocks(data, _lookup_index_list_length, start_stop_may_name_no_object=True)
+    return _frame_object_blocks(data, _lookup_data_length)
+
+
+def _frame_object_blocks(
+    data: bytes,
+    lookup: _LengthLookup,
+    *,
+    start_stop_may_name_no_object: bool = False,
+) -> tuple[list[ObjectBlock], Truncation | None]:
     blocks: list[ObjectBlock] = []
     offset = 0
 
@@ -394,7 +460,7 @@ def frame_response_object_blocks(data: bytes) -> tuple[list[ObjectBlock], Trunca
         header = ObjectHeader.from_bytes(remaining)
         if _has_reserved_code(header.qualifier):
             return blocks, _stopped_at(TruncationReason.RESERVED_QUALIFIER, offset, header)
-        length_or_reason = _lookup_data_length(header)
+        length_or_reason = lookup(header)
 
         length_of: _DataLength | None = None
         if not isinstance(length_or_reason, TruncationReason):
@@ -406,7 +472,9 @@ def frame_response_object_blocks(data: bytes) -> tuple[list[ObjectBlock], Trunca
         # through its length, so a packed layout with an index prefix stops.
 
         try:
-            block, consumed = _parse_object_block(remaining, length_of=length_of)
+            block, consumed = _parse_object_block(
+                remaining, length_of=length_of, start_stop_may_name_no_object=start_stop_may_name_no_object
+            )
         except _RangeNamesNoObject:
             return blocks, _stopped_at(TruncationReason.RANGE_NAMES_NO_OBJECT, offset, header)
         except _NoObjectLength:
@@ -427,6 +495,10 @@ def frame_response_object_blocks(data: bytes) -> tuple[list[ObjectBlock], Trunca
 def parse_request(data: bytes) -> RequestFragment:
     """Parse a complete request fragment.
 
+    Every object block is framed on its own (`frame_request_object_blocks`).
+    A block that cannot be framed, and every block after it, is absent from
+    ``objects`` and named by ``truncation``.
+
     Args:
         data: Raw request bytes.
 
@@ -434,15 +506,14 @@ def parse_request(data: bytes) -> RequestFragment:
         Parsed RequestFragment.
 
     Raises:
-        ParseError: If parsing fails.
+        ParseError: If the request header cannot be parsed.
     """
     header, consumed = parse_request_header(data)
     remaining = data[consumed:]
 
-    # Parse object headers (we don't know object sizes without group/variation lookup)
-    objects = parse_object_headers(remaining)
+    objects, truncation = frame_request_object_blocks(header.function, remaining)
 
-    return RequestFragment(header=header, objects=tuple(objects))
+    return RequestFragment(header=header, objects=tuple(objects), truncation=truncation)
 
 
 def parse_response(data: bytes) -> ResponseFragment:

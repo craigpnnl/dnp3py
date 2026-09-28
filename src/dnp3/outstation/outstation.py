@@ -16,7 +16,7 @@ from dnp3.application.builder import (
     build_response,
     build_unsolicited_response,
 )
-from dnp3.application.fragment import ObjectBlock, RequestFragment, ResponseFragment
+from dnp3.application.fragment import ObjectBlock, RequestFragment, ResponseFragment, Truncation, TruncationReason
 from dnp3.application.header import MAX_APP_SEQUENCE, RESPONSE_HEADER_SIZE
 from dnp3.application.parser import parse_request
 from dnp3.application.qualifiers import (
@@ -143,6 +143,35 @@ QUALIFIER_CROB_2BYTE = 0x28
 
 # CROB body size in bytes: control_code(1) + op_count(1) + on_time(4) + off_time(4) + status(1)
 _CROB_BODY_BYTES = 11
+
+# Functions this outstation executes. Any other answers NO_FUNC_CODE_SUPPORT whether
+# or not its objects framed. CONFIRM is absent: it executes no object it carries.
+_EXECUTED_FUNCTIONS = frozenset(
+    {
+        FunctionCode.READ,
+        FunctionCode.WRITE,
+        FunctionCode.SELECT,
+        FunctionCode.OPERATE,
+        FunctionCode.DIRECT_OPERATE,
+        FunctionCode.DIRECT_OPERATE_NO_ACK,
+        FunctionCode.IMMEDIATE_FREEZE,
+        FunctionCode.IMMEDIATE_FREEZE_NO_ACK,
+        FunctionCode.FREEZE_CLEAR,
+        FunctionCode.FREEZE_CLEAR_NO_ACK,
+        FunctionCode.COLD_RESTART,
+        FunctionCode.WARM_RESTART,
+        FunctionCode.ENABLE_UNSOLICITED,
+        FunctionCode.DISABLE_UNSOLICITED,
+        FunctionCode.DELAY_MEASURE,
+    }
+)
+_NO_ACK_FUNCTIONS = frozenset(
+    {
+        FunctionCode.DIRECT_OPERATE_NO_ACK,
+        FunctionCode.IMMEDIATE_FREEZE_NO_ACK,
+        FunctionCode.FREEZE_CLEAR_NO_ACK,
+    }
+)
 
 
 def _split_response_objects(
@@ -763,11 +792,17 @@ class Outstation:
         self._state.clear_expired_selects(self.config.select_timeout)
         selection = self._state.selection_of(peer)
 
+        if function == FunctionCode.SELECT and selection is not None and seq == selection.sequence:
+            if selection.body == body and selection.response is not None:
+                return [selection.response]
+            return []
+
+        truncation = request.truncation
+        if truncation is not None and function in _EXECUTED_FUNCTIONS:
+            self._state.terminate(peer)
+            return self._refuse_unframed(request, truncation)
+
         if function == FunctionCode.SELECT:
-            if selection is not None and seq == selection.sequence:
-                if selection.body == body and selection.response is not None:
-                    return [selection.response]
-                return []
             selection = self._state.begin_selection(peer, seq, body)
             try:
                 response = self._handle_select(request, peer=peer)
@@ -799,6 +834,20 @@ class Outstation:
         if function != FunctionCode.CONFIRM:
             self._state.terminate(peer)
         return self._dispatch(request)
+
+    def _refuse_unframed(self, request: RequestFragment, truncation: Truncation) -> list[ResponseFragment]:
+        """Answer a request with a block that could not be framed, having executed none of it.
+
+        Later block boundaries are unknown (IEEE 1815-2012 4.2.2.7), so nothing in the
+        request runs. An object of unknown width is one the outstation does not know,
+        IIN2.1 (Table 4-14); any other failure is a malformed request, IIN2.2 (4.5.11).
+        A NO_ACK function is never answered.
+        """
+        if request.header.function in _NO_ACK_FUNCTIONS:
+            return []
+        unknown = truncation.reason is TruncationReason.UNKNOWN_WIDTH
+        error = IIN.OBJECT_UNKNOWN if unknown else IIN.PARAMETER_ERROR
+        return [build_null_response(iin=self.iin | error, seq=request.header.control.seq)]
 
     def _dispatch(self, request: RequestFragment) -> list[ResponseFragment]:
         """Dispatch a request that is neither SELECT nor OPERATE by function code."""

@@ -212,25 +212,34 @@ class TestSelectAnalogOutput:
         assert _objects_on_wire(response) == _echo(block_b, [SUCCESS])
         assert handler.ao_selects == [(5, 2.5)]
 
-    def test_truncated_block_selects_the_whole_objects_and_flags_parameter_error(self) -> None:
+    def test_truncated_block_selects_nothing_and_flags_parameter_error(self) -> None:
         outstation, handler = _outstation()
         whole = _ao_block(3, "<f", [(5, 1.5)])
         block = ObjectBlock(header=whole.header, data=bytes([2]) + whole.data[1:] + bytes([6, 0]))
 
-        response = _select(outstation, MASTER_A, block)
+        response = _select(outstation, MASTER_A, block, seq=4)
 
         assert response.header.iin & IIN.PARAMETER_ERROR
-        assert handler.ao_selects == [(5, 1.5)]
+        assert response.sequence == 4
+        assert response.objects == ()
+        assert handler.ao_selects == []
+        assert outstation._state.selection_of(MASTER_A) is None
 
 
 class TestMalformedAnalogOutputBlock:
-    """A g41 block that cannot be parsed reaches no handler and sets IIN.PARAMETER_ERROR."""
+    """A g41 block that cannot be parsed reaches no handler and sets an IIN error bit.
+
+    A variation of unknown width is an object the outstation does not know (IIN2.1); a
+    block that frames with an octet left over is malformed (IIN2.2).
+    """
 
     @pytest.mark.parametrize(
-        ("variation", "qualifier"), [(5, 0x17), (3, 0x07)], ids=["unknown-variation", "unknown-qualifier"]
+        ("variation", "qualifier", "error"),
+        [(5, 0x17, IIN.OBJECT_UNKNOWN), (3, 0x07, IIN.PARAMETER_ERROR)],
+        ids=["unknown-variation", "unknown-qualifier"],
     )
     @pytest.mark.parametrize("function", ["select", "operate"])
-    def test_malformed_block_flags_parameter_error(self, function: str, variation: int, qualifier: int) -> None:
+    def test_malformed_block_flags_an_error(self, function: str, variation: int, qualifier: int, error: IIN) -> None:
         outstation, handler = _outstation()
         block = ObjectBlock(
             header=ObjectHeader(group=41, variation=variation, qualifier=qualifier),
@@ -240,7 +249,8 @@ class TestMalformedAnalogOutputBlock:
 
         response = send(outstation, MASTER_A, block)
 
-        assert response.header.iin & IIN.PARAMETER_ERROR
+        assert response.header.iin & error
+        assert response.objects == ()
         assert handler.ao_selects == []
         assert handler.ao_operates == []
         assert outstation._state.selection_of(MASTER_A) is None

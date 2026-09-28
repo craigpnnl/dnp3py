@@ -1,0 +1,300 @@
+"""Every request object block reaches the outstation on its own, or the request runs nothing.
+
+Request octets are built from IEEE 1815-2012 Annex A rather than this library's encoders.
+An object header carries no length (4.2.2.7), so a block that cannot be framed leaves
+every later boundary unknown: the outstation executes nothing from that request and
+answers a null response with IIN2.1 for an object of unknown width and IIN2.2 otherwise.
+"""
+
+from __future__ import annotations
+
+import pytest
+
+from dnp3.application.fragment import ResponseFragment
+from dnp3.core.enums import CommandStatus, ControlCode, FunctionCode
+from dnp3.core.flags import IIN
+from dnp3.outstation import Outstation
+from dnp3.outstation.config import OutstationConfig
+from dnp3.outstation.handler import CommandResult, DefaultCommandHandler
+from dnp3.outstation.peer import PeerId
+
+MASTER_A = PeerId(source=3, connection=1)
+MASTER_B = PeerId(source=9, connection=2)
+
+# g12v1 (A.8.1), qualifier 0x17: control code LATCH_ON, count 1, on-time, off-time, status.
+_CROB_BODY = bytes.fromhex("03 01 00000000 00000000 00")
+
+
+def _crob(index: int, count: int = 1) -> bytes:
+    return bytes([0x0C, 0x01, 0x17, count, index]) + _CROB_BODY
+
+
+# g12v2 has no width this outstation knows (Table 4-14 names it as an unknown object).
+_G12V2 = bytes([0x0C, 0x02, 0x17, 0x01, 0x02]) + _CROB_BODY
+# g41v1 (A.20.1: INT32, status), index 4, value 1000.
+_G41V1 = bytes.fromhex("29 01 17 01 04 E8030000 00")
+# g41v2 (A.20.2: INT16, status), index 3, value 100.
+_G41V2 = bytes.fromhex("29 02 17 01 03 6400 00")
+# g41v4 (A.20.4: FLT64, status), index 5, value 0.5.
+_G41V4 = bytes.fromhex("29 04 17 01 05 000000000000E03F 00")
+# g80v1 (A.28.1), start-stop 7..7, bit 7 (DEVICE_RESTART) written 0.
+_G80V1_CLEAR_RESTART = bytes.fromhex("50 01 00 07 07 00")
+# g50v1 (A.23.1: DNP3TIME), count 1.
+_G50V1 = bytes.fromhex("32 01 07 01 00E8764801 00")
+# g50v2 (A.23.2: DNP3TIME, UINT32 interval), count 1: no layout row, so it cannot be framed.
+_G50V2 = bytes.fromhex("32 02 07 01 00E8764801 00 10270000")
+# g20v0 all counters.
+_G20_ALL = bytes.fromhex("14 00 06")
+
+_IIN1_RESTART = 0x80
+
+
+class _RecordingHandler(DefaultCommandHandler):
+    """Records every command and answers SUCCESS."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.bo_selects: list[int] = []
+        self.bo_operates: list[int] = []
+        self.bo_direct: list[int] = []
+        self.ao_selects: list[tuple[int, float]] = []
+        self.ao_operates: list[tuple[int, float, int]] = []
+        self.freezes: list[bool] = []
+
+    def select_binary_output(
+        self, index: int, code: ControlCode, count: int, on_time: int, off_time: int
+    ) -> CommandResult:
+        self.bo_selects.append(index)
+        return CommandResult.success()
+
+    def operate_binary_output(
+        self, index: int, code: ControlCode, count: int, on_time: int, off_time: int, select_sequence: int
+    ) -> CommandResult:
+        self.bo_operates.append(index)
+        return CommandResult.success()
+
+    def direct_operate_binary_output(
+        self, index: int, code: ControlCode, count: int, on_time: int, off_time: int
+    ) -> CommandResult:
+        self.bo_direct.append(index)
+        return CommandResult.success()
+
+    def select_analog_output(self, index: int, value: float) -> CommandResult:
+        self.ao_selects.append((index, value))
+        return CommandResult.success()
+
+    def operate_analog_output(self, index: int, value: float, select_sequence: int) -> CommandResult:
+        self.ao_operates.append((index, value, select_sequence))
+        return CommandResult.success()
+
+    def freeze_counters(self, start: int, stop: int, clear: bool) -> CommandResult:
+        self.freezes.append(clear)
+        return CommandResult.success()
+
+    @property
+    def calls(self) -> int:
+        lists = (self.bo_selects, self.bo_operates, self.bo_direct, self.ao_selects, self.ao_operates, self.freezes)
+        return sum(len(calls) for calls in lists)
+
+
+def _outstation() -> tuple[Outstation, _RecordingHandler]:
+    handler = _RecordingHandler()
+    return Outstation(config=OutstationConfig(time_sync_required=False), handler=handler), handler
+
+
+def _send(
+    outstation: Outstation, function: FunctionCode, objects: bytes, seq: int, peer: PeerId = MASTER_A
+) -> list[ResponseFragment]:
+    return outstation.process_request(bytes([0xC0 | seq, function.value]) + objects, peer=peer)
+
+
+def _only(responses: list[ResponseFragment]) -> ResponseFragment:
+    assert len(responses) == 1
+    return responses[0]
+
+
+def _null_response(seq: int, iin2: int) -> bytes:
+    """A null RESPONSE (FIR, FIN) from a restarted outstation, with IIN2 set as given."""
+    return bytes([0xC0 | seq, 0x81, _IIN1_RESTART, iin2])
+
+
+class TestEveryBlockReachesTheOutstation:
+    """A request of several object blocks acts on every block, not on the first."""
+
+    def test_select_of_two_crob_blocks_selects_both_and_echoes_both(self) -> None:
+        outstation, handler = _outstation()
+        objects = _crob(1) + _crob(2)
+
+        response = _only(_send(outstation, FunctionCode.SELECT, objects, seq=2))
+
+        assert handler.bo_selects == [1, 2]
+        assert response.to_bytes() == _null_response(2, 0x00) + objects
+
+    def test_select_of_a_crob_and_an_analog_output_selects_each(self) -> None:
+        outstation, handler = _outstation()
+        objects = _crob(1) + _G41V2
+
+        response = _only(_send(outstation, FunctionCode.SELECT, objects, seq=2))
+
+        assert handler.bo_selects == [1]
+        assert handler.ao_selects == [(3, 100.0)]
+        assert response.to_bytes() == _null_response(2, 0x00) + objects
+
+    def test_operate_of_two_analog_output_blocks_operates_each(self) -> None:
+        outstation, handler = _outstation()
+        objects = _G41V1 + _G41V4
+        _send(outstation, FunctionCode.SELECT, objects, seq=4)
+
+        response = _only(_send(outstation, FunctionCode.OPERATE, objects, seq=5))
+
+        assert handler.ao_operates == [(4, 1000.0, 4), (5, 0.5, 4)]
+        assert response.to_bytes() == _null_response(5, 0x00) + objects
+
+    def test_direct_operate_of_two_crob_blocks_operates_both(self) -> None:
+        outstation, handler = _outstation()
+        objects = _crob(1) + _crob(2)
+
+        response = _only(_send(outstation, FunctionCode.DIRECT_OPERATE, objects, seq=6))
+
+        assert handler.bo_direct == [1, 2]
+        assert response.to_bytes() == _null_response(6, 0x00) + objects
+
+    def test_ranged_read_of_two_groups_answers_both_groups(self) -> None:
+        outstation, _handler = _outstation()
+        for index in (0, 1):
+            outstation.database.add_binary_input(index)
+            outstation.database.add_analog_input(index)
+
+        response = _only(_send(outstation, FunctionCode.READ, bytes.fromhex("01 02 00 00 01  1E 01 00 00 01"), seq=1))
+
+        assert [(block.header.group, block.header.variation) for block in response.objects] == [(1, 2), (30, 1)]
+        assert not response.header.iin & (IIN.PARAMETER_ERROR | IIN.OBJECT_UNKNOWN)
+
+    def test_write_of_time_then_internal_indications_clears_restart(self) -> None:
+        outstation, _handler = _outstation()
+
+        response = _only(_send(outstation, FunctionCode.WRITE, _G50V1 + _G80V1_CLEAR_RESTART, seq=3))
+
+        assert not outstation.iin & IIN.DEVICE_RESTART
+        assert response.to_bytes() == bytes([0xC3, 0x81, 0x00, 0x00])
+
+
+class TestUnframeableRequestRunsNothing:
+    """A block that cannot be framed refuses the whole request."""
+
+    def test_select_whose_last_block_is_short_arms_nothing(self) -> None:
+        outstation, handler = _outstation()
+        objects = _crob(1) + _crob(2, count=2)
+
+        response = _only(_send(outstation, FunctionCode.SELECT, objects, seq=6))
+
+        assert response.to_bytes() == _null_response(6, 0x04)
+        assert handler.bo_selects == []
+        assert outstation._state.selection_of(MASTER_A) is None
+        other = _only(_send(outstation, FunctionCode.SELECT, _crob(1), seq=0, peer=MASTER_B))
+        assert other.to_bytes() == _null_response(0, 0x00) + _crob(1)
+        assert handler.bo_selects == [1]
+
+    def test_byte_identical_operate_after_a_refused_select_operates_nothing(self) -> None:
+        outstation, handler = _outstation()
+        objects = _crob(1) + _crob(2, count=2)
+        _send(outstation, FunctionCode.SELECT, objects, seq=6)
+
+        response = _only(_send(outstation, FunctionCode.OPERATE, objects, seq=7))
+
+        assert response.to_bytes() == _null_response(7, 0x04)
+        assert handler.bo_operates == []
+
+    def test_unknown_object_width_is_object_unknown(self) -> None:
+        outstation, handler = _outstation()
+
+        response = _only(_send(outstation, FunctionCode.SELECT, _crob(1) + _G12V2, seq=2))
+
+        assert response.to_bytes() == _null_response(2, 0x02)
+        assert handler.calls == 0
+        assert outstation._state.selection_of(MASTER_A) is None
+
+    def test_direct_operate_with_a_short_block_operates_nothing(self) -> None:
+        outstation, handler = _outstation()
+
+        response = _only(_send(outstation, FunctionCode.DIRECT_OPERATE, _crob(1, count=2), seq=3))
+
+        assert response.to_bytes() == _null_response(3, 0x04)
+        assert handler.bo_direct == []
+
+    def test_read_with_a_reserved_qualifier_is_parameter_error(self) -> None:
+        outstation, _handler = _outstation()
+        outstation.database.add_binary_input(0)
+
+        response = _only(_send(outstation, FunctionCode.READ, bytes.fromhex("01 02 00 00 00  1E 01 0A"), seq=1))
+
+        assert response.to_bytes() == _null_response(1, 0x04)
+
+    @pytest.mark.parametrize(
+        ("function", "objects"),
+        [
+            (FunctionCode.DIRECT_OPERATE_NO_ACK, _crob(1, count=2)),
+            (FunctionCode.IMMEDIATE_FREEZE_NO_ACK, _G20_ALL + bytes([0x14])),
+            (FunctionCode.FREEZE_CLEAR_NO_ACK, _G20_ALL + bytes([0x14])),
+        ],
+        ids=["direct-operate-no-ack", "immediate-freeze-no-ack", "freeze-clear-no-ack"],
+    )
+    def test_no_ack_request_is_refused_without_a_response(self, function: FunctionCode, objects: bytes) -> None:
+        outstation, handler = _outstation()
+
+        responses = _send(outstation, function, objects, seq=3)
+
+        assert responses == []
+        assert handler.calls == 0
+
+    def test_freeze_with_trailing_octets_freezes_nothing(self) -> None:
+        outstation, handler = _outstation()
+
+        response = _only(_send(outstation, FunctionCode.IMMEDIATE_FREEZE, _G20_ALL + bytes([0x14]), seq=3))
+
+        assert response.to_bytes() == _null_response(3, 0x04)
+        assert handler.freezes == []
+
+    def test_unsupported_function_answers_no_function_support(self) -> None:
+        """FREEZE_AT_TIME is not executed here, so its unframeable g50v2 does not change the answer."""
+        outstation, _handler = _outstation()
+
+        response = _only(_send(outstation, FunctionCode.FREEZE_AT_TIME, _G50V2 + _G20_ALL, seq=4))
+
+        assert response.to_bytes() == _null_response(4, 0x01)
+
+
+class TestRefusalAndSelection:
+    """IEEE 1815-2012 Table 4-9 is applied before the refusal."""
+
+    def test_select_retry_with_an_unframeable_body_is_discarded_and_the_selection_holds(self) -> None:
+        outstation, handler = _outstation()
+        _send(outstation, FunctionCode.SELECT, _crob(1), seq=2)
+
+        retry = _send(outstation, FunctionCode.SELECT, _crob(1) + _G12V2, seq=2)
+        operate = _only(_send(outstation, FunctionCode.OPERATE, _crob(1), seq=3))
+
+        assert retry == []
+        assert handler.bo_operates == [1]
+        assert operate.to_bytes() == _null_response(3, 0x00) + _crob(1)
+
+    def test_refused_request_ends_the_selection(self) -> None:
+        outstation, handler = _outstation()
+        _send(outstation, FunctionCode.SELECT, _crob(1), seq=2)
+        _send(outstation, FunctionCode.OPERATE, _crob(1) + _G12V2, seq=3)
+
+        operate = _only(_send(outstation, FunctionCode.OPERATE, _crob(1), seq=3))
+
+        assert handler.bo_operates == []
+        no_select = bytearray(_crob(1))
+        no_select[-1] = int(CommandStatus.NO_SELECT)
+        assert operate.to_bytes() == _null_response(3, 0x00) + bytes(no_select)
+
+    def test_confirm_with_unframeable_objects_is_not_answered_and_keeps_the_selection(self) -> None:
+        outstation, _handler = _outstation()
+        _send(outstation, FunctionCode.SELECT, _crob(1), seq=2)
+
+        responses = _send(outstation, FunctionCode.CONFIRM, bytes([0x0C, 0x01, 0x0A]), seq=2)
+
+        assert responses == []
+        assert outstation._state.selection_of(MASTER_A) is not None
