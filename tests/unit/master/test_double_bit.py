@@ -132,6 +132,22 @@ class TestG3v1Packed:
 
         assert handler.double_bit_calls == []
 
+    def test_trailing_block_shorter_than_its_range_delivers_the_points_present(self) -> None:
+        # Range 0 to 7 needs two octets; the response ends after one, so only points 0 to 3 exist.
+        handler = DoubleBitRecorder()
+
+        _process(handler, _range_block(1, 2, 0, 0, bytes([0x81])) + _range_block(3, 1, 0, 7, bytes([0xE4])))
+
+        assert handler.double_bit_calls == [
+            [
+                DoubleBitValue(index=0, state=DoubleBitState.INTERMEDIATE, quality=ONLINE),
+                DoubleBitValue(index=1, state=DoubleBitState.OFF, quality=ONLINE),
+                DoubleBitValue(index=2, state=DoubleBitState.ON, quality=ONLINE),
+                DoubleBitValue(index=3, state=DoubleBitState.INDETERMINATE, quality=ONLINE),
+            ]
+        ]
+        assert handler.calls == [("on_binary_input", [BinaryValue(index=0, value=True, quality=ONLINE)])]
+
 
 class TestG4Events:
     """A.5: the g3v2 flag octet, then DNP3TIME (g4v2) or a UINT16 relative time (g4v3)."""
