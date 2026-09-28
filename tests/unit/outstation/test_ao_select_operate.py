@@ -229,28 +229,34 @@ class TestSelectAnalogOutput:
 class TestMalformedAnalogOutputBlock:
     """A g41 block that cannot be parsed reaches no handler and sets an IIN error bit.
 
-    A variation of unknown width is an object the outstation does not know (IIN2.1); a
-    block that frames with an octet left over is malformed (IIN2.2).
+    A variation of unknown width is an object the outstation does not know (IIN2.1). A
+    qualifier g41 does not take, or a block that frames with an octet left over, is
+    malformed (IIN2.2).
     """
 
     @pytest.mark.parametrize(
-        ("variation", "qualifier", "error"),
-        [(5, 0x17, IIN.OBJECT_UNKNOWN), (3, 0x07, IIN.PARAMETER_ERROR)],
-        ids=["unknown-variation", "unknown-qualifier"],
+        ("variation", "qualifier", "data", "error", "echoed"),
+        [
+            # Count 1, index 5, value 1.5, status 0.
+            (5, 0x17, bytes([1, 5, 0, 0, 0xC0, 0x3F, 0]), IIN.OBJECT_UNKNOWN, False),
+            # Count 1 and no index prefix: the block frames, so the g41 qualifier check refuses it.
+            (3, 0x07, bytes([1, 0, 0, 0xC0, 0x3F, 0]), IIN.PARAMETER_ERROR, True),
+            (3, 0x17, bytes([1, 5, 0, 0, 0xC0, 0x3F, 0, 0]), IIN.PARAMETER_ERROR, False),
+        ],
+        ids=["unknown-variation", "count-without-index-qualifier", "left-over-octet"],
     )
     @pytest.mark.parametrize("function", ["select", "operate"])
-    def test_malformed_block_flags_an_error(self, function: str, variation: int, qualifier: int, error: IIN) -> None:
+    def test_malformed_block_flags_an_error(
+        self, function: str, variation: int, qualifier: int, data: bytes, error: IIN, echoed: bool
+    ) -> None:
         outstation, handler = _outstation()
-        block = ObjectBlock(
-            header=ObjectHeader(group=41, variation=variation, qualifier=qualifier),
-            data=bytes([1, 5, 0, 0, 0xC0, 0x3F, 0]),
-        )
+        block = ObjectBlock(header=ObjectHeader(group=41, variation=variation, qualifier=qualifier), data=data)
         send = _select if function == "select" else _operate
 
         response = send(outstation, MASTER_A, block)
 
         assert response.header.iin & error
-        assert response.objects == ()
+        assert response.objects == ((block,) if echoed else ())
         assert handler.ao_selects == []
         assert handler.ao_operates == []
         assert outstation._state.selection_of(MASTER_A) is None
