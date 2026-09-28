@@ -277,6 +277,12 @@ class TestConfigDefaultVariation:
         with pytest.raises(ValueError, match="Analog output static variation"):
             OutstationConfig(analog_output_static_variation=value)
 
+    @pytest.mark.parametrize("value", [2.0, 1.0, True, False])
+    def test_config_refuses_non_int_variation(self, value: float) -> None:
+        """A float or bool equal to 1 or 2 is still refused: the setting is int-only."""
+        with pytest.raises(ValueError, match="Analog output static variation"):
+            OutstationConfig(analog_output_static_variation=value)  # type: ignore[arg-type]
+
 
 class TestClass0:
     def test_class_0_includes_g40_block_after_analog_inputs(self) -> None:

@@ -94,6 +94,7 @@ class OutstationConfig:
         if self.max_controls_per_request <= 0:
             msg = f"Max controls must be > 0, got {self.max_controls_per_request}"
             raise ValueError(msg)
-        if self.analog_output_static_variation not in (1, 2):
-            msg = f"Analog output static variation must be 1 or 2, got {self.analog_output_static_variation}"
+        variation = self.analog_output_static_variation
+        if type(variation) is not int or variation not in (1, 2):
+            msg = f"Analog output static variation must be 1 or 2, got {variation!r}"
             raise ValueError(msg)
