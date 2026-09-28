@@ -7,6 +7,7 @@ including polling, commands, and unsolicited response handling.
 import struct
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
 from types import MappingProxyType
 from typing import Generic, Protocol, TypeVar
 
@@ -42,7 +43,7 @@ from dnp3.master.polling import (
     RangePollTask,
 )
 from dnp3.master.state import MasterState, MasterStateManager
-from dnp3.objects.layout import PointKind, ValueCodec, WireLayout, layout_for
+from dnp3.objects.layout import PointKind, TimeKind, ValueCodec, WireLayout, layout_for
 
 # Quality flag mask
 QUALITY_ONLINE = 0x01
@@ -212,6 +213,37 @@ def _read_quality(data: bytes, payload: int, *, has_flags: bool) -> tuple[int, i
     return QUALITY_ONLINE, payload
 
 
+# Epoch for DNP3TIME (IEEE 1815-2012 11.3): a UINT48 count of milliseconds
+# since 1970-01-01 00:00:00 UTC.
+_DNP3TIME_EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
+
+
+def _decode_timestamp(raw: bytes) -> datetime | None:
+    """Decode a DNP3TIME field (little-endian UINT48 ms since the epoch, 11.3).
+
+    None when the 48-bit count exceeds Python's datetime range (year 9999):
+    the wire field permits any UINT48, but no genuine response carries one that
+    large, and the index, value and flags of the same object must still be
+    delivered rather than lost to an exception from an unusable time field.
+    """
+    try:
+        return _DNP3TIME_EPOCH + timedelta(milliseconds=int.from_bytes(raw, "little", signed=False))
+    except OverflowError:
+        return None
+
+
+def _read_timestamp(data: bytes, payload: int, wire: WireLayout) -> datetime | None:
+    """Decode a layout's trailing DNP3TIME field, or None when it carries no absolute time.
+
+    The time field is the last `wire.time.octets` octets of the object, after
+    any flag octet and value field.
+    """
+    if wire.time is not TimeKind.ABSOLUTE:
+        return None
+    offset = payload + wire.width - wire.time.octets
+    return _decode_timestamp(data[offset : offset + wire.time.octets])
+
+
 def _parse_packed_binary(layout: ObjectLayout, data: bytes) -> list[BinaryValue]:
     """Parse bit-packed binary points (g1v1 / g10v1), 8 points per byte.
 
@@ -244,7 +276,10 @@ def _block_slots(block: ObjectBlock) -> ObjectLayout | None:
 
 
 def _decode_binary(block: ObjectBlock, wire: WireLayout) -> list[BinaryValue]:
-    """Decode binary input or output points: packed bits, or one flag octet per point."""
+    """Decode binary input or output points: packed bits, or one flag octet per point.
+
+    A layout with absolute time also decodes the trailing DNP3TIME into `timestamp`.
+    """
     slots = _block_slots(block)
     if slots is None:
         return []
@@ -263,13 +298,17 @@ def _decode_binary(block: ObjectBlock, wire: WireLayout) -> list[BinaryValue]:
                 index=index,
                 value=bool(flags & QUALITY_STATE),
                 quality=flags & ~QUALITY_STATE,
+                timestamp=_read_timestamp(data, payload, wire),
             )
         )
     return values
 
 
 def _decode_analog(block: ObjectBlock, wire: WireLayout) -> list[AnalogValue]:
-    """Decode analog input or output points; any trailing time field is skipped."""
+    """Decode analog input or output points.
+
+    A layout with absolute time also decodes the trailing DNP3TIME into `timestamp`.
+    """
     decode = _ANALOG_DECODERS.get(wire.codec)
     slots = _block_slots(block)
     if decode is None or slots is None:
@@ -284,13 +323,17 @@ def _decode_analog(block: ObjectBlock, wire: WireLayout) -> list[AnalogValue]:
                 index=index,
                 value=decode(data[value_offset : value_offset + wire.value_width]),
                 quality=quality,
+                timestamp=_read_timestamp(data, payload, wire),
             )
         )
     return values
 
 
 def _decode_counter(block: ObjectBlock, wire: WireLayout) -> list[CounterValue]:
-    """Decode counter or frozen counter points; any trailing time field is skipped."""
+    """Decode counter or frozen counter points.
+
+    A layout with absolute time also decodes the trailing DNP3TIME into `timestamp`.
+    """
     slots = _block_slots(block)
     if wire.codec is not ValueCodec.UINT or slots is None:
         return []
@@ -300,7 +343,14 @@ def _decode_counter(block: ObjectBlock, wire: WireLayout) -> list[CounterValue]:
     for index, payload in _iter_object_slots(slots, data, wire.width):
         quality, value_offset = _read_quality(data, payload, has_flags=wire.has_flags)
         raw = int.from_bytes(data[value_offset : value_offset + wire.value_width], "little", signed=False)
-        values.append(CounterValue(index=index, value=raw, quality=quality))
+        values.append(
+            CounterValue(
+                index=index,
+                value=raw,
+                quality=quality,
+                timestamp=_read_timestamp(data, payload, wire),
+            )
+        )
     return values
 
 
