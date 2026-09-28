@@ -10,10 +10,12 @@ through ``Master.process_response``.
 import struct
 from datetime import UTC, datetime, timedelta
 
+from dnp3.application.fragment import ObjectBlock
+from dnp3.application.qualifiers import ObjectHeader
 from dnp3.core.flags import DoubleBitState
 from dnp3.master import DoubleBitInputHandler, DoubleBitValue, Master
 from dnp3.master.handler import AnalogValue, BinaryValue, CounterValue, ResponseInfo, SOEHandler
-from tests.unit.master.delivery import RecordingHandler
+from tests.unit.master.delivery import RecordingHandler, dispatch
 
 # Response header: app control (FIR+FIN, seq 1), RESPONSE function, 2-byte IIN.
 RESPONSE_HEADER = bytes([0xC1, 0x81, 0x00, 0x00])
@@ -214,5 +216,60 @@ class TestRunsOfOneKind:
                     AnalogValue(index=1, value=11.0, quality=ONLINE),
                     AnalogValue(index=2, value=12.0, quality=ONLINE),
                 ],
+            ),
+        ]
+
+
+class TestWhatEndsARun:
+    def test_block_of_another_kind_ends_a_run_when_the_handler_lacks_its_callback(self) -> None:
+        handler = RecordingHandler()
+        assert not isinstance(handler, DoubleBitInputHandler)
+        body = (
+            _range(1, 2, 0, 0, bytes([ONLINE_ON]))
+            + _range(3, 2, 0, 0, bytes([ONLINE_ON]))
+            + _range(1, 2, 1, 1, bytes([ONLINE]))
+        )
+
+        _process(handler, body)
+
+        assert handler.calls == [
+            ("on_binary_input", [BinaryValue(index=0, value=True, quality=ONLINE)]),
+            ("on_binary_input", [BinaryValue(index=1, value=False, quality=ONLINE)]),
+        ]
+
+    def test_block_of_another_kind_with_no_values_still_ends_a_run(self) -> None:
+        # g32v1 with a count of zero: framed as analog input, decodes to nothing.
+        body = (
+            _range(1, 2, 0, 0, bytes([ONLINE_ON]))
+            + bytes([32, 1, COUNT_8_INDEX_8, 0])
+            + _range(1, 2, 1, 1, bytes([ONLINE]))
+        )
+        handler = OrderRecorder()
+
+        _process(handler, body)
+
+        assert handler.sequence == [
+            ("on_binary_input", [BinaryValue(index=0, value=True, quality=ONLINE)]),
+            ("on_binary_input", [BinaryValue(index=1, value=False, quality=ONLINE)]),
+        ]
+
+    def test_block_with_no_layout_does_not_end_a_run(self) -> None:
+        # The response parser stops at a block it cannot size, so this one is handed to the
+        # decode step directly.
+        def block(group: int, data: bytes) -> ObjectBlock:
+            return ObjectBlock(header=ObjectHeader(group=group, variation=1, qualifier=RANGE_8), data=data)
+
+        calls = dispatch(
+            [
+                block(30, bytes([0, 0, ONLINE]) + struct.pack("<i", 10)),
+                block(99, bytes([0, 0, ONLINE])),
+                block(30, bytes([1, 1, ONLINE]) + struct.pack("<i", 11)),
+            ]
+        )
+
+        assert calls == [
+            (
+                "on_analog_input",
+                [AnalogValue(index=0, value=10.0, quality=ONLINE), AnalogValue(index=1, value=11.0, quality=ONLINE)],
             ),
         ]

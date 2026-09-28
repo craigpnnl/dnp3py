@@ -14,7 +14,7 @@ from dnp3.application.fragment import Truncation, TruncationReason
 from dnp3.core.flags import DoubleBitState
 from dnp3.master import DefaultSOEHandler, DoubleBitInputHandler, DoubleBitValue, Master
 from dnp3.master.double_bit import unpack_double_bit_states
-from dnp3.master.handler import BinaryValue, ResponseInfo, SOEHandler
+from dnp3.master.handler import AnalogValue, BinaryValue, ResponseInfo, SOEHandler
 from tests.unit.master.delivery import RecordingHandler
 
 # Response header: app control (FIR+FIN, seq 1), RESPONSE function, 2-byte IIN.
@@ -246,7 +246,11 @@ class TestDelivery:
 
         _process(handler, body)
 
-        assert [name for name, _ in handler.calls] == ["on_analog_input", "on_binary_input"]
+        assert handler.calls == [
+            ("on_analog_input", [AnalogValue(index=0, value=16.0, quality=ONLINE)]),
+            ("on_binary_input", [BinaryValue(index=0, value=True, quality=ONLINE)]),
+        ]
+        assert handler.double_bit_calls == [[DoubleBitValue(index=0, state=DoubleBitState.ON, quality=ONLINE)]]
         assert handler.double_bit_positions == [1]
 
     def test_handler_without_the_callback_receives_nothing_and_does_not_raise(self) -> None:
