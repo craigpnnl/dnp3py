@@ -10,6 +10,7 @@ from enum import Enum, auto
 
 from dnp3.core.enums import ControlCode
 from dnp3.core.flags import IIN
+from dnp3.outstation.peer import UNSPECIFIED_PEER, PeerId
 
 # Event class numbers (from EventClass enum)
 _CLASS_1 = 1
@@ -215,7 +216,9 @@ class OutstationStateManager:
     state: OutstationState = OutstationState.IDLE
     sequences: SequenceState = field(default_factory=SequenceState)
     unsolicited: UnsolicitedState = field(default_factory=UnsolicitedState)
-    select_states: dict[int, SelectState] = field(default_factory=dict)
+    # Keyed by peer as well as index so one master can never operate,
+    # overwrite or clear another master's selection.
+    select_states: dict[tuple[PeerId, int], SelectState] = field(default_factory=dict)
     iin: IIN = field(default_factory=lambda: IIN.DEVICE_RESTART)
     need_time: bool = True
     last_broadcast: bool = False
@@ -274,42 +277,71 @@ class OutstationStateManager:
         """Clear the event buffer overflow IIN flag."""
         self.iin &= ~IIN.EVENT_BUFFER_OVERFLOW
 
-    def add_select(self, select: SelectState) -> None:
-        """Add a SELECT state.
+    def add_select(self, select: SelectState, *, peer: PeerId = UNSPECIFIED_PEER) -> None:
+        """Add a SELECT state, replacing any selection this peer holds on the index.
 
         Args:
             select: The select state to add.
+            peer: The peer that made the selection.
         """
-        self.select_states[select.index] = select
+        self.select_states[(peer, select.index)] = select
 
-    def get_select(self, index: int) -> SelectState | None:
-        """Get SELECT state for a point index.
+    def get_select(self, index: int, *, peer: PeerId = UNSPECIFIED_PEER) -> SelectState | None:
+        """Get a peer's SELECT state for a point index.
 
         Args:
             index: Point index.
+            peer: The peer whose selection to return.
 
         Returns:
             SelectState if found, None otherwise.
         """
-        return self.select_states.get(index)
+        return self.select_states.get((peer, index))
 
-    def remove_select(self, index: int) -> None:
-        """Remove SELECT state for a point index.
+    def remove_select(self, index: int, *, peer: PeerId = UNSPECIFIED_PEER) -> None:
+        """Remove a peer's SELECT state for a point index.
 
         Args:
             index: Point index.
+            peer: The peer whose selection to remove.
         """
-        self.select_states.pop(index, None)
+        self.select_states.pop((peer, index), None)
+
+    def held_by_other_peer(self, index: int, peer: PeerId, timeout: float) -> bool:
+        """Check whether a peer other than ``peer`` holds an unexpired selection on a point.
+
+        Args:
+            index: Point index.
+            peer: The peer asking.
+            timeout: Selection timeout in seconds.
+
+        Returns:
+            True if another peer's selection on the index has not expired.
+        """
+        return any(
+            holder != peer and held_index == index and not select.is_expired(timeout)
+            for (holder, held_index), select in self.select_states.items()
+        )
+
+    def release_connection(self, connection: int) -> None:
+        """Remove every selection made by any peer on a transport connection.
+
+        Args:
+            connection: The connection id carried in each peer's PeerId.
+        """
+        released = [key for key in self.select_states if key[0].connection == connection]
+        for key in released:
+            del self.select_states[key]
 
     def clear_expired_selects(self, timeout: float) -> None:
-        """Clear all expired SELECT states.
+        """Clear all expired SELECT states, for every peer.
 
         Args:
             timeout: Selection timeout in seconds.
         """
-        expired = [index for index, select in self.select_states.items() if select.is_expired(timeout)]
-        for index in expired:
-            del self.select_states[index]
+        expired = [key for key, select in self.select_states.items() if select.is_expired(timeout)]
+        for key in expired:
+            del self.select_states[key]
 
     def get_current_iin(self) -> IIN:
         """Get the current IIN flags.
