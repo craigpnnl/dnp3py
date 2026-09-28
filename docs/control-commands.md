@@ -57,13 +57,15 @@ direct_task = builder.build_direct_operate()
 `add_crob(index, code, count=1, on_time=0, off_time=0)` and
 `add_analog(index, value)` are the general-purpose entry points.
 `latch_on`, `latch_off`, `pulse_on`, and `pulse_off` are convenience wrappers
-around `add_crob` for the common `ControlCode` values. Stick to `NUL`,
-`LATCH_ON`, `LATCH_OFF`, `PULSE_ON`, and `PULSE_OFF` when building CROB
-operations: the outstation's request parser only ever compares the low nibble
-of the control-code byte against `ControlCode`, so the two remaining enum
-members, `CLOSE_PULSE_ON` and `TRIP_PULSE_ON`, are not distinguishable from
-`PULSE_ON` once a request reaches the outstation (see "Wire-level reference"
-below).
+around `add_crob` for the common `ControlCode` values. `ControlCode` is the
+whole g12v1 control-code octet: Trip-Close code in bits 7-6, Clear in bit 5,
+Queue in bit 4 and Op Type in bits 3-0 (IEEE 1815-2012 A.8.1.2). The named
+constants are `NUL`, `PULSE_ON`, `PULSE_OFF`, `LATCH_ON`, `LATCH_OFF`,
+`CLOSE_PULSE_ON` (0x41) and `TRIP_PULSE_ON` (0x81); build any other
+combination with `ControlCode.from_fields(op_type, tcc=..., clear=...)`. The
+outstation passes the octet to its handler unchanged, so `CLOSE_PULSE_ON` and
+`TRIP_PULSE_ON` stay distinct from `PULSE_ON` end to end (see "Wire-level
+reference" below).
 
 ### DIRECT_OPERATE: binary output
 
@@ -260,8 +262,18 @@ class RelayHandler(DefaultCommandHandler):
             self._database.update_binary_output(index, value=True)
         elif code == ControlCode.LATCH_OFF:
             self._database.update_binary_output(index, value=False)
+        else:
+            return CommandResult.not_supported(f"control code {code!r} not supported")
         return CommandResult.success()
 ```
+
+The handler receives the whole control-code octet, so a TRIP, a CLOSE, a
+code with the Clear bit set (for example `0x23`, cancel then LATCH_ON) or a
+reserved Trip-Close code all arrive here. Compare against the exact codes you
+carry out and return `NOT_SUPPORTED` for everything else; returning
+`SUCCESS` without acting tells the master a command ran when it did not. The
+outstation has already refused a set Queue bit (`NOT_SUPPORTED`) and an
+undefined Op Type (`FORMAT_ERROR`) before any handler is called.
 
 Wire it into the outstation the same way as any other handler:
 
@@ -273,8 +285,9 @@ outstation = Outstation(database=database, handler=RelayHandler(database))
 ```
 
 For SELECT-before-OPERATE, override `select_binary_output` to validate (index
-exists, value in range, output not already active) without touching the
-database, and `operate_binary_output` to apply the change; the outstation
+exists, control code supported, value in range, output not already active)
+without touching the database, refusing exactly the codes the OPERATE would
+refuse, and `operate_binary_output` to apply the change; the outstation
 handles the SELECT/OPERATE state matching and expiry for you.
 
 ### Analog outputs need their own store
@@ -315,7 +328,8 @@ present in the request, never hardcoded:
   with a 2-byte index.
 
 A CROB object body (after its index prefix) is always 11 bytes: control code
-(1 byte, low nibble is the operation type), operation count (1 byte), on-time
+(1 byte: Trip-Close code in bits 7-6, Clear in bit 5, Queue in bit 4, Op Type
+in bits 3-0), operation count (1 byte), on-time
 (4 bytes), off-time (4 bytes), and a status byte (1 byte, ignored on request,
 set to the result on response). An analog output object body is the index
 prefix, the value (sized per the variation table above), and a status byte.
@@ -344,9 +358,15 @@ than a crash or a silent success:
 - **Truncated buffer.** The count field declares more objects than the
   remaining data can hold, whether the truncation happens before the first
   object or partway through the declared count.
-- **Undefined control-code nibble.** A CROB control-code byte whose low
-  nibble does not correspond to a defined `ControlCode` (nibble values `0x05`
-  through `0x0F`) fails per-object, without aborting the rest of the block.
+- **Undefined Op Type.** A CROB control-code byte whose Op Type (bits 3-0)
+  is undefined (`0x05` through `0x0F`) fails per-object, without aborting the
+  rest of the block. This check runs first, so an octet with both the Queue
+  bit and an undefined Op Type (for example `0x15`) is a `FORMAT_ERROR`.
+
+One further refusal is not a malformed frame: a control-code byte with the
+obsolete Queue bit (bit 4) set is answered per-object with
+`CommandStatus.NOT_SUPPORTED` (IEEE 1815-2012 A.8.1.2.2), without reaching the
+handler and without setting `IIN.PARAMETER_ERROR`.
 
 A request that fails to parse at the application-layer header level at all
 (`Outstation.process_request` catching a parse exception) gets a null
@@ -374,7 +394,7 @@ covers every Table 4-5 status from IEEE 1815-2012.
 `IIN.PARAMETER_ERROR` is a coarser, header-level signal, not a per-point one.
 It is set on the response whenever any part of the request could not be
 parsed: an unknown qualifier, a truncated buffer, or an undefined
-control-code nibble anywhere in the request. It is not set merely because a
+control-code Op Type anywhere in the request. It is not set merely because a
 well-formed command was rejected for a business reason: a `NOT_SUPPORTED` or
 `OUT_OF_RANGE` result from your `CommandHandler` leaves `IIN.PARAMETER_ERROR`
 clear, because the request itself was valid; only its outcome was negative.
