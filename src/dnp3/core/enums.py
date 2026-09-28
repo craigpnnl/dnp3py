@@ -1,6 +1,7 @@
 """Protocol enumerations per IEEE 1815-2012."""
 
 from enum import IntEnum
+from typing import ClassVar
 
 # Response function codes start at this value
 _RESPONSE_CODE_MIN = 0x80
@@ -168,13 +169,137 @@ class CommandStatus(IntEnum):
         return self == CommandStatus.SUCCESS
 
 
-class ControlCode(IntEnum):
-    """Control relay output block (CROB) control codes (Table 4-6)."""
+class TripCloseCode(IntEnum):
+    """g12v1 Trip-Close Code field, bits 7-6 of the control octet (A.8.1.2.2)."""
 
-    NUL = 0x00
-    PULSE_ON = 0x01
-    PULSE_OFF = 0x02
-    LATCH_ON = 0x03
-    LATCH_OFF = 0x04
-    CLOSE_PULSE_ON = 0x41
-    TRIP_PULSE_ON = 0x81
+    NUL = 0
+    CLOSE = 1
+    TRIP = 2
+    RESERVED = 3
+
+
+class OperationType(IntEnum):
+    """g12v1 Operation Type field, bits 3-0 of the control octet (A.8.1.2.2).
+
+    Values 5 to 15 are undefined.
+    """
+
+    NUL = 0
+    PULSE_ON = 1
+    PULSE_OFF = 2
+    LATCH_ON = 3
+    LATCH_OFF = 4
+
+
+_OP_TYPE_MASK = 0x0F
+_QUEUE_BIT = 0x10
+_CLEAR_BIT = 0x20
+_TCC_SHIFT = 6
+_OCTET_MAX = 0xFF
+
+
+class ControlCode(int):
+    """g12v1 control-code octet (IEEE 1815-2012 A.8.1.2).
+
+    The value is the whole wire octet: TCC in bits 7-6, Clear in bit 5, Queue in
+    bit 4 and Op Type in bits 3-0. Equality therefore compares every field, which
+    the exact-octet SELECT versus OPERATE match of 4.4.4.3 requires.
+
+    ``ControlCode(octet)`` decodes an octet and ``int(code)`` encodes it;
+    :meth:`from_fields` builds one from its fields.
+
+    Raises:
+        ValueError: The value is not one octet, or its Op Type is undefined (5-15).
+    """
+
+    __slots__ = ()
+
+    NUL: ClassVar["ControlCode"]
+    PULSE_ON: ClassVar["ControlCode"]
+    PULSE_OFF: ClassVar["ControlCode"]
+    LATCH_ON: ClassVar["ControlCode"]
+    LATCH_OFF: ClassVar["ControlCode"]
+    CLOSE_PULSE_ON: ClassVar["ControlCode"]
+    TRIP_PULSE_ON: ClassVar["ControlCode"]
+
+    def __new__(cls, octet: int) -> "ControlCode":
+        """Decode a control-code octet."""
+        if not 0 <= octet <= _OCTET_MAX:
+            msg = f"Control code {octet} is not one octet (0-255)"
+            raise ValueError(msg)
+        if octet & _OP_TYPE_MASK > OperationType.LATCH_OFF:
+            msg = f"Control code 0x{octet:02X} has undefined Op Type {octet & _OP_TYPE_MASK}"
+            raise ValueError(msg)
+        return super().__new__(cls, octet)
+
+    @classmethod
+    def from_fields(
+        cls,
+        op_type: OperationType,
+        *,
+        tcc: TripCloseCode = TripCloseCode.NUL,
+        clear: bool = False,
+        queue: bool = False,
+    ) -> "ControlCode":
+        """Encode a control code from its fields."""
+        octet = (tcc << _TCC_SHIFT) | (_CLEAR_BIT if clear else 0) | (_QUEUE_BIT if queue else 0) | op_type
+        return cls(octet)
+
+    @property
+    def op_type(self) -> OperationType:
+        """Operation Type field."""
+        return OperationType(self & _OP_TYPE_MASK)
+
+    @property
+    def queue(self) -> bool:
+        """Queue field. Obsolete: an outstation answers a set bit with NOT_SUPPORTED."""
+        return bool(self & _QUEUE_BIT)
+
+    @property
+    def clear(self) -> bool:
+        """Clear field: cancel in-progress and pending commands for the index."""
+        return bool(self & _CLEAR_BIT)
+
+    @property
+    def tcc(self) -> TripCloseCode:
+        """Trip-Close Code field."""
+        return TripCloseCode(self >> _TCC_SHIFT)
+
+    @property
+    def value(self) -> int:
+        """The wire octet, kept for callers written against the former IntEnum."""
+        return int(self)
+
+    @property
+    def name(self) -> str:
+        """Constant name, with ``|QUEUE`` and ``|CLEAR`` appended for those bits."""
+        base = int(self) & ~(_QUEUE_BIT | _CLEAR_BIT)
+        parts = [_CONTROL_CODE_NAMES.get(base, f"{self.tcc.name}_{self.op_type.name}")]
+        if self.queue:
+            parts.append("QUEUE")
+        if self.clear:
+            parts.append("CLEAR")
+        return "|".join(parts)
+
+    def __repr__(self) -> str:
+        """Show the decoded name and the octet."""
+        return f"<ControlCode.{self.name}: 0x{int(self):02X}>"
+
+
+ControlCode.NUL = ControlCode(0x00)
+ControlCode.PULSE_ON = ControlCode(0x01)
+ControlCode.PULSE_OFF = ControlCode(0x02)
+ControlCode.LATCH_ON = ControlCode(0x03)
+ControlCode.LATCH_OFF = ControlCode(0x04)
+ControlCode.CLOSE_PULSE_ON = ControlCode(0x41)
+ControlCode.TRIP_PULSE_ON = ControlCode(0x81)
+
+_CONTROL_CODE_NAMES: dict[int, str] = {
+    0x00: "NUL",
+    0x01: "PULSE_ON",
+    0x02: "PULSE_OFF",
+    0x03: "LATCH_ON",
+    0x04: "LATCH_OFF",
+    0x41: "CLOSE_PULSE_ON",
+    0x81: "TRIP_PULSE_ON",
+}

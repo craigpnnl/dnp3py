@@ -2,6 +2,8 @@
 
 import time
 
+import pytest
+
 from dnp3.core.enums import ControlCode
 from dnp3.core.flags import IIN
 from dnp3.outstation.state import (
@@ -129,6 +131,13 @@ class TestSelectState:
             on_time=0,
             off_time=0,
         )
+
+    @pytest.mark.parametrize(("selected", "operated"), [(0x81, 0x41), (0x01, 0x21), (0x03, 0x23), (0x41, 0x01)])
+    def test_matches_binary_compares_whole_octet(self, selected: int, operated: int) -> None:
+        """Octets that differ only in TCC or Clear do not match (IEEE 1815-2012 4.4.4.3 Rule 2)."""
+        select = SelectState(index=5, is_binary=True, control_code=ControlCode(selected))
+        assert not select.matches_binary(index=5, code=ControlCode(operated), count=1, on_time=0, off_time=0)
+        assert select.matches_binary(index=5, code=ControlCode(selected), count=1, on_time=0, off_time=0)
 
     def test_matches_binary_not_binary(self) -> None:
         """matches_binary returns False for analog select."""

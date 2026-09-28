@@ -2,6 +2,8 @@
 
 import struct
 
+import pytest
+
 from dnp3.application.builder import (
     build_class_poll,
     build_delay_measure_request,
@@ -2443,3 +2445,128 @@ class TestBinaryAnalogWireEncodingSingleSource:
             f"g32v1 event bytes {event_bytes.hex()} != AnalogInputEvent32.to_bytes() {expected.hex()}"
         )
         assert value == -54321
+
+
+# ---------------------------------------------------------------------------
+# Issue #70: the full g12v1 control-code octet reaches the handler and SELECT
+# ---------------------------------------------------------------------------
+
+
+def _crob_payload(index: int, octet: int) -> bytes:
+    """One g12v1 object, qualifier 0x17: count, index, control, count=1, on=100, off=100, status."""
+    return bytes([1, index, octet, 1]) + (100).to_bytes(4, "little") + (100).to_bytes(4, "little") + bytes([0])
+
+
+def _crob_status(responses: list) -> CommandStatus:
+    """Status byte of the single echoed g12v1 object."""
+    return CommandStatus(_extract_object_data(responses, 12, 1)[-1])
+
+
+class _RecordingHandler(DefaultCommandHandler):
+    """Accepts every binary-output command and records (function, index, code)."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.calls: list[tuple[str, int, ControlCode]] = []
+
+    def select_binary_output(
+        self, index: int, code: ControlCode, count: int, on_time: int, off_time: int
+    ) -> CommandResult:
+        self.calls.append(("select", index, code))
+        return CommandResult.success()
+
+    def operate_binary_output(
+        self, index: int, code: ControlCode, count: int, on_time: int, off_time: int, select_sequence: int
+    ) -> CommandResult:
+        self.calls.append(("operate", index, code))
+        return CommandResult.success()
+
+    def direct_operate_binary_output(
+        self, index: int, code: ControlCode, count: int, on_time: int, off_time: int
+    ) -> CommandResult:
+        self.calls.append(("direct_operate", index, code))
+        return CommandResult.success()
+
+
+class TestCROBFullControlCode:
+    """The outstation decodes the whole control octet: TCC, Clear and Queue are not masked away."""
+
+    def _outstation(self) -> tuple[Outstation, _RecordingHandler]:
+        handler = _RecordingHandler()
+        outstation = Outstation(handler=handler)
+        outstation.database.add_binary_output(5)
+        return outstation, handler
+
+    def test_select_trip_operate_close_is_no_select(self) -> None:
+        """SELECT 0x81 (TRIP) then OPERATE 0x41 (CLOSE) on index 5 returns NO_SELECT and does not operate."""
+        from dnp3.application.builder import build_operate_request, build_select_request
+
+        outstation, handler = self._outstation()
+        select = build_select_request(objects=(_make_crob_block_raw(0x17, _crob_payload(5, 0x81)),))
+        assert _crob_status(outstation.process_request(select.to_bytes())) == CommandStatus.SUCCESS
+
+        operate = build_operate_request(objects=(_make_crob_block_raw(0x17, _crob_payload(5, 0x41)),))
+        assert _crob_status(outstation.process_request(operate.to_bytes())) == CommandStatus.NO_SELECT
+        assert [call[0] for call in handler.calls] == ["select"]
+
+    def test_select_then_matching_operate_passes_full_octet(self) -> None:
+        """SELECT 0x81 then OPERATE 0x81 operates, and the handler sees TRIP_PULSE_ON both times."""
+        from dnp3.application.builder import build_operate_request, build_select_request
+
+        outstation, handler = self._outstation()
+        block = _make_crob_block_raw(0x17, _crob_payload(5, 0x81))
+        outstation.process_request(build_select_request(objects=(block,)).to_bytes())
+        responses = outstation.process_request(build_operate_request(objects=(block,)).to_bytes())
+
+        assert _crob_status(responses) == CommandStatus.SUCCESS
+        assert handler.calls == [
+            ("select", 5, ControlCode.TRIP_PULSE_ON),
+            ("operate", 5, ControlCode.TRIP_PULSE_ON),
+        ]
+
+    @pytest.mark.parametrize("octet", [0x41, 0x81, 0x20, 0x21, 0x23, 0x24, 0x61, 0xA1])
+    def test_direct_operate_delivers_whole_octet(self, octet: int) -> None:
+        """The handler receives the octet as sent, so TCC and Clear survive (Table A-2)."""
+        from dnp3.application.builder import build_direct_operate_request
+
+        outstation, handler = self._outstation()
+        request = build_direct_operate_request(objects=(_make_crob_block_raw(0x17, _crob_payload(5, octet)),))
+        responses = outstation.process_request(request.to_bytes())
+
+        assert _crob_status(responses) == CommandStatus.SUCCESS
+        assert len(handler.calls) == 1
+        function, index, code = handler.calls[0]
+        assert (function, index) == ("direct_operate", 5)
+        assert int(code) == octet
+        assert code.tcc == octet >> 6
+        assert code.clear is bool(octet & 0x20)
+
+    @pytest.mark.parametrize("function", ["select", "operate", "direct_operate"])
+    def test_queue_bit_returns_not_supported(self, function: str) -> None:
+        """A g12v1 object with the Queue bit set returns NOT_SUPPORTED and reaches no handler (A.8.1.2.2)."""
+        from dnp3.application.builder import (
+            build_direct_operate_request,
+            build_operate_request,
+            build_select_request,
+        )
+
+        builders = {
+            "select": build_select_request,
+            "operate": build_operate_request,
+            "direct_operate": build_direct_operate_request,
+        }
+        outstation, handler = self._outstation()
+        request = builders[function](objects=(_make_crob_block_raw(0x17, _crob_payload(5, 0x13)),))
+        responses = outstation.process_request(request.to_bytes())
+
+        assert _crob_status(responses) == CommandStatus.NOT_SUPPORTED
+        assert handler.calls == []
+        assert outstation._state.get_select(5) is None
+        assert IIN.PARAMETER_ERROR not in responses[0].header.iin
+
+    def test_parse_crob_block_carries_tcc(self) -> None:
+        """_parse_crob_block returns the decoded octet, not the Op Type nibble."""
+        parsed = _parse_crob_block(_make_crob_block_raw(0x17, _crob_payload(5, 0xA1)))
+        assert len(parsed) == 1
+        assert parsed[0].status == CommandStatus.SUCCESS
+        assert parsed[0].control_code == 0xA1

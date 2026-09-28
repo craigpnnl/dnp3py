@@ -380,16 +380,16 @@ class ParsedCrob:
     """One parsed CROB object from a received request block.
 
     When ``control_code`` is None, ``status`` is FORMAT_ERROR (undefined
-    control-code nibble, truncated buffer, or unknown qualifier).  Callers
-    must check ``status`` before accessing ``control_code``.
+    Op Type, truncated buffer, or unknown qualifier) or NOT_SUPPORTED (Queue
+    bit set).  Callers must check ``status`` before accessing ``control_code``.
 
     Attributes:
         index: Point index addressed by this CROB.
-        control_code: Parsed control code, or None for a FORMAT_ERROR entry.
+        control_code: Decoded control-code octet, or None for a rejected entry.
         op_count: Operation count field.
         on_time: On-time in milliseconds.
         off_time: Off-time in milliseconds.
-        status: FORMAT_ERROR or SUCCESS sentinel (callers apply real status).
+        status: FORMAT_ERROR, NOT_SUPPORTED, or a SUCCESS sentinel (callers apply real status).
     """
 
     index: int
@@ -400,6 +400,13 @@ class ParsedCrob:
     status: CommandStatus
 
 
+def _rejection_status(crob: ParsedCrob) -> CommandStatus:
+    """Status reported for a CROB entry that is not passed to the handler."""
+    if crob.status != CommandStatus.SUCCESS:
+        return crob.status
+    return CommandStatus.FORMAT_ERROR
+
+
 def _parse_crob_block(block: ObjectBlock) -> list[ParsedCrob]:
     """Parse a CROB ObjectBlock into a list of ParsedCrob entries.
 
@@ -407,7 +414,9 @@ def _parse_crob_block(block: ObjectBlock) -> list[ParsedCrob]:
     CROB-body parsing, and all three FORMAT_ERROR paths:
       - Unknown qualifier (not 0x17 or 0x28)
       - Buffer too short for the declared count
-      - Undefined control-code nibble (0x05-0x0F not in ControlCode enum)
+      - Undefined Op Type (5-15) in the control-code octet
+    A control code with the obsolete Queue bit set is NOT_SUPPORTED
+    (IEEE 1815-2012 A.8.1.2.2).
 
     Frame-level vs per-object failure semantics:
 
@@ -420,11 +429,11 @@ def _parse_crob_block(block: ObjectBlock) -> list[ParsedCrob]:
     would never be set and the malformed frame would produce a clean null
     response (silent protocol violation).
 
-    Per-object failures (undefined control-code nibble, truncated body
+    Per-object failures (undefined Op Type, Queue bit set, truncated body
     discovered mid-loop) carry the real parsed index and status=FORMAT_ERROR
     so the caller can include the correct point index in the response.
 
-    In all cases control_code=None signals the entry is an error sentinel;
+    In all cases control_code=None signals the entry is a rejection sentinel;
     callers must check status before accessing control_code.
 
     Args:
@@ -468,8 +477,12 @@ def _parse_crob_block(block: ObjectBlock) -> list[ParsedCrob]:
         offset += index_bytes
 
         try:
-            control_code: ControlCode | None = ControlCode(data[offset] & 0x0F)
+            control_code = ControlCode(data[offset])
         except ValueError:
+            rejection: CommandStatus | None = CommandStatus.FORMAT_ERROR
+        else:
+            rejection = CommandStatus.NOT_SUPPORTED if control_code.queue else None
+        if rejection is not None:
             parsed.append(
                 ParsedCrob(
                     index=index,
@@ -477,7 +490,7 @@ def _parse_crob_block(block: ObjectBlock) -> list[ParsedCrob]:
                     op_count=0,
                     on_time=0,
                     off_time=0,
-                    status=CommandStatus.FORMAT_ERROR,
+                    status=rejection,
                 )
             )
             offset += _CROB_BODY_BYTES
@@ -1066,15 +1079,15 @@ class Outstation:
         """Process CROB SELECT.
 
         Delegates parsing to _parse_crob_block which handles qualifier sizing,
-        buffer validation, and control-code decoding.  FORMAT_ERROR entries are
-        forwarded directly; valid entries are dispatched to the handler and, on
+        buffer validation, and control-code decoding.  Rejected entries are
+        forwarded with their status; valid entries are dispatched to the handler and, on
         success, stored as pending SELECT state.
         """
         results: list[tuple[int, CommandStatus]] = []
 
         for crob in _parse_crob_block(block):
-            if crob.status == CommandStatus.FORMAT_ERROR or crob.control_code is None:
-                results.append((crob.index, CommandStatus.FORMAT_ERROR))
+            if crob.status != CommandStatus.SUCCESS or crob.control_code is None:
+                results.append((crob.index, _rejection_status(crob)))
                 continue
 
             result = self.handler.select_binary_output(
@@ -1119,15 +1132,15 @@ class Outstation:
     def _process_crob_operate(self, block: ObjectBlock, seq: int) -> list[tuple[int, CommandStatus]]:
         """Process CROB OPERATE.
 
-        Delegates parsing to _parse_crob_block.  FORMAT_ERROR entries are forwarded
-        directly.  Valid entries are checked against stored SELECT state; mismatches
+        Delegates parsing to _parse_crob_block.  Rejected entries are forwarded
+        with their status.  Valid entries are checked against stored SELECT state; mismatches
         return NO_SELECT and clear the pending state.
         """
         results: list[tuple[int, CommandStatus]] = []
 
         for crob in _parse_crob_block(block):
-            if crob.status == CommandStatus.FORMAT_ERROR or crob.control_code is None:
-                results.append((crob.index, CommandStatus.FORMAT_ERROR))
+            if crob.status != CommandStatus.SUCCESS or crob.control_code is None:
+                results.append((crob.index, _rejection_status(crob)))
                 continue
 
             select_state = self._state.get_select(crob.index)
@@ -1176,15 +1189,15 @@ class Outstation:
     def _process_crob_direct_operate(self, block: ObjectBlock) -> list[tuple[int, CommandStatus]]:
         """Process CROB DIRECT_OPERATE.
 
-        Delegates parsing to _parse_crob_block.  FORMAT_ERROR entries are forwarded
-        directly; valid entries are dispatched immediately to the handler with no
+        Delegates parsing to _parse_crob_block.  Rejected entries are forwarded
+        with their status; valid entries are dispatched immediately to the handler with no
         prior SELECT required.
         """
         results: list[tuple[int, CommandStatus]] = []
 
         for crob in _parse_crob_block(block):
-            if crob.status == CommandStatus.FORMAT_ERROR or crob.control_code is None:
-                results.append((crob.index, CommandStatus.FORMAT_ERROR))
+            if crob.status != CommandStatus.SUCCESS or crob.control_code is None:
+                results.append((crob.index, _rejection_status(crob)))
                 continue
 
             result = self.handler.direct_operate_binary_output(
