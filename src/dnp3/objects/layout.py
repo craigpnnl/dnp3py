@@ -1,0 +1,230 @@
+"""Wire layout of each DNP3 object group and variation, per IEEE 1815-2012 Annex A.
+
+One table describes how a response object sits on the wire, so a block's length
+and a point's value are read from the same definition.
+"""
+
+from collections.abc import Mapping
+from dataclasses import dataclass
+from enum import Enum
+from types import MappingProxyType
+
+__all__ = [
+    "LAYOUTS",
+    "PointKind",
+    "TimeKind",
+    "ValueCodec",
+    "WireLayout",
+    "data_length",
+    "layout_for",
+    "object_width",
+]
+
+
+class PointKind(Enum):
+    """The kind of point an object reports."""
+
+    BINARY_INPUT = "binary_input"
+    DOUBLE_BIT_INPUT = "double_bit_input"
+    BINARY_OUTPUT = "binary_output"
+    BINARY_COMMAND = "binary_command"
+    COUNTER = "counter"
+    FROZEN_COUNTER = "frozen_counter"
+    ANALOG_INPUT = "analog_input"
+    TIME = "time"
+    TIME_DELAY = "time_delay"
+    CLASS = "class"
+
+
+class ValueCodec(Enum):
+    """How the value field of an object is encoded (little-endian, IEEE 1815-2012 11.3)."""
+
+    NONE = "none"
+    PACKED = "packed"
+    FLAG_STATE = "flag_state"
+    INT = "int"
+    UINT = "uint"
+    FLOAT32 = "float32"
+    FLOAT64 = "float64"
+    RECORD = "record"
+
+
+class TimeKind(Enum):
+    """The time field that trails an object's value."""
+
+    NONE = 0
+    RELATIVE = 2
+    ABSOLUTE = 6
+
+    @property
+    def octets(self) -> int:
+        """Octets the time field occupies."""
+        return self.value
+
+
+@dataclass(frozen=True, slots=True)
+class WireLayout:
+    """Layout of one object on the wire.
+
+    Attributes:
+        point_kind: The kind of point the object reports.
+        width: Octets per object excluding any index prefix; 0 for a packed layout.
+        bits_per_point: Bits per point for a packed layout; 0 when octet-aligned.
+        has_flags: Whether a flag octet leads the object.
+        codec: Encoding of the value field.
+        time: The time field that trails the value.
+    """
+
+    point_kind: PointKind
+    width: int
+    bits_per_point: int
+    has_flags: bool
+    codec: ValueCodec
+    time: TimeKind
+
+    def __post_init__(self) -> None:
+        """Refuse a layout no Annex A object could have."""
+        if self.bits_per_point < 0:
+            msg = f"bits per point must be non-negative, got {self.bits_per_point}"
+            raise ValueError(msg)
+        if self.bits_per_point:
+            if self.width or self.has_flags or self.time is not TimeKind.NONE:
+                msg = "a packed layout has no octet width, flags or time"
+                raise ValueError(msg)
+        elif self.value_width < 0:
+            msg = f"width {self.width} is smaller than its flag and time fields"
+            raise ValueError(msg)
+
+    @property
+    def is_packed(self) -> bool:
+        """Whether points are bit-packed rather than octet-aligned."""
+        return self.bits_per_point > 0
+
+    @property
+    def value_width(self) -> int:
+        """Octets between the flag octet and the time field."""
+        return self.width - int(self.has_flags) - self.time.octets
+
+
+def _packed(kind: PointKind, bits: int) -> WireLayout:
+    return WireLayout(kind, 0, bits, False, ValueCodec.PACKED, TimeKind.NONE)
+
+
+def _octets(
+    kind: PointKind,
+    value_width: int,
+    codec: ValueCodec,
+    *,
+    flags: bool = True,
+    time: TimeKind = TimeKind.NONE,
+) -> WireLayout:
+    return WireLayout(kind, int(flags) + value_width + time.octets, 0, flags, codec, time)
+
+
+_BI = PointKind.BINARY_INPUT
+_BO = PointKind.BINARY_OUTPUT
+_CT = PointKind.COUNTER
+_FC = PointKind.FROZEN_COUNTER
+_AI = PointKind.ANALOG_INPUT
+_ABS = TimeKind.ABSOLUTE
+_INT = ValueCodec.INT
+_UINT = ValueCodec.UINT
+_F32 = ValueCodec.FLOAT32
+_F64 = ValueCodec.FLOAT64
+_STATE = ValueCodec.FLAG_STATE
+
+# Keyed by (group, variation); the comment on each group names its Annex A clause.
+_TABLE: dict[tuple[int, int], WireLayout] = {
+    # A.2
+    (1, 1): _packed(_BI, 1),
+    (1, 2): _octets(_BI, 0, _STATE),
+    # A.3
+    (2, 1): _octets(_BI, 0, _STATE),
+    (2, 2): _octets(_BI, 0, _STATE, time=_ABS),
+    (2, 3): _octets(_BI, 0, _STATE, time=TimeKind.RELATIVE),
+    # A.4
+    (3, 1): _packed(PointKind.DOUBLE_BIT_INPUT, 2),
+    # A.6
+    (10, 1): _packed(_BO, 1),
+    (10, 2): _octets(_BO, 0, _STATE),
+    # A.7
+    (11, 1): _octets(_BO, 0, _STATE),
+    (11, 2): _octets(_BO, 0, _STATE, time=_ABS),
+    # A.8.1: control code, count, on-time, off-time, status.
+    (12, 1): _octets(PointKind.BINARY_COMMAND, 11, ValueCodec.RECORD, flags=False),
+    # A.10
+    (20, 1): _octets(_CT, 4, _UINT),
+    (20, 2): _octets(_CT, 2, _UINT),
+    (20, 5): _octets(_CT, 4, _UINT, flags=False),
+    (20, 6): _octets(_CT, 2, _UINT, flags=False),
+    # A.11: v5 and v6 carry flag and time, unlike g20v5 and g20v6.
+    (21, 1): _octets(_FC, 4, _UINT),
+    (21, 2): _octets(_FC, 2, _UINT),
+    (21, 5): _octets(_FC, 4, _UINT, time=_ABS),
+    (21, 6): _octets(_FC, 2, _UINT, time=_ABS),
+    # A.12
+    (22, 1): _octets(_CT, 4, _UINT),
+    (22, 2): _octets(_CT, 2, _UINT),
+    (22, 5): _octets(_CT, 4, _UINT, time=_ABS),
+    (22, 6): _octets(_CT, 2, _UINT, time=_ABS),
+    # A.14
+    (30, 1): _octets(_AI, 4, _INT),
+    (30, 2): _octets(_AI, 2, _INT),
+    (30, 3): _octets(_AI, 4, _INT, flags=False),
+    (30, 4): _octets(_AI, 2, _INT, flags=False),
+    (30, 5): _octets(_AI, 4, _F32),
+    (30, 6): _octets(_AI, 8, _F64),
+    # A.16
+    (32, 1): _octets(_AI, 4, _INT),
+    (32, 2): _octets(_AI, 2, _INT),
+    (32, 3): _octets(_AI, 4, _INT, time=_ABS),
+    (32, 4): _octets(_AI, 2, _INT, time=_ABS),
+    (32, 5): _octets(_AI, 4, _F32),
+    (32, 6): _octets(_AI, 8, _F64),
+    (32, 7): _octets(_AI, 4, _F32, time=_ABS),
+    (32, 8): _octets(_AI, 8, _F64, time=_ABS),
+    # A.23 and A.24: a DNP3TIME (UINT48) is the whole object.
+    (50, 1): _octets(PointKind.TIME, 6, _UINT, flags=False),
+    (51, 1): _octets(PointKind.TIME, 6, _UINT, flags=False),
+    (51, 2): _octets(PointKind.TIME, 6, _UINT, flags=False),
+    # A.25
+    (52, 1): _octets(PointKind.TIME_DELAY, 2, _UINT, flags=False),
+    (52, 2): _octets(PointKind.TIME_DELAY, 2, _UINT, flags=False),
+    # A.26: class objects carry no object data.
+    (60, 1): _octets(PointKind.CLASS, 0, ValueCodec.NONE, flags=False),
+    (60, 2): _octets(PointKind.CLASS, 0, ValueCodec.NONE, flags=False),
+    (60, 3): _octets(PointKind.CLASS, 0, ValueCodec.NONE, flags=False),
+    (60, 4): _octets(PointKind.CLASS, 0, ValueCodec.NONE, flags=False),
+}
+
+LAYOUTS: Mapping[tuple[int, int], WireLayout] = MappingProxyType(_TABLE)
+
+
+def layout_for(group: int, variation: int) -> WireLayout | None:
+    """Return the layout of a group and variation, or None if it has none."""
+    return LAYOUTS.get((group, variation))
+
+
+def object_width(group: int, variation: int) -> int | None:
+    """Octets per object excluding any index prefix, or None if unknown or packed."""
+    layout = layout_for(group, variation)
+    if layout is None or layout.is_packed:
+        return None
+    return layout.width
+
+
+def data_length(layout: WireLayout, count: int, prefix_width: int) -> int | None:
+    """Octets of object data for ``count`` objects, each led by a ``prefix_width`` index.
+
+    A packed layout with an index prefix gives None, checked before the count, so
+    even a count of 0 gives None: IEEE 1815-2012 A.2.1 and A.4.1 define packing
+    only over a contiguous index range. Otherwise a count of 0 gives 0.
+    """
+    if count < 0 or prefix_width < 0:
+        msg = f"count and prefix width must be non-negative, got {count} and {prefix_width}"
+        raise ValueError(msg)
+    if layout.is_packed:
+        if prefix_width:
+            return None
+        return (count * layout.bits_per_point + 7) // 8
+    return (prefix_width + layout.width) * count
