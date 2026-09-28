@@ -126,6 +126,14 @@ class TestDetectedFaultKeepsEarlierBlocks:
             reason=TruncationReason.DATA_SHORTER_THAN_DECLARED, offset=6, group=30, variation=1, qualifier=0x00
         )
 
+    def test_trailing_octets(self) -> None:
+        # One octet is left after the last block, too few for an object header.
+        info, recorder = process(B1 + bytes([0x1E]))
+
+        assert recorder.values == {"binary_input": [(9, True, 0x01)]}
+        assert info.truncation == Truncation(reason=TruncationReason.TRAILING_OCTETS, offset=6)
+        assert (info.truncation.group, info.truncation.variation, info.truncation.qualifier) == (None, None, None)
+
 
 class TestTruncationIsLogged:
     """A truncation is logged, because an unsolicited fragment's ResponseInfo may reach no caller."""
