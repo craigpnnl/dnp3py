@@ -116,6 +116,27 @@ class TestBasicCommunication:
         assert delivered[1].value == -50.0
         assert delivered[0].quality == int(AnalogQuality.ONLINE)
 
+    def test_integrity_poll_with_analog_output_out_of_range(self) -> None:
+        """An out-of-range g40v2 value round-trips as the clamp limit with OVER_RANGE."""
+        database = Database()
+        database.add_analog_output(0, AnalogOutputConfig())
+        database.update_analog_output(0, value=40000.0, quality=AnalogQuality.ONLINE)
+
+        outstation = Outstation(database=database)
+        handler = DefaultSOEHandler()
+        master = Master(handler=handler)
+
+        request = master.build_integrity_poll()
+        responses = outstation.process_request(request.to_bytes())
+        assert len(responses) > 0
+        response = responses[0]
+        info = master.process_response(response.to_bytes())
+
+        assert info is not None
+        delivered = handler.analog_outputs
+        assert delivered[0].value == 32767
+        assert delivered[0].quality == int(AnalogQuality.ONLINE | AnalogQuality.OVER_RANGE)
+
     def test_integrity_poll_with_counters(self) -> None:
         """Integrity poll returns counter data."""
         database = Database()
