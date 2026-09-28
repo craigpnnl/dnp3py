@@ -36,6 +36,7 @@ from dnp3.master.commands import (
     OperateTask,
     SelectTask,
 )
+from dnp3.master.handler import AnalogValue, BinaryValue, CounterValue
 from dnp3.master.master import Master
 from dnp3.master.polling import PollScheduler
 from dnp3.objects.analog_input import (
@@ -66,6 +67,7 @@ from dnp3.transport_io.channel import (
 from dnp3.transport_io.simulator import SimulatorChannel, SimulatorServer
 from dnp3.transport_io.tcp_client import TcpClientChannel
 from dnp3.transport_io.tcp_server import TcpServer, TcpServerChannel, serve
+from tests.unit.master.delivery import delivered
 
 
 class TestTransportHeaderCoverage:
@@ -355,7 +357,6 @@ class TestMasterMasterCoverage:
 
     def test_parse_binary_values_2byte_range(self) -> None:
         """Test parsing binary values with 2-byte start-stop range."""
-        master = Master()
         from dnp3.application.fragment import ObjectBlock
         from dnp3.application.qualifiers import ObjectHeader
 
@@ -365,12 +366,14 @@ class TestMasterMasterCoverage:
         data = b"\x00\x00\x01\x00\x81\x01"
         block = ObjectBlock(header=header, data=data)
 
-        values = master._parse_binary_values(block)
-        assert len(values) >= 1
+        values = delivered(block, "on_binary_input")
+        assert values == [
+            BinaryValue(index=0, value=True, quality=0x01),
+            BinaryValue(index=1, value=False, quality=0x01),
+        ]
 
     def test_parse_analog_values_16bit(self) -> None:
         """Test parsing 16-bit analog values."""
-        master = Master()
         from dnp3.application.fragment import ObjectBlock
         from dnp3.application.qualifiers import ObjectHeader
 
@@ -380,12 +383,11 @@ class TestMasterMasterCoverage:
         data = b"\x00\x00\x01\x64\x00"  # Online flag, value=100
         block = ObjectBlock(header=header, data=data)
 
-        values = master._parse_analog_values(block)
-        assert len(values) >= 1
+        values = delivered(block, "on_analog_input")
+        assert values == [AnalogValue(index=0, value=100.0, quality=0x01)]
 
     def test_parse_analog_values_no_flags_32bit(self) -> None:
         """Test parsing 32-bit analog without flags."""
-        master = Master()
         from dnp3.application.fragment import ObjectBlock
         from dnp3.application.qualifiers import ObjectHeader
 
@@ -395,12 +397,11 @@ class TestMasterMasterCoverage:
         data = b"\x00\x00\x64\x00\x00\x00"
         block = ObjectBlock(header=header, data=data)
 
-        values = master._parse_analog_values(block)
-        assert len(values) >= 1
+        values = delivered(block, "on_analog_input")
+        assert values == [AnalogValue(index=0, value=100.0, quality=0x01)]
 
     def test_parse_analog_values_no_flags_16bit(self) -> None:
         """Test parsing 16-bit analog without flags."""
-        master = Master()
         from dnp3.application.fragment import ObjectBlock
         from dnp3.application.qualifiers import ObjectHeader
 
@@ -410,12 +411,11 @@ class TestMasterMasterCoverage:
         data = b"\x00\x00\x64\x00"
         block = ObjectBlock(header=header, data=data)
 
-        values = master._parse_analog_values(block)
-        assert len(values) >= 1
+        values = delivered(block, "on_analog_input")
+        assert values == [AnalogValue(index=0, value=100.0, quality=0x01)]
 
     def test_parse_analog_values_unsupported_variation(self) -> None:
         """Test parsing analog with unsupported variation."""
-        master = Master()
         from dnp3.application.fragment import ObjectBlock
         from dnp3.application.qualifiers import ObjectHeader
 
@@ -424,12 +424,11 @@ class TestMasterMasterCoverage:
         data = b"\x00\x00"
         block = ObjectBlock(header=header, data=data)
 
-        values = master._parse_analog_values(block)
+        values = delivered(block, "on_analog_input")
         assert len(values) == 0
 
     def test_parse_counter_values_16bit(self) -> None:
         """Test parsing 16-bit counter values."""
-        master = Master()
         from dnp3.application.fragment import ObjectBlock
         from dnp3.application.qualifiers import ObjectHeader
 
@@ -438,12 +437,11 @@ class TestMasterMasterCoverage:
         data = b"\x00\x00\x01\x64\x00"
         block = ObjectBlock(header=header, data=data)
 
-        values = master._parse_counter_values(block)
-        assert len(values) >= 1
+        values = delivered(block, "on_counter")
+        assert values == [CounterValue(index=0, value=100, quality=0x01)]
 
     def test_parse_counter_values_no_flags(self) -> None:
         """Test parsing counter without flags."""
-        master = Master()
         from dnp3.application.fragment import ObjectBlock
         from dnp3.application.qualifiers import ObjectHeader
 
@@ -452,12 +450,11 @@ class TestMasterMasterCoverage:
         data = b"\x00\x00\x64\x00\x00\x00"
         block = ObjectBlock(header=header, data=data)
 
-        values = master._parse_counter_values(block)
-        assert len(values) >= 1
+        values = delivered(block, "on_counter")
+        assert values == [CounterValue(index=0, value=100, quality=0x01)]
 
     def test_parse_counter_values_16bit_no_flags(self) -> None:
         """Test parsing 16-bit counter without flags."""
-        master = Master()
         from dnp3.application.fragment import ObjectBlock
         from dnp3.application.qualifiers import ObjectHeader
 
@@ -466,12 +463,11 @@ class TestMasterMasterCoverage:
         data = b"\x00\x00\x64\x00"
         block = ObjectBlock(header=header, data=data)
 
-        values = master._parse_counter_values(block)
-        assert len(values) >= 1
+        values = delivered(block, "on_counter")
+        assert values == [CounterValue(index=0, value=100, quality=0x01)]
 
     def test_parse_counter_values_unsupported(self) -> None:
         """Test parsing counter with unsupported variation."""
-        master = Master()
         from dnp3.application.fragment import ObjectBlock
         from dnp3.application.qualifiers import ObjectHeader
 
@@ -479,7 +475,7 @@ class TestMasterMasterCoverage:
         data = b"\x00\x00"
         block = ObjectBlock(header=header, data=data)
 
-        values = master._parse_counter_values(block)
+        values = delivered(block, "on_counter")
         assert len(values) == 0
 
     def test_check_timeout(self) -> None:

@@ -15,15 +15,13 @@ from dnp3.master.handler import (
     DefaultSOEHandler,
 )
 from dnp3.master.master import (
-    GROUP_ANALOG_INPUT,
-    GROUP_BINARY_INPUT,
-    GROUP_COUNTER,
     QUALITY_ONLINE,
     QUALITY_STATE,
     Master,
 )
 from dnp3.master.polling import IntegrityPollTask
 from dnp3.master.state import MasterState
+from tests.unit.master.delivery import delivered
 
 
 class TestMasterCreation:
@@ -255,8 +253,6 @@ class TestMasterBinaryParsing:
 
     def test_parse_binary_packed_v1(self) -> None:
         """Test parsing packed binary input (g1v1)."""
-        master = Master()
-
         # Create object block for g1v1 with start-stop range 0-7
         # Qualifier 0x00 = 1-byte start-stop
         # Data: start(0), stop(7), bits(0b10101010)
@@ -264,7 +260,7 @@ class TestMasterBinaryParsing:
         data = bytes([0, 7, 0b10101010])  # Start=0, Stop=7, value byte
         block = ObjectBlock(header=header, data=data)
 
-        values = master._parse_binary_values(block)
+        values = delivered(block, "on_binary_input")
 
         assert len(values) >= 1
         # Bit 0 = 0 (False), Bit 1 = 1 (True), etc.
@@ -275,8 +271,6 @@ class TestMasterBinaryParsing:
 
     def test_parse_binary_flags_v2(self) -> None:
         """Test parsing binary input with flags (g1v2)."""
-        master = Master()
-
         # Create object block for g1v2 with start-stop range
         # Each value is 1 byte: flags with bit 7 = state
         header = ObjectHeader(group=1, variation=2, qualifier=0x00)
@@ -284,7 +278,7 @@ class TestMasterBinaryParsing:
         data = bytes([0, 2, 0x81, 0x01, 0x80])
         block = ObjectBlock(header=header, data=data)
 
-        values = master._parse_binary_values(block)
+        values = delivered(block, "on_binary_input")
 
         assert len(values) == 3
         assert values[0].index == 0
@@ -301,12 +295,10 @@ class TestMasterBinaryParsing:
 
     def test_parse_binary_empty(self) -> None:
         """Test parsing empty binary block."""
-        master = Master()
-
         header = ObjectHeader(group=1, variation=2, qualifier=0x00)
         block = ObjectBlock(header=header, data=b"")
 
-        values = master._parse_binary_values(block)
+        values = delivered(block, "on_binary_input")
 
         assert len(values) == 0
 
@@ -316,8 +308,6 @@ class TestMasterAnalogParsing:
 
     def test_parse_analog_32bit_flags_v1(self) -> None:
         """Test parsing 32-bit analog with flags (g30v1)."""
-        master = Master()
-
         # g30v1: 1 byte flags + 4 bytes value
         header = ObjectHeader(group=30, variation=1, qualifier=0x00)
         # Start=0, Stop=0, flags=0x01, value=100 (little-endian)
@@ -325,7 +315,7 @@ class TestMasterAnalogParsing:
         data = bytes([0, 0, 0x01]) + value_bytes
         block = ObjectBlock(header=header, data=data)
 
-        values = master._parse_analog_values(block)
+        values = delivered(block, "on_analog_input")
 
         assert len(values) == 1
         assert values[0].index == 0
@@ -334,8 +324,6 @@ class TestMasterAnalogParsing:
 
     def test_parse_analog_16bit_flags_v2(self) -> None:
         """Test parsing 16-bit analog with flags (g30v2)."""
-        master = Master()
-
         # g30v2: 1 byte flags + 2 bytes value
         header = ObjectHeader(group=30, variation=2, qualifier=0x00)
         # Start=0, Stop=1, flags=0x01, value=500, flags=0x01, value=-100
@@ -343,7 +331,7 @@ class TestMasterAnalogParsing:
         data += bytes([0x01]) + (-100).to_bytes(2, "little", signed=True)
         block = ObjectBlock(header=header, data=data)
 
-        values = master._parse_analog_values(block)
+        values = delivered(block, "on_analog_input")
 
         assert len(values) == 2
         assert values[0].index == 0
@@ -353,14 +341,12 @@ class TestMasterAnalogParsing:
 
     def test_parse_analog_32bit_no_flags_v3(self) -> None:
         """Test parsing 32-bit analog without flags (g30v3)."""
-        master = Master()
-
         # g30v3: 4 bytes value only
         header = ObjectHeader(group=30, variation=3, qualifier=0x00)
         data = bytes([0, 0]) + (12345).to_bytes(4, "little", signed=True)
         block = ObjectBlock(header=header, data=data)
 
-        values = master._parse_analog_values(block)
+        values = delivered(block, "on_analog_input")
 
         assert len(values) == 1
         assert values[0].value == 12345.0
@@ -368,39 +354,33 @@ class TestMasterAnalogParsing:
 
     def test_parse_analog_16bit_no_flags_v4(self) -> None:
         """Test parsing 16-bit analog without flags (g30v4)."""
-        master = Master()
-
         # g30v4: 2 bytes value only
         header = ObjectHeader(group=30, variation=4, qualifier=0x00)
         data = bytes([0, 0]) + (1000).to_bytes(2, "little", signed=True)
         block = ObjectBlock(header=header, data=data)
 
-        values = master._parse_analog_values(block)
+        values = delivered(block, "on_analog_input")
 
         assert len(values) == 1
         assert values[0].value == 1000.0
 
     def test_parse_analog_empty(self) -> None:
         """Test parsing empty analog block."""
-        master = Master()
-
         header = ObjectHeader(group=30, variation=1, qualifier=0x00)
         block = ObjectBlock(header=header, data=b"")
 
-        values = master._parse_analog_values(block)
+        values = delivered(block, "on_analog_input")
 
         assert len(values) == 0
 
     def test_parse_analog_unsupported_variation(self) -> None:
         """Test parsing unsupported analog variation."""
-        master = Master()
-
         # Variation 100 doesn't exist
         header = ObjectHeader(group=30, variation=100, qualifier=0x00)
         data = bytes([0, 0, 0x01, 0x02, 0x03])
         block = ObjectBlock(header=header, data=data)
 
-        values = master._parse_analog_values(block)
+        values = delivered(block, "on_analog_input")
 
         assert len(values) == 0
 
@@ -410,15 +390,13 @@ class TestMasterCounterParsing:
 
     def test_parse_counter_32bit_flags_v1(self) -> None:
         """Test parsing 32-bit counter with flags (g20v1)."""
-        master = Master()
-
         # g20v1: 1 byte flags + 4 bytes value
         header = ObjectHeader(group=20, variation=1, qualifier=0x00)
         value_bytes = (54321).to_bytes(4, "little", signed=False)
         data = bytes([0, 0, 0x01]) + value_bytes
         block = ObjectBlock(header=header, data=data)
 
-        values = master._parse_counter_values(block)
+        values = delivered(block, "on_counter")
 
         assert len(values) == 1
         assert values[0].index == 0
@@ -427,29 +405,25 @@ class TestMasterCounterParsing:
 
     def test_parse_counter_16bit_flags_v2(self) -> None:
         """Test parsing 16-bit counter with flags (g20v2)."""
-        master = Master()
-
         # g20v2: 1 byte flags + 2 bytes value
         header = ObjectHeader(group=20, variation=2, qualifier=0x00)
         value_bytes = (1000).to_bytes(2, "little", signed=False)
         data = bytes([0, 0, 0x01]) + value_bytes
         block = ObjectBlock(header=header, data=data)
 
-        values = master._parse_counter_values(block)
+        values = delivered(block, "on_counter")
 
         assert len(values) == 1
         assert values[0].value == 1000
 
     def test_parse_counter_32bit_no_flags_v5(self) -> None:
         """Test parsing 32-bit counter without flags (g20v5)."""
-        master = Master()
-
         # g20v5: 4 bytes value only
         header = ObjectHeader(group=20, variation=5, qualifier=0x00)
         data = bytes([0, 0]) + (99999).to_bytes(4, "little", signed=False)
         block = ObjectBlock(header=header, data=data)
 
-        values = master._parse_counter_values(block)
+        values = delivered(block, "on_counter")
 
         assert len(values) == 1
         assert values[0].value == 99999
@@ -457,26 +431,22 @@ class TestMasterCounterParsing:
 
     def test_parse_counter_16bit_no_flags_v6(self) -> None:
         """Test parsing 16-bit counter without flags (g20v6)."""
-        master = Master()
-
         # g20v6: 2 bytes value only
         header = ObjectHeader(group=20, variation=6, qualifier=0x00)
         data = bytes([0, 0]) + (5000).to_bytes(2, "little", signed=False)
         block = ObjectBlock(header=header, data=data)
 
-        values = master._parse_counter_values(block)
+        values = delivered(block, "on_counter")
 
         assert len(values) == 1
         assert values[0].value == 5000
 
     def test_parse_counter_empty(self) -> None:
         """Test parsing empty counter block."""
-        master = Master()
-
         header = ObjectHeader(group=20, variation=1, qualifier=0x00)
         block = ObjectBlock(header=header, data=b"")
 
-        values = master._parse_counter_values(block)
+        values = delivered(block, "on_counter")
 
         assert len(values) == 0
 
@@ -541,14 +511,8 @@ class TestMasterConvenienceMethods:
         assert result is False
 
 
-class TestMasterGroupConstants:
-    """Tests for group number constants."""
-
-    def test_group_constants(self) -> None:
-        """Test that group constants are defined correctly."""
-        assert GROUP_BINARY_INPUT == 1
-        assert GROUP_ANALOG_INPUT == 30
-        assert GROUP_COUNTER == 20
+class TestMasterQualityConstants:
+    """Tests for quality flag constants."""
 
     def test_quality_constants(self) -> None:
         """Test that quality flag constants are correct."""

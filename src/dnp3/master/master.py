@@ -44,20 +44,6 @@ from dnp3.master.polling import (
 from dnp3.master.state import MasterState, MasterStateManager
 from dnp3.objects.layout import PointKind, ValueCodec, WireLayout, layout_for
 
-# DNP3 group numbers for parsing
-GROUP_BINARY_INPUT = 1
-GROUP_BINARY_INPUT_EVENT = 2
-GROUP_BINARY_OUTPUT = 10
-GROUP_BINARY_OUTPUT_EVENT = 11
-GROUP_ANALOG_INPUT = 30
-GROUP_ANALOG_INPUT_EVENT = 32
-GROUP_ANALOG_OUTPUT = 40
-GROUP_ANALOG_OUTPUT_EVENT = 42
-GROUP_COUNTER = 20
-GROUP_COUNTER_EVENT = 22
-GROUP_FROZEN_COUNTER = 21
-GROUP_TIME_DELAY = 52
-
 # Quality flag mask
 QUALITY_ONLINE = 0x01
 QUALITY_STATE = 0x80
@@ -318,14 +304,6 @@ def _decode_counter(block: ObjectBlock, wire: WireLayout) -> list[CounterValue]:
     return values
 
 
-def _layout_of_kind(block: ObjectBlock, kinds: "frozenset[PointKind]") -> WireLayout | None:
-    """The block's wire layout, or None if it has none or reports another kind of point."""
-    wire = layout_for(block.header.group, block.header.variation)
-    if wire is None or wire.point_kind not in kinds:
-        return None
-    return wire
-
-
 _V = TypeVar("_V")
 
 
@@ -387,10 +365,6 @@ _DELIVERIES: Mapping[PointKind, _Delivery] = MappingProxyType(
         PointKind.FROZEN_COUNTER: _KindDelivery(_decode_counter, lambda h, v, i: h.on_frozen_counter(v, i)),
     }
 )
-
-_BINARY_KINDS = frozenset({PointKind.BINARY_INPUT, PointKind.BINARY_OUTPUT})
-_ANALOG_KINDS = frozenset({PointKind.ANALOG_INPUT, PointKind.ANALOG_OUTPUT})
-_COUNTER_KINDS = frozenset({PointKind.COUNTER, PointKind.FROZEN_COUNTER})
 
 
 @dataclass
@@ -684,42 +658,6 @@ class Master:
 
         for batch in batches.values():
             batch.deliver(self.handler, info)
-
-    def _parse_binary_values(self, block: ObjectBlock) -> list[BinaryValue]:
-        """Parse binary values from object block.
-
-        Args:
-            block: Object block containing binary data.
-
-        Returns:
-            List of parsed binary values.
-        """
-        wire = _layout_of_kind(block, _BINARY_KINDS)
-        return [] if wire is None else _decode_binary(block, wire)
-
-    def _parse_analog_values(self, block: ObjectBlock) -> list[AnalogValue]:
-        """Parse analog values from object block.
-
-        Args:
-            block: Object block containing analog data.
-
-        Returns:
-            List of parsed analog values.
-        """
-        wire = _layout_of_kind(block, _ANALOG_KINDS)
-        return [] if wire is None else _decode_analog(block, wire)
-
-    def _parse_counter_values(self, block: ObjectBlock) -> list[CounterValue]:
-        """Parse counter values from object block.
-
-        Args:
-            block: Object block containing counter data.
-
-        Returns:
-            List of parsed counter values.
-        """
-        wire = _layout_of_kind(block, _COUNTER_KINDS)
-        return [] if wire is None else _decode_counter(block, wire)
 
     # -------------------------------------------------------------------------
     # Convenience Methods

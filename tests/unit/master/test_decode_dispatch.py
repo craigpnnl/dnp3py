@@ -16,7 +16,7 @@ from dnp3.application.qualifiers import ObjectHeader
 from dnp3.master.handler import AnalogValue, BinaryValue, CounterValue
 from dnp3.master.master import Master
 from dnp3.objects.layout import LAYOUTS, PointKind, ValueCodec, WireLayout
-from tests.unit.master.delivery import PointValue, RecordingHandler, dispatch
+from tests.unit.master.delivery import PointValue, RecordingHandler, delivered, dispatch
 
 # Response header: app control (FIR+FIN, seq 1), RESPONSE function, 2-byte IIN.
 RESPONSE_HEADER = bytes([0xC1, 0x81, 0x00, 0x00])
@@ -214,10 +214,9 @@ class TestAnalogOutputValues:
         ],
     )
     def test_g40_status(self, variation: int, fmt: str, first: float, second: float) -> None:
-        master = Master()
         data = bytes([3, 4, 0x01]) + struct.pack(fmt, first) + bytes([0x21]) + struct.pack(fmt, second)
 
-        values = master._parse_analog_values(_block(40, variation, RANGE_8, data))
+        values = delivered(_block(40, variation, RANGE_8, data), "on_analog_output")
 
         assert values == [
             AnalogValue(index=3, value=first, quality=0x01),
@@ -238,13 +237,12 @@ class TestAnalogOutputValues:
         ],
     )
     def test_g42_events(self, variation: int, fmt: str, timed: bool, first: float, second: float) -> None:
-        master = Master()
         time = TIME_OCTETS if timed else b""
         data = (
             bytes([2, 9, 0x01]) + struct.pack(fmt, first) + time + bytes([0x42, 0x21]) + struct.pack(fmt, second) + time
         )
 
-        values = master._parse_analog_values(_block(42, variation, COUNT_8_INDEX_8, data))
+        values = delivered(_block(42, variation, COUNT_8_INDEX_8, data), "on_analog_output")
 
         assert values == [
             AnalogValue(index=9, value=first, quality=0x01),
