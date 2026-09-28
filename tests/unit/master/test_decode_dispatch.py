@@ -15,7 +15,7 @@ from dnp3.application.fragment import ObjectBlock
 from dnp3.application.qualifiers import ObjectHeader
 from dnp3.master.handler import AnalogValue, BinaryValue, CounterValue
 from dnp3.master.master import Master
-from dnp3.objects.layout import LAYOUTS, PointKind
+from dnp3.objects.layout import LAYOUTS, PointKind, ValueCodec, WireLayout
 from tests.unit.master.delivery import PointValue, RecordingHandler, dispatch
 
 # Response header: app control (FIR+FIN, seq 1), RESPONSE function, 2-byte IIN.
@@ -142,9 +142,39 @@ class TestRouting:
         assert handler.calls == []
 
 
-def _one_object(layout_width: int, *, has_flags: bool) -> bytes:
-    """A single object of the given width: flag octet 0x01 if present, then zeros."""
-    return (bytes([0x01]) if has_flags else b"") + bytes(layout_width - int(has_flags))
+# Value octets per (codec, value width) and what they decode to: negative for signed codecs and
+# above the signed range for unsigned ones, so a wrong width, sign or float format decodes otherwise.
+_ROW_VALUES: dict[tuple[ValueCodec, int], tuple[bytes, float]] = {
+    (ValueCodec.INT, 2): (struct.pack("<h", -1234), -1234),
+    (ValueCodec.INT, 4): (struct.pack("<i", -100000), -100000),
+    (ValueCodec.UINT, 2): (struct.pack("<H", 0xBEEF), 0xBEEF),
+    (ValueCodec.UINT, 4): (struct.pack("<I", 0xDEADBEEF), 0xDEADBEEF),
+    (ValueCodec.FLOAT32, 4): (struct.pack("<f", -2.25), -2.25),
+    (ValueCodec.FLOAT64, 8): (struct.pack("<d", 2401.75), 2401.75),
+}
+
+# Flag octet: local forced and the state bit, which binary layouts report as the value. Online is
+# clear, so a decoder that reads the online bit as state or defaults quality to online fails.
+ROW_FLAGS = 0xA0
+ROW_INDEX = 5
+
+
+def _row_object(layout: WireLayout) -> tuple[bytes, PointValue]:
+    """One object at ROW_INDEX with non-zero flags, value and time, and the value it must decode to."""
+    kind = layout.point_kind
+    if layout.is_packed:
+        return bytes([0x01]), BinaryValue(index=ROW_INDEX, value=True, quality=0x01)
+    if kind in {PointKind.BINARY_INPUT, PointKind.BINARY_OUTPUT}:
+        return bytes([ROW_FLAGS]) + TIME_OCTETS[: layout.time.octets], BinaryValue(
+            index=ROW_INDEX, value=True, quality=ROW_FLAGS & 0x7F
+        )
+    octets, value = _ROW_VALUES[(layout.codec, layout.value_width)]
+    flags = bytes([ROW_FLAGS]) if layout.has_flags else b""
+    quality = ROW_FLAGS if layout.has_flags else 0x01
+    data = flags + octets + TIME_OCTETS[: layout.time.octets]
+    if kind in {PointKind.ANALOG_INPUT, PointKind.ANALOG_OUTPUT}:
+        return data, AnalogValue(index=ROW_INDEX, value=float(value), quality=quality)
+    return data, CounterValue(index=ROW_INDEX, value=int(value), quality=quality)
 
 
 _DELIVERED_PAIRS = sorted(pair for pair, layout in LAYOUTS.items() if layout.point_kind in CALLBACK_BY_KIND)
@@ -158,20 +188,13 @@ class TestEveryDeliveredLayoutDecodes:
         assert kinds == set(CALLBACK_BY_KIND)
 
     @pytest.mark.parametrize("pair", _DELIVERED_PAIRS, ids=lambda p: f"g{p[0]}v{p[1]}")
-    def test_one_object_yields_one_value_on_the_kind_callback(self, pair: tuple[int, int]) -> None:
+    def test_one_object_yields_its_value_on_the_kind_callback(self, pair: tuple[int, int]) -> None:
         layout = LAYOUTS[pair]
-        if layout.is_packed:
-            data = bytes([0, 0, 0x01])
-        else:
-            data = bytes([0, 0]) + _one_object(layout.width, has_flags=layout.has_flags)
+        data, expected = _row_object(layout)
 
-        calls = _dispatch(_block(pair[0], pair[1], RANGE_8, data))
+        calls = _dispatch(_block(pair[0], pair[1], RANGE_8, bytes([ROW_INDEX, ROW_INDEX]) + data))
 
-        assert len(calls) == 1
-        name, values = calls[0]
-        assert name == CALLBACK_BY_KIND[layout.point_kind]
-        assert len(values) == 1
-        assert values[0].index == 0
+        assert calls == [(CALLBACK_BY_KIND[layout.point_kind], [expected])]
 
 
 class TestAnalogOutputValues:
