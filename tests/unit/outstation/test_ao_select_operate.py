@@ -181,7 +181,10 @@ class TestSelectAnalogOutput:
 
         assert _objects_on_wire(response) == _echo(block, [SUCCESS, NOT_SUPPORTED])
         assert handler.ao_selects == [(5, 1.5), (6, 2.5)]
-        assert outstation._state.selection_of(MASTER_A) is None
+        selection = outstation._state.selection_of(MASTER_A)
+        assert selection is not None
+        assert selection.response == response
+        assert selection.points == {}
 
     @pytest.mark.parametrize(("variation", "fmt", "value"), VARIATIONS)
     def test_point_held_by_another_master_is_17_without_the_handler(

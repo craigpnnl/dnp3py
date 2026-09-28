@@ -820,7 +820,7 @@ class Outstation:
                 # A record with no response would swallow every retry, and its points were never answered.
                 self._state.terminate(peer)
                 raise
-            if selection.points:
+            if selection.points or selection.cancelled:
                 self._state.set_response(peer, response)
             else:
                 self._state.terminate(peer)
@@ -1407,7 +1407,7 @@ class Outstation:
 
         if any(status != CommandStatus.SUCCESS for _, status in results):
             # A non-zero status in any object cancels the entire selection (IEEE 1815-2012 4.4.4.3 Rule 3).
-            self._state.terminate(peer)
+            self._state.cancel_points(peer)
 
         # Build response with command status
         return self._build_control_response(request, results, ao_parse_error=ao_parse_error)
