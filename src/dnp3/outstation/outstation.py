@@ -610,14 +610,13 @@ def _parse_ao_block(block: ObjectBlock) -> tuple[list[tuple[int, float]], bool]:
         Var 4: double-precision float (8 bytes value + 1 byte status)
 
     Qualifiers follow the same 0x17/0x28 scheme as CROB (IEEE 1815-2012 Table 4-3).
-    Unknown qualifiers and unknown variations fail closed, matching the CROB path.
+    The block must have passed _control_block_error, which checks its qualifier and
+    that it holds exactly the declared count of objects.
 
     Returns:
-        Tuple of (points, has_parse_error). has_parse_error is True when the
-        frame is malformed (unknown variation, unknown qualifier, or truncated
-        buffer); callers must set IIN.PARAMETER_ERROR when it is True. The
-        objects before a truncation are still returned. A dummy-index sentinel
-        is never returned, so index 0 is not conflated with a parse error.
+        Tuple of (points, has_parse_error). has_parse_error is True, with no
+        points, for a variation other than 1-4; callers must set
+        IIN.PARAMETER_ERROR when it is True.
     """
     points: list[tuple[int, float]] = []
     variation = block.header.variation
@@ -626,25 +625,12 @@ def _parse_ao_block(block: ObjectBlock) -> tuple[list[tuple[int, float]], bool]:
     if value_size is None:
         return points, True
 
-    try:
-        count_bytes, index_bytes = _crob_count_index_sizes(block.header.qualifier)
-    except ValueError:
-        return points, True
-
+    count_bytes, index_bytes = _crob_count_index_sizes(block.header.qualifier)
     data = block.data
-    if len(data) < count_bytes:
-        return points, True
-
     count = int.from_bytes(data[0:count_bytes], "little")
     offset = count_bytes
 
-    # object size = index_bytes + value_size + 1 byte status
-    obj_size = index_bytes + value_size + 1
-
     for _ in range(count):
-        if offset + obj_size > len(data):
-            break
-
         index = int.from_bytes(data[offset : offset + index_bytes], "little")
         offset += index_bytes
 
@@ -659,7 +645,7 @@ def _parse_ao_block(block: ObjectBlock) -> tuple[list[tuple[int, float]], bool]:
         offset += value_size + 1  # skip request status byte
         points.append((index, value))
 
-    return points, len(points) < count
+    return points, False
 
 
 def _control_block_error(block: ObjectBlock) -> IIN | None:
