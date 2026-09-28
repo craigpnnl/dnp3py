@@ -42,23 +42,39 @@ _CROB_BODY_BYTES = 11
 _QUALIFIER_SIZES = {0x17: 1, 0x28: 2}
 
 
+class _HandlerFault(RuntimeError):
+    """Raised by the test handler to stand for a failing device."""
+
+
 class _RecordingHandler(DefaultCommandHandler):
-    """Accepts every binary-output SELECT and OPERATE and records what it was given."""
+    """Accepts every binary-output SELECT and OPERATE and records what it was given.
+
+    An index in ``raise_on_select`` or ``raise_on_operate`` raises once, on its
+    next call, before anything is recorded.
+    """
 
     def __init__(self) -> None:
         super().__init__()
         self.selects: list[tuple[int, int]] = []
         self.operates: list[tuple[int, int, int]] = []
+        self.raise_on_select: set[int] = set()
+        self.raise_on_operate: set[int] = set()
 
     def select_binary_output(
         self, index: int, code: ControlCode, count: int, on_time: int, off_time: int
     ) -> CommandResult:
+        if index in self.raise_on_select:
+            self.raise_on_select.discard(index)
+            raise _HandlerFault(index)
         self.selects.append((index, on_time))
         return CommandResult.success()
 
     def operate_binary_output(
         self, index: int, code: ControlCode, count: int, on_time: int, off_time: int, select_sequence: int
     ) -> CommandResult:
+        if index in self.raise_on_operate:
+            self.raise_on_operate.discard(index)
+            raise _HandlerFault(index)
         self.operates.append((index, on_time, select_sequence))
         return CommandResult.success()
 
@@ -104,8 +120,8 @@ def _operate(outstation: Outstation, peer: PeerId, seq: int, block: ObjectBlock)
 def _outstation(select_timeout: float = 10.0) -> tuple[Outstation, _RecordingHandler]:
     handler = _RecordingHandler()
     outstation = Outstation(config=OutstationConfig(select_timeout=select_timeout), handler=handler)
-    outstation.database.add_binary_output(5)
-    outstation.database.add_binary_output(6)
+    for index in (5, 6, 7):
+        outstation.database.add_binary_output(index)
     return outstation, handler
 
 
@@ -328,6 +344,30 @@ class TestOtherRequestsBetweenSelectAndOperate:
 
         assert _statuses(_operate(outstation, MASTER_A, 1, POINT_5)) == [(5, SUCCESS)]
         assert handler.operates == [(5, 1000, 0)]
+
+
+class TestHandlerRaises:
+    """A handler that raises leaves no selection behind to retry or to operate."""
+
+    def test_raise_during_select_leaves_no_record_to_retry(self) -> None:
+        outstation, handler = _outstation()
+        handler.raise_on_select.add(5)
+        with pytest.raises(_HandlerFault):
+            _select(outstation, MASTER_A, 4, POINT_5)
+
+        assert _statuses(_select(outstation, MASTER_A, 4, POINT_5)) == [(5, SUCCESS)]
+        assert handler.selects == [(5, 1000)]
+
+    def test_raise_partway_through_select_arms_nothing(self) -> None:
+        outstation, handler = _outstation()
+        handler.raise_on_select.add(6)
+        both = _crob_block((5, 1000), (6, 6000))
+        with pytest.raises(_HandlerFault):
+            _select(outstation, MASTER_A, 4, both)
+        assert handler.selects == [(5, 1000)]
+
+        assert _statuses(_operate(outstation, MASTER_A, 5, both)) == [(5, NO_SELECT), (6, NO_SELECT)]
+        assert handler.operates == []
 
 
 class TestSelectionWithoutARequest:

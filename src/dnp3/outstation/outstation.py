@@ -644,7 +644,12 @@ class Outstation:
                     return [selection.response]
                 return []
             selection = self._state.begin_selection(peer, seq, body)
-            response = self._handle_select(request, peer=peer)
+            try:
+                response = self._handle_select(request, peer=peer)
+            except BaseException:
+                # A record with no response would swallow every retry, and its points were never answered.
+                self._state.terminate(peer)
+                raise
             if selection.points:
                 self._state.set_response(peer, response)
             else:
