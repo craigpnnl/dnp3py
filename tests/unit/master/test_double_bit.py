@@ -13,6 +13,7 @@ import pytest
 from dnp3.application.fragment import Truncation, TruncationReason
 from dnp3.core.flags import DoubleBitState
 from dnp3.master import DefaultSOEHandler, DoubleBitInputHandler, DoubleBitValue, Master
+from dnp3.master.double_bit import unpack_double_bit_states
 from dnp3.master.handler import BinaryValue, ResponseInfo, SOEHandler
 from tests.unit.master.delivery import RecordingHandler
 
@@ -153,6 +154,25 @@ class TestG3v1Packed:
         assert info.truncation == Truncation(
             reason=TruncationReason.DATA_SHORTER_THAN_DECLARED, offset=6, group=3, variation=1, qualifier=RANGE_8
         )
+
+
+class TestUnpackDoubleBitStates:
+    """Four points per octet (A.4.1.2.2), so a count that is not a multiple of 4 rounds up."""
+
+    def test_five_points_need_two_octets(self) -> None:
+        assert unpack_double_bit_states(bytes([0xE4]), 5) == []
+
+    def test_five_points_in_two_octets(self) -> None:
+        assert unpack_double_bit_states(bytes([0xE4, 0x01]), 5) == [
+            DoubleBitState.INTERMEDIATE,
+            DoubleBitState.OFF,
+            DoubleBitState.ON,
+            DoubleBitState.INDETERMINATE,
+            DoubleBitState.OFF,
+        ]
+
+    def test_zero_points(self) -> None:
+        assert unpack_double_bit_states(b"", 0) == []
 
 
 class TestG4Events:
