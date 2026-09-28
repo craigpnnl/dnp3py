@@ -12,7 +12,7 @@ from dnp3.application.builder import (
     build_integrity_poll,
     build_read_request,
 )
-from dnp3.application.fragment import ObjectBlock
+from dnp3.application.fragment import ObjectBlock, ResponseFragment
 from dnp3.application.qualifiers import ObjectHeader, PrefixCode, RangeCode
 from dnp3.core.enums import CommandStatus, ControlCode, FunctionCode
 from dnp3.core.flags import IIN
@@ -1832,14 +1832,14 @@ class TestWriteIINRestart:
 class TestWriteIINHardenPass:
     """Additional coverage for _handle_write_iin edge cases (Tess gaps)."""
 
-    def _write_g80v1(self, outstation: Outstation, qualifier: int, data: bytes) -> None:
+    def _write_g80v1(self, outstation: Outstation, qualifier: int, data: bytes) -> list[ResponseFragment]:
         """Issue a WRITE g80v1 with the given qualifier and raw data bytes."""
         from dnp3.application.builder import build_write_request
 
         header = ObjectHeader(group=80, variation=1, qualifier=qualifier)
         block = ObjectBlock(header=header, data=data)
         request = build_write_request(objects=(block,))
-        outstation.process_request(request.to_bytes())
+        return outstation.process_request(request.to_bytes())
 
     def test_write_bit_value_1_does_not_clear_restart(self) -> None:
         """Writing bit value 1 to index 7 is a no-op: DEVICE_RESTART stays set.
@@ -1870,11 +1870,12 @@ class TestWriteIINHardenPass:
         assert IIN.DEVICE_RESTART in outstation.iin, "Short data must not clear DEVICE_RESTART"
 
     def test_write_non_0x00_qualifier_does_not_clear_restart(self) -> None:
-        """A g80v1 block with qualifier != 0x00 is silently ignored.
+        """A g80v1 block with qualifier != 0x00 answers IIN2.2 and clears nothing.
 
         Qualifier 0x01 (2-byte start-stop) would misinterpret the data bytes
         as 2-byte fields if the guard were absent. Confirm the fix: DEVICE_RESTART
-        stays set and no exception is raised.
+        stays set, no exception is raised, and Rule W's framing refusal
+        (A.28 fixes g80v1 to qualifier 0x00) reports PARAMETER_ERROR.
         """
         outstation = Outstation()
         assert IIN.DEVICE_RESTART in outstation.iin
@@ -1882,9 +1883,11 @@ class TestWriteIINHardenPass:
         # Qualifier 0x01 with data that would clear restart if misinterpreted.
         # If the guard is absent, data[0]=7, data[1]=7 would be read as start/stop
         # and the bit clear would fire.
-        self._write_g80v1(outstation, qualifier=0x01, data=bytes([7, 7, 0x00]))
+        responses = self._write_g80v1(outstation, qualifier=0x01, data=bytes([7, 7, 0x00]))
 
         assert IIN.DEVICE_RESTART in outstation.iin, "Non-0x00 qualifier must not clear DEVICE_RESTART"
+        assert len(responses) == 1
+        assert IIN.PARAMETER_ERROR in responses[0].header.iin
 
 
 class TestAnalogOutputVariations:

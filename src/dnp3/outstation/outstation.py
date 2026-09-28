@@ -30,7 +30,7 @@ from dnp3.application.qualifiers import (
 )
 from dnp3.core.enums import CommandStatus, ControlCode, FunctionCode
 from dnp3.core.flags import IIN, AnalogQuality
-from dnp3.core.timestamp import DNP3Timestamp
+from dnp3.core.timestamp import TIMESTAMP_SIZE, DNP3Timestamp
 from dnp3.database import AnalogEvent, BinaryEvent, CounterEvent, Database, EventClass
 from dnp3.objects.analog_input import AnalogInput32, AnalogInputEvent32
 from dnp3.objects.binary_input import BinaryInputEvent, BinaryInputFlags
@@ -85,6 +85,7 @@ GROUP_ANALOG_INPUT = 30
 GROUP_ANALOG_INPUT_EVENT = 32
 GROUP_ANALOG_OUTPUT_STATUS = 40
 GROUP_ANALOG_OUTPUT = 41
+GROUP_TIME_AND_DATE = 50  # g50 - Time and Date
 GROUP_IIN = 80  # g80 - Internal Indications
 GROUP_CLASS_DATA = 60
 
@@ -102,9 +103,14 @@ VAR_CLASS_3 = 4
 
 # IIN bit indices (Group 80 Variation 1)
 IIN_BIT_DEVICE_RESTART = 7  # Bit 7 of IIN byte 1
+IIN_BIT_NEED_TIME = 4  # Bit 4 of IIN byte 1 (IEEE 1815-2012 4.5.5)
 
 # Minimum data sizes
 MIN_IIN_WRITE_DATA = 2  # start + stop bytes
+
+# A.23.1.2.3 fixes the WRITE qualifier for g50v1 to 0x07 (1-byte count) and
+# the count to 1; any other qualifier or count is not the time-set object.
+_WRITE_TIME_QUALIFIER = 0x07
 
 # Analog output value sizes in bytes, keyed by variation number
 # (parallel to _CROB_BODY_BYTES for CROB).
@@ -699,6 +705,29 @@ def _echo_control_block(block: ObjectBlock, results: list[tuple[int, CommandStat
     return ObjectBlock(header=block.header, data=bytes(echoed)), misaligned
 
 
+def _write_block_error(block: ObjectBlock) -> IIN | None:
+    """Return the IIN error bit a WRITE request answers for ``block``, or None when it applies.
+
+    Only g50v1 (time) and g80v1 (internal indications) are objects this
+    outstation writes; any other object it does not act on is unknown
+    (IIN2.1, IEEE 1815-2012 Table 4-14). A qualifier or count its own clause
+    does not fix is malformed (IIN2.2, 4.5.11): A.23.1.2.3 fixes g50v1 to
+    qualifier 0x07 and count 1; A.28 fixes g80v1 to qualifier 0x00.
+    """
+    header = block.header
+    if (header.group, header.variation) == (GROUP_TIME_AND_DATE, 1):
+        if header.qualifier != _WRITE_TIME_QUALIFIER:
+            return IIN.PARAMETER_ERROR
+        if len(block.data) != 1 + TIMESTAMP_SIZE or block.data[0] != 1:
+            return IIN.PARAMETER_ERROR
+        return None
+    if (header.group, header.variation) == (GROUP_IIN, 1):
+        if header.qualifier != 0x00:
+            return IIN.PARAMETER_ERROR
+        return None
+    return IIN.OBJECT_UNKNOWN
+
+
 @dataclass
 class Outstation:
     """DNP3 Outstation implementation.
@@ -710,11 +739,16 @@ class Outstation:
         config: Outstation configuration.
         database: Point database.
         handler: Command handler for control operations.
+        time_handler: Called with the decoded time when a master writes
+            g50v1 (IEEE 1815-2012 A.23.1.2.3). None (the default) accepts
+            and ignores the write, which the clause permits for an
+            outstation with its own accurate time source.
     """
 
     config: OutstationConfig = field(default_factory=OutstationConfig)
     database: Database = field(default_factory=Database)
     handler: CommandHandler = field(default_factory=DefaultCommandHandler)
+    time_handler: Callable[[DNP3Timestamp], None] | None = None
     _state: OutstationStateManager = field(default_factory=OutstationStateManager, init=False)
     _connections_opened: int = field(default=0, init=False, repr=False)
 
@@ -1343,45 +1377,64 @@ class Outstation:
     def _handle_write(self, request: RequestFragment) -> ResponseFragment:
         """Handle WRITE request.
 
-        Supports Group 80 Variation 1 (Internal Indications) to allow
-        the master to clear IIN bits such as DEVICE_RESTART.
+        Rule W (IEEE 1815-2012 4.4.4.3 Rule 7): every block is checked
+        before any is applied. A request holding any block this outstation
+        cannot write delivers nothing and clears nothing, and the response
+        carries the IIN bit of the first failing block.
+
+        Supports g50v1 (deliver the time to time_handler, then clear
+        NEED_TIME) and g80v1 (clear DEVICE_RESTART or NEED_TIME).
         """
+        seq = request.header.control.seq
         for block in request.objects:
-            if block.header.group == GROUP_IIN and block.header.variation == 1:
+            error = _write_block_error(block)
+            if error is not None:
+                return build_null_response(iin=self.iin | error, seq=seq)
+
+        for block in request.objects:
+            if block.header.group == GROUP_TIME_AND_DATE and block.header.variation == 1:
+                self._handle_write_time(block)
+            elif block.header.group == GROUP_IIN and block.header.variation == 1:
                 self._handle_write_iin(block)
 
         return build_null_response(
             iin=self.iin,
-            seq=request.header.control.seq,
+            seq=seq,
         )
 
-    def _handle_write_iin(self, block: ObjectBlock) -> None:
-        """Handle WRITE for Group 80 Variation 1 (Internal Indications).
+    def _handle_write_time(self, block: ObjectBlock) -> None:
+        """Apply a WRITE of g50v1: deliver the time, then clear NEED_TIME.
 
-        Per IEEE 1815-2012, writing g80v1 with index 7 value 0 clears
-        the DEVICE_RESTART bit. Only qualifier 0x00 (1-byte start-stop
-        range) is valid for this object; any other qualifier is silently
-        ignored to avoid misinterpreting the data bytes as start/stop.
+        The block has already passed _write_block_error, so its data is
+        exactly the count byte and one 6-octet timestamp (A.23.1.2.3). If
+        time_handler raises, it propagates (as a raising control handler
+        does today, see _handle_select) and NEED_TIME stays set, because the
+        clear follows the call.
 
         Args:
-            block: Object block with g80v1 data.
+            block: g50v1 object block with qualifier 0x07, count 1.
         """
-        # Only 0x00 (1-byte start-stop) is the valid qualifier for g80v1.
-        # A non-0x00 qualifier would cause the data bytes to be misread
-        # as start/stop indices, potentially clearing DEVICE_RESTART wrongly.
-        if block.header.qualifier != 0x00:
-            return
+        timestamp = DNP3Timestamp.from_bytes(block.data[1:])
+        if self.time_handler is not None:
+            self.time_handler(timestamp)
+        self._state.clear_need_time()
 
+    def _handle_write_iin(self, block: ObjectBlock) -> None:
+        """Apply a WRITE of g80v1 (Internal Indications): clear a bit written 0.
+
+        The block has already passed _write_block_error, so its qualifier is
+        0x00 (1-byte start-stop range) and its data holds at least the start
+        and stop octets. Per IEEE 1815-2012 4.5.5, only a bit written 0 is
+        acted on; the master cannot set a bit through WRITE.
+
+        Args:
+            block: g80v1 object block with qualifier 0x00.
+        """
         data = block.data
-        if len(data) < MIN_IIN_WRITE_DATA:
-            return
-
-        # Qualifier 0x00 = 1-byte start-stop range
         start = data[0]
         stop = data[1]
 
-        # The bit data follows the range bytes
-        # For g80v1, each bit in the data corresponds to an IIN bit
+        # The bit data follows the range bytes; each bit corresponds to an IIN bit.
         bit_offset = MIN_IIN_WRITE_DATA
         for bit_index in range(start, stop + 1):
             byte_pos = bit_offset + (bit_index - start) // 8
@@ -1390,9 +1443,13 @@ class Outstation:
                 break
 
             bit_value = (data[byte_pos] >> bit_pos) & 1
+            if bit_value != 0:
+                continue
 
-            if bit_index == IIN_BIT_DEVICE_RESTART and bit_value == 0:
+            if bit_index == IIN_BIT_DEVICE_RESTART:
                 self._state.clear_restart()
+            elif bit_index == IIN_BIT_NEED_TIME:
+                self._state.clear_need_time()
 
     def _refuse_undecodable(self, request: RequestFragment) -> ResponseFragment | None:
         """Answer a control request carrying a block the control path cannot use, or return None.
