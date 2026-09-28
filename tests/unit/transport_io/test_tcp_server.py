@@ -425,6 +425,166 @@ class TestTcpServerChannel:
             await server.stop()
 
 
+class TestServerChannelCloseIsBounded:
+    """TcpServerChannel.close() finishes even when the peer has stopped reading.
+
+    Mirrors TestCloseIsBounded in test_tcp_client.py, but here the stalled
+    peer is the client and the channel under test is the server-accepted one.
+    """
+
+    # More than loopback socket buffers hold, so bytes stay queued in the transport.
+    STUFFING = b"\x00" * (32 * 1024 * 1024)
+
+    @staticmethod
+    async def _server_with_stalled_client() -> tuple[TcpServer, TcpServerChannel, asyncio.StreamWriter]:
+        config = TcpServerConfig(host="127.0.0.1", port=0)
+        server = TcpServer(config=config)
+        await server.start()
+        addr = server.local_address
+        assert addr is not None
+
+        _client_reader, client_writer = await asyncio.open_connection(addr[0], addr[1])
+        channel = await asyncio.wait_for(server.accept(), timeout=2.0)
+        return server, channel, client_writer
+
+    @pytest.mark.asyncio
+    async def test_close_with_unsent_bytes_is_bounded(self) -> None:
+        """Unsent bytes to a stalled peer are abandoned at the close bound."""
+        server, channel, client_writer = await self._server_with_stalled_client()
+        try:
+            with pytest.raises(TimeoutError):
+                await asyncio.wait_for(channel.write_all(self.STUFFING), timeout=0.3)
+
+            sock = channel.writer.get_extra_info("socket")
+
+            loop = asyncio.get_running_loop()
+            started = loop.time()
+            await asyncio.wait_for(channel.close(), timeout=5.0)
+            elapsed = loop.time() - started
+
+            assert channel.config.close_timeout * 0.9 <= elapsed < channel.config.close_timeout + 1.0
+            assert channel.state == ChannelState.CLOSED
+            assert channel.statistics.disconnect_count == 1
+
+            # abort() closes the transport asynchronously (scheduled via
+            # call_soon); poll rather than assume it has run by the time
+            # close() returns.
+            deadline = loop.time() + 1.0
+            while sock.fileno() != -1 and loop.time() < deadline:
+                await asyncio.sleep(0.01)
+            assert sock.fileno() == -1, "a stalled close must abort the transport, not merely time out"
+        finally:
+            client_writer.transport.abort()
+            await server.stop()
+
+    @pytest.mark.asyncio
+    async def test_close_cancelled_mid_wait_ends_closed_with_count_once(self) -> None:
+        """Cancelling close() during the bounded wait still ends CLOSED, counted once."""
+        config = TcpServerConfig(host="127.0.0.1", port=0, close_timeout=5.0)
+        server = TcpServer(config=config)
+        await server.start()
+        addr = server.local_address
+        assert addr is not None
+
+        _client_reader, client_writer = await asyncio.open_connection(addr[0], addr[1])
+        channel = await asyncio.wait_for(server.accept(), timeout=2.0)
+
+        try:
+            with pytest.raises(TimeoutError):
+                await asyncio.wait_for(channel.write_all(self.STUFFING), timeout=0.3)
+
+            sock = channel.writer.get_extra_info("socket")
+
+            close_task = asyncio.create_task(channel.close())
+            await asyncio.sleep(0.05)  # let close() start its bounded wait
+            close_task.cancel()
+
+            with pytest.raises(asyncio.CancelledError):
+                await close_task
+
+            assert channel.state == ChannelState.CLOSED
+            assert channel.statistics.disconnect_count == 1
+
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + 1.0
+            while sock.fileno() != -1 and loop.time() < deadline:
+                await asyncio.sleep(0.01)
+            assert sock.fileno() == -1, "a cancelled close must still abort the transport"
+        finally:
+            client_writer.transport.abort()
+            await server.stop()
+
+    @pytest.mark.asyncio
+    async def test_close_to_a_reading_peer_still_delivers_every_byte(self) -> None:
+        """The bound does not truncate a healthy close: the peer gets all bytes, then EOF."""
+        config = TcpServerConfig(host="127.0.0.1", port=0)
+        server = TcpServer(config=config)
+        await server.start()
+        addr = server.local_address
+        assert addr is not None
+
+        received = bytearray()
+        done = asyncio.Event()
+
+        async def read_until_eof(reader: asyncio.StreamReader) -> None:
+            while chunk := await reader.read(65536):
+                received.extend(chunk)
+            done.set()
+
+        client_reader, client_writer = await asyncio.open_connection(addr[0], addr[1])
+        channel = await asyncio.wait_for(server.accept(), timeout=2.0)
+        reader_task = asyncio.create_task(read_until_eof(client_reader))
+
+        payload = bytes(range(256)) * 4096
+        try:
+            channel.writer.write(payload)
+            await channel.close()
+            await asyncio.wait_for(done.wait(), timeout=5.0)
+
+            assert bytes(received) == payload
+            assert channel.state == ChannelState.CLOSED
+        finally:
+            client_writer.close()
+            await client_writer.wait_closed()
+            await reader_task
+            await server.stop()
+
+
+class TestServerChannelCloseTimeoutPropagation:
+    """The server's configured close_timeout must reach each accepted connection."""
+
+    @pytest.mark.asyncio
+    async def test_close_timeout_from_server_config_is_honored(self) -> None:
+        """A non-default close_timeout on the server reaches the channel's close bound."""
+        config = TcpServerConfig(host="127.0.0.1", port=0, close_timeout=0.2)
+        server = TcpServer(config=config)
+        await server.start()
+        addr = server.local_address
+        assert addr is not None
+
+        _client_reader, client_writer = await asyncio.open_connection(addr[0], addr[1])
+        channel = await asyncio.wait_for(server.accept(), timeout=2.0)
+
+        try:
+            assert channel.config.close_timeout == 0.2
+
+            stuffing = b"\x00" * (32 * 1024 * 1024)
+            with pytest.raises(TimeoutError):
+                await asyncio.wait_for(channel.write_all(stuffing), timeout=0.3)
+
+            loop = asyncio.get_running_loop()
+            started = loop.time()
+            await asyncio.wait_for(channel.close(), timeout=5.0)
+            elapsed = loop.time() - started
+
+            assert 0.15 <= elapsed < 0.7, (
+                "close() must honor the server's close_timeout (0.2s), not the TcpConfig default of 1.0s"
+            )
+        finally:
+            client_writer.transport.abort()
+            await server.stop()
+
+
 class TestServeHelper:
     """Tests for serve() helper function."""
 

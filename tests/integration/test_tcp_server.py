@@ -622,6 +622,55 @@ class TestTcpServerStopWithConnections:
             await client.close()
 
 
+class TestTcpServerStopBoundedByStalledConnection:
+    """stop() must not multiply its close_timeout bound across every connection."""
+
+    @pytest.mark.asyncio
+    async def test_stop_bounded_despite_two_stalled_connections(self) -> None:
+        """Two stalled peers and one healthy peer: stop() finishes near one bound, not two."""
+        config = TcpServerConfig(host="127.0.0.1", port=0, close_timeout=0.5)
+        server = TcpServer(config=config)
+        await server.start()
+        addr = server.local_address
+        assert addr is not None
+
+        stuffing = b"\x00" * (32 * 1024 * 1024)
+
+        _stalled_reader1, stalled_writer1 = await asyncio.open_connection(addr[0], addr[1])
+        stalled_channel1 = await asyncio.wait_for(server.accept(), timeout=2.0)
+        _stalled_reader2, stalled_writer2 = await asyncio.open_connection(addr[0], addr[1])
+        stalled_channel2 = await asyncio.wait_for(server.accept(), timeout=2.0)
+        _healthy_reader, healthy_writer = await asyncio.open_connection(addr[0], addr[1])
+        healthy_channel = await asyncio.wait_for(server.accept(), timeout=2.0)
+
+        assert server.connection_count == 3
+
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(stalled_channel1.write_all(stuffing), timeout=0.3)
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(stalled_channel2.write_all(stuffing), timeout=0.3)
+
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+        await asyncio.wait_for(server.stop(), timeout=5.0)
+        elapsed = loop.time() - started
+
+        # Sequential closing of two stalled connections takes roughly
+        # 2 * close_timeout (1.0s); closing concurrently bounds it to about one.
+        assert config.close_timeout * 0.8 <= elapsed < config.close_timeout * 1.7, (
+            f"stop() took {elapsed:.2f}s, more than one stalled connection's close bound"
+        )
+        assert stalled_channel1.state == ChannelState.CLOSED
+        assert stalled_channel2.state == ChannelState.CLOSED
+        assert healthy_channel.state == ChannelState.CLOSED
+        assert server.connection_count == 0
+
+        stalled_writer1.transport.abort()
+        stalled_writer2.transport.abort()
+        healthy_writer.close()
+        await healthy_writer.wait_closed()
+
+
 class TestTcpServerQueueClearing:
     """Test accept queue clearing on stop."""
 

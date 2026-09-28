@@ -84,7 +84,11 @@ class TcpServerChannel:
         pass
 
     async def close(self) -> None:
-        """Close the channel."""
+        """Close the channel, gracefully if the peer lets it.
+
+        Waits at most `config.close_timeout` for unsent bytes to drain, then
+        aborts the transport.
+        """
         if self._state == ChannelState.CLOSED:
             return
 
@@ -92,12 +96,23 @@ class TcpServerChannel:
 
         try:
             self.writer.close()
-            await self.writer.wait_closed()
+            await asyncio.wait_for(self.writer.wait_closed(), timeout=self.config.close_timeout)
+        except TimeoutError:
+            # A peer that stopped reading never drains the send buffer, so a
+            # graceful close would wait forever.
+            self.writer.transport.abort()
+        except asyncio.CancelledError:
+            # Cancelled while waiting for the drain: abort so the transport
+            # is not left half-closed, then let the cancellation propagate.
+            self.writer.transport.abort()
+            raise
         except (OSError, ConnectionError):
-            pass
-
-        self._state = ChannelState.CLOSED
-        self._statistics.disconnect_count += 1
+            pass  # Ignore errors during close
+        finally:
+            # Runs on every path, including a re-raised cancellation, so the
+            # channel always ends CLOSED with the disconnect counted once.
+            self._state = ChannelState.CLOSED
+            self._statistics.disconnect_count += 1
 
     async def read(self, max_bytes: int) -> bytes:
         """Read up to max_bytes from the channel.
@@ -323,6 +338,7 @@ class TcpServer:
                 keepalive_idle=self.config.keepalive_idle,
                 keepalive_interval=self.config.keepalive_interval,
                 keepalive_count=self.config.keepalive_count,
+                close_timeout=self.config.close_timeout,
             ),
         )
 
@@ -367,9 +383,11 @@ class TcpServer:
 
         self._state = ChannelState.CLOSING
 
-        # Close all connections
-        for conn in self._connections:
-            await conn.close()
+        # Close all connections concurrently: closing them one at a time would
+        # let a single stalled peer multiply its close_timeout bound across
+        # every other connection.
+        if self._connections:
+            await asyncio.gather(*(conn.close() for conn in self._connections), return_exceptions=True)
         self._connections.clear()
 
         # Stop the server
