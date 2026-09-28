@@ -17,6 +17,8 @@ from dnp3.database.event_buffer import (
 from dnp3.database.point import (
     AnalogInputConfig,
     AnalogInputPoint,
+    AnalogOutputConfig,
+    AnalogOutputPoint,
     BinaryInputConfig,
     BinaryInputPoint,
     BinaryOutputConfig,
@@ -36,6 +38,7 @@ class DatabaseConfig:
         max_binary_inputs: Maximum number of binary input points.
         max_binary_outputs: Maximum number of binary output points.
         max_analog_inputs: Maximum number of analog input points.
+        max_analog_outputs: Maximum number of analog output points.
         max_counters: Maximum number of counter points.
         max_frozen_counters: Maximum number of frozen counter points.
         event_buffer_config: Configuration for event buffer.
@@ -44,6 +47,7 @@ class DatabaseConfig:
     max_binary_inputs: int = 100
     max_binary_outputs: int = 100
     max_analog_inputs: int = 100
+    max_analog_outputs: int = 100
     max_counters: int = 100
     max_frozen_counters: int = 100
     event_buffer_config: EventBufferConfig = field(default_factory=EventBufferConfig)
@@ -61,6 +65,7 @@ class Database:
         binary_inputs: Binary input points by index.
         binary_outputs: Binary output points by index.
         analog_inputs: Analog input points by index.
+        analog_outputs: Analog output points by index.
         counters: Counter points by index.
         frozen_counters: Frozen counter points by index.
         event_buffer: Event buffer for storing generated events.
@@ -70,6 +75,7 @@ class Database:
     binary_inputs: dict[int, BinaryInputPoint] = field(default_factory=dict)
     binary_outputs: dict[int, BinaryOutputPoint] = field(default_factory=dict)
     analog_inputs: dict[int, AnalogInputPoint] = field(default_factory=dict)
+    analog_outputs: dict[int, AnalogOutputPoint] = field(default_factory=dict)
     counters: dict[int, CounterPoint] = field(default_factory=dict)
     frozen_counters: dict[int, FrozenCounterPoint] = field(default_factory=dict)
     event_buffer: EventBuffer = field(default_factory=EventBuffer)
@@ -189,6 +195,50 @@ class Database:
             quality=quality,
         )
         self.analog_inputs[index] = point
+        return point
+
+    def add_analog_output(
+        self,
+        index: int,
+        config: AnalogOutputConfig | None = None,
+        value: float = 0.0,
+        quality: AnalogQuality = AnalogQuality.RESTART,
+    ) -> AnalogOutputPoint:
+        """Add an analog output point.
+
+        Args:
+            index: Point index (must be unique).
+            config: Point configuration.
+            value: Initial value.
+            quality: Initial quality.
+
+        Returns:
+            The created point.
+
+        Raises:
+            ValueError: If index already exists, exceeds max, value is
+                NaN, or config requests an event class other than NONE
+                (analog output events, group 42, are not implemented yet).
+        """
+        if index in self.analog_outputs:
+            msg = f"Analog output index {index} already exists"
+            raise ValueError(msg)
+        if len(self.analog_outputs) >= self.config.max_analog_outputs:
+            msg = f"Maximum analog outputs ({self.config.max_analog_outputs}) exceeded"
+            raise ValueError(msg)
+
+        point_config = config or AnalogOutputConfig()
+        if point_config.event_class != EventClass.NONE:
+            msg = "Analog output points support only EventClass.NONE: group 42 events are not implemented"
+            raise ValueError(msg)
+
+        point = AnalogOutputPoint(
+            index=index,
+            config=point_config,
+            value=value,
+            quality=quality,
+        )
+        self.analog_outputs[index] = point
         return point
 
     def add_counter(
@@ -368,6 +418,32 @@ class Database:
             return True
         return False
 
+    def update_analog_output(
+        self,
+        index: int,
+        value: float,
+        quality: AnalogQuality | None = None,
+        timestamp: DNP3Timestamp | None = None,
+    ) -> bool:
+        """Update an analog output point.
+
+        Args:
+            index: Point index.
+            value: New value.
+            quality: New quality (defaults to ONLINE).
+            timestamp: Update timestamp.
+
+        Returns:
+            False. Analog output points do not generate events (group 42 is
+            not implemented).
+
+        Raises:
+            KeyError: If point does not exist.
+            ValueError: If value is NaN.
+        """
+        point = self.analog_outputs[index]
+        return point.update(value, quality, timestamp)
+
     def update_counter(
         self,
         index: int,
@@ -512,6 +588,10 @@ class Database:
         """Get an analog input point by index."""
         return self.analog_inputs.get(index)
 
+    def get_analog_output(self, index: int) -> AnalogOutputPoint | None:
+        """Get an analog output point by index."""
+        return self.analog_outputs.get(index)
+
     def get_counter(self, index: int) -> CounterPoint | None:
         """Get a counter point by index."""
         return self.counters.get(index)
@@ -542,6 +622,10 @@ class Database:
         """Get analog inputs in index range [start, stop]."""
         return [point for index, point in sorted(self.analog_inputs.items()) if start <= index <= stop]
 
+    def get_analog_outputs_range(self, start: int, stop: int) -> list[AnalogOutputPoint]:
+        """Get analog outputs in index range [start, stop]."""
+        return [point for index, point in sorted(self.analog_outputs.items()) if start <= index <= stop]
+
     def get_counters_range(self, start: int, stop: int) -> list[CounterPoint]:
         """Get counters in index range [start, stop]."""
         return [point for index, point in sorted(self.counters.items()) if start <= index <= stop]
@@ -563,6 +647,10 @@ class Database:
     def get_all_analog_inputs(self) -> list[AnalogInputPoint]:
         """Get all analog input points sorted by index."""
         return [point for _, point in sorted(self.analog_inputs.items())]
+
+    def get_all_analog_outputs(self) -> list[AnalogOutputPoint]:
+        """Get all analog output points sorted by index."""
+        return [point for _, point in sorted(self.analog_outputs.items())]
 
     def get_all_counters(self) -> list[CounterPoint]:
         """Get all counter points sorted by index."""
@@ -590,6 +678,11 @@ class Database:
         return len(self.analog_inputs)
 
     @property
+    def analog_output_count(self) -> int:
+        """Number of analog output points."""
+        return len(self.analog_outputs)
+
+    @property
     def counter_count(self) -> int:
         """Number of counter points."""
         return len(self.counters)
@@ -606,6 +699,7 @@ class Database:
             self.binary_input_count
             + self.binary_output_count
             + self.analog_input_count
+            + self.analog_output_count
             + self.counter_count
             + self.frozen_counter_count
         )
@@ -639,6 +733,7 @@ class Database:
         self.binary_inputs.clear()
         self.binary_outputs.clear()
         self.analog_inputs.clear()
+        self.analog_outputs.clear()
         self.counters.clear()
         self.frozen_counters.clear()
 

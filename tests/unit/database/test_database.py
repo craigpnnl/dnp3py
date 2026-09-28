@@ -4,7 +4,7 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
-from dnp3.core.flags import BinaryQuality, CounterQuality
+from dnp3.core.flags import AnalogQuality, BinaryQuality, CounterQuality
 from dnp3.core.timestamp import DNP3Timestamp
 from dnp3.database.database import Database, DatabaseConfig
 from dnp3.database.event_buffer import (
@@ -16,6 +16,8 @@ from dnp3.database.event_buffer import (
 )
 from dnp3.database.point import (
     AnalogInputConfig,
+    AnalogOutputConfig,
+    AnalogOutputPoint,
     BinaryInputConfig,
     CounterConfig,
     EventClass,
@@ -295,6 +297,197 @@ class TestAnalogInputOperations:
             db.add_analog_input(index=1)
 
 
+class TestAnalogOutputOperations:
+    """Tests for analog output operations."""
+
+    def test_add_analog_output(self) -> None:
+        """Add an analog output point."""
+        db = Database()
+        point = db.add_analog_output(index=0)
+        assert point.index == 0
+        assert point.value == 0.0
+        assert db.analog_output_count == 1
+
+    def test_add_analog_output_with_initial_value(self) -> None:
+        """Add analog output with a non-default initial value."""
+        db = Database()
+        point = db.add_analog_output(index=0, value=50.0)
+        assert point.value == 50.0
+
+    def test_add_analog_output_default_event_class_none(self) -> None:
+        """Default config carries EventClass.NONE, unlike other point types."""
+        db = Database()
+        point = db.add_analog_output(index=0)
+        assert point.config.event_class == EventClass.NONE
+
+    def test_add_analog_output_track_commands_defaults_true(self) -> None:
+        """track_commands defaults to True."""
+        db = Database()
+        point = db.add_analog_output(index=0)
+        assert point.config.track_commands is True
+
+    def test_add_analog_output_track_commands_can_be_disabled(self) -> None:
+        """A per-point opt-out disables automatic command-driven updates."""
+        db = Database()
+        config = AnalogOutputConfig(track_commands=False)
+        point = db.add_analog_output(index=0, config=config)
+        assert point.config.track_commands is False
+
+    def test_add_analog_output_with_event_class_raises(self) -> None:
+        """A config asking for events other than NONE is refused."""
+        db = Database()
+        config = AnalogOutputConfig(event_class=EventClass.CLASS_1)
+        with pytest.raises(ValueError, match=r"EventClass\.NONE"):
+            db.add_analog_output(index=0, config=config)
+
+    def test_add_analog_output_nan_raises(self) -> None:
+        """A NaN initial value is refused, and nothing is stored."""
+        db = Database()
+        with pytest.raises(ValueError, match="NaN"):
+            db.add_analog_output(index=0, value=float("nan"))
+
+        assert db.analog_output_count == 0
+        assert db.get_analog_output(0) is None
+
+    def test_construct_analog_output_point_nan_raises(self) -> None:
+        """Constructing the point directly with NaN is refused too."""
+        with pytest.raises(ValueError, match="NaN"):
+            AnalogOutputPoint(index=0, value=float("nan"))
+
+    def test_construct_analog_output_point_event_class_raises(self) -> None:
+        """Constructing the point directly with a non-NONE class is refused too."""
+        config = AnalogOutputConfig(event_class=EventClass.CLASS_1)
+        with pytest.raises(ValueError, match=r"EventClass\.NONE"):
+            AnalogOutputPoint(index=0, config=config)
+
+    def test_add_analog_output_accepts_positive_infinity(self) -> None:
+        """Positive infinity is a valid analog output value."""
+        db = Database()
+        point = db.add_analog_output(index=0, value=float("inf"))
+        assert point.value == float("inf")
+
+    def test_add_analog_output_accepts_negative_infinity(self) -> None:
+        """Negative infinity is a valid analog output value."""
+        db = Database()
+        point = db.add_analog_output(index=0, value=float("-inf"))
+        assert point.value == float("-inf")
+
+    def test_update_analog_output_accepts_positive_infinity(self) -> None:
+        """Positive infinity is a valid update value."""
+        db = Database()
+        db.add_analog_output(index=0)
+        db.update_analog_output(index=0, value=float("inf"))
+        point = db.get_analog_output(0)
+        assert point is not None
+        assert point.value == float("inf")
+
+    def test_update_analog_output_accepts_negative_infinity(self) -> None:
+        """Negative infinity is a valid update value."""
+        db = Database()
+        db.add_analog_output(index=0)
+        db.update_analog_output(index=0, value=float("-inf"))
+        point = db.get_analog_output(0)
+        assert point is not None
+        assert point.value == float("-inf")
+
+    def test_update_analog_output_sets_value(self) -> None:
+        """Updating an analog output sets its value and quality."""
+        db = Database()
+        db.add_analog_output(index=0)
+        result = db.update_analog_output(index=0, value=42.0)
+        assert result is False
+
+        point = db.get_analog_output(0)
+        assert point is not None
+        assert point.value == 42.0
+        assert point.is_online is True
+
+    def test_update_analog_output_with_explicit_quality(self) -> None:
+        """An explicit quality overrides the ONLINE default."""
+        db = Database()
+        db.add_analog_output(index=0)
+        db.update_analog_output(index=0, value=1.0, quality=AnalogQuality.RESTART)
+
+        point = db.get_analog_output(0)
+        assert point is not None
+        assert point.quality == AnalogQuality.RESTART
+
+    def test_update_analog_output_with_timestamp(self) -> None:
+        """A timestamp is stored on the point."""
+        db = Database()
+        db.add_analog_output(index=0)
+        timestamp = DNP3Timestamp(1000)
+        db.update_analog_output(index=0, value=1.0, timestamp=timestamp)
+
+        point = db.get_analog_output(0)
+        assert point is not None
+        assert point.timestamp == timestamp
+
+    def test_update_analog_output_nan_raises(self) -> None:
+        """A NaN value is refused, and the stored value is unchanged."""
+        db = Database()
+        db.add_analog_output(index=0, value=5.0)
+        with pytest.raises(ValueError, match="NaN"):
+            db.update_analog_output(index=0, value=float("nan"))
+
+        point = db.get_analog_output(0)
+        assert point is not None
+        assert point.value == 5.0
+
+    def test_update_nonexistent_raises(self) -> None:
+        """Updating a missing index raises KeyError."""
+        db = Database()
+        with pytest.raises(KeyError):
+            db.update_analog_output(index=0, value=1.0)
+
+    def test_get_analog_output(self) -> None:
+        """Get an existing analog output point."""
+        db = Database()
+        db.add_analog_output(index=3, value=7.0)
+        point = db.get_analog_output(3)
+        assert point is not None
+        assert point.value == 7.0
+
+    def test_get_analog_output_nonexistent(self) -> None:
+        """Getting a missing index returns None."""
+        db = Database()
+        assert db.get_analog_output(0) is None
+
+    def test_get_analog_outputs_range(self) -> None:
+        """Range query returns only points within bounds, sorted by index."""
+        db = Database()
+        db.add_analog_output(index=0, value=1.0)
+        db.add_analog_output(index=5, value=2.0)
+        db.add_analog_output(index=10, value=3.0)
+
+        points = db.get_analog_outputs_range(1, 9)
+        assert [p.index for p in points] == [5]
+
+    def test_get_all_analog_outputs(self) -> None:
+        """All points are returned sorted by index."""
+        db = Database()
+        db.add_analog_output(index=5)
+        db.add_analog_output(index=1)
+
+        points = db.get_all_analog_outputs()
+        assert [p.index for p in points] == [1, 5]
+
+    def test_add_duplicate_index_raises(self) -> None:
+        """Adding duplicate index raises error."""
+        db = Database()
+        db.add_analog_output(index=0)
+        with pytest.raises(ValueError, match="already exists"):
+            db.add_analog_output(index=0)
+
+    def test_add_exceeds_max_raises(self) -> None:
+        """Adding more than max raises error."""
+        config = DatabaseConfig(max_analog_outputs=1)
+        db = Database(config=config)
+        db.add_analog_output(index=0)
+        with pytest.raises(ValueError, match="Maximum analog outputs"):
+            db.add_analog_output(index=1)
+
+
 class TestCounterOperations:
     """Tests for counter operations."""
 
@@ -549,19 +742,22 @@ class TestUtilityMethods:
         db.add_binary_input(index=0)
         db.add_binary_output(index=0)
         db.add_analog_input(index=0)
+        db.add_analog_output(index=0)
         db.add_counter(index=0)
         db.add_frozen_counter(index=0)
 
-        assert db.total_point_count == 5
+        assert db.total_point_count == 6
 
     def test_clear_all_points(self) -> None:
         """clear_all_points removes all points."""
         db = Database()
         db.add_binary_input(index=0)
         db.add_analog_input(index=0)
+        db.add_analog_output(index=0)
 
         db.clear_all_points()
         assert db.total_point_count == 0
+        assert db.analog_output_count == 0
 
     def test_clear_events(self) -> None:
         """clear_events clears event buffer."""
