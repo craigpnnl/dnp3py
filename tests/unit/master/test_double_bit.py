@@ -236,8 +236,7 @@ class TestDelivery:
         assert handler.double_bit_calls == [[DoubleBitValue(index=0, state=DoubleBitState.ON, quality=ONLINE)]]
         assert handler.calls == [("on_binary_input", [BinaryValue(index=0, value=True, quality=ONLINE)])]
 
-    def test_double_bit_callback_runs_after_binary_input_and_before_analog_input(self) -> None:
-        # Callbacks run in point-kind order, not in the order the blocks arrive.
+    def test_double_bit_callback_runs_in_block_order_between_its_neighbours(self) -> None:
         handler = DoubleBitRecorder()
         body = (
             _range_block(30, 1, 0, 0, bytes([0x01, 0x10, 0x00, 0x00, 0x00]))
@@ -247,7 +246,7 @@ class TestDelivery:
 
         _process(handler, body)
 
-        assert [name for name, _ in handler.calls] == ["on_binary_input", "on_analog_input"]
+        assert [name for name, _ in handler.calls] == ["on_analog_input", "on_binary_input"]
         assert handler.double_bit_positions == [1]
 
     def test_handler_without_the_callback_receives_nothing_and_does_not_raise(self) -> None:

@@ -446,7 +446,7 @@ class _KindBatch(Generic[_V]):
             self.delivery.deliver(handler, self.values, info)
 
 
-# Point kinds the master decodes, in the order their callbacks run for a response.
+# Point kinds the master decodes, each with the callback its values go to.
 # A kind absent here (commands and command events, frozen analog, deadband, time, class)
 # is framed but not delivered. Double-bit values reach only a handler with that callback.
 _DELIVERIES: Mapping[PointKind, _Delivery] = MappingProxyType(
@@ -752,24 +752,36 @@ class Master:
         return info
 
     def _parse_response_objects(self, objects: Sequence[ObjectBlock], info: ResponseInfo) -> None:
-        """Parse response objects and call appropriate handler methods.
+        """Parse response objects and call appropriate handler methods, in fragment order.
+
+        IEEE 1815-2012 5.1.5.1.3: the master processes objects in the order they appear
+        in the fragment. Consecutive blocks of one point kind share one callback; a block
+        of another delivered kind ends that run, and a block with no delivery is skipped
+        without ending it.
 
         Args:
             objects: Object blocks from response.
             info: Response information.
         """
-        batches = {kind: delivery.batch() for kind, delivery in _DELIVERIES.items()}
+        run_kind: PointKind | None = None
+        run: _Batch | None = None
 
         for block in objects:
             wire = layout_for(block.header.group, block.header.variation)
             if wire is None:
                 continue
-            batch = batches.get(wire.point_kind)
-            if batch is not None:
-                batch.add(block, wire)
+            delivery = _DELIVERIES.get(wire.point_kind)
+            if delivery is None:
+                continue
+            if run is None or wire.point_kind is not run_kind:
+                if run is not None:
+                    run.deliver(self.handler, info)
+                run_kind = wire.point_kind
+                run = delivery.batch()
+            run.add(block, wire)
 
-        for batch in batches.values():
-            batch.deliver(self.handler, info)
+        if run is not None:
+            run.deliver(self.handler, info)
 
     # -------------------------------------------------------------------------
     # Convenience Methods
