@@ -1974,7 +1974,7 @@ class Outstation:
         call: Callable[[], CommandResult],
         *,
         function: FunctionCode,
-        handler_method: str = "",
+        handler_method: str,
         index: int,
         peer: PeerId = UNSPECIFIED_PEER,
         stop: "_ControlStop",
