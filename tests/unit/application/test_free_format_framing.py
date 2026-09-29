@@ -288,7 +288,8 @@ class TestOtherFreeFormatGroupsFrameAndStepOver:
     (Table 4-6) frames the same way, regardless of group: the walking loop
     never decodes the object, so a payload built by hand from its own Annex A
     clause frames identically to g70 (TestG70BlockFramesAndStepsOver). 0x5B
-    (Table 4-7 preferred; mandatory for g120 per A.45.1.2.3 / A.45.2.2.3).
+    (Table 4-7 preferred; g120v1 mandates it per A.45.1.2.3, g120v2
+    recommends it per A.45.2.2.3).
     """
 
     @pytest.mark.parametrize("group,variation,obj", _FREE_FORMAT_ROWS)
