@@ -190,7 +190,8 @@ are framed but not delivered to any handler.
 
 Time synchronization is implemented for both procedures IEEE 1815-2012
 10.3.3 describes. Non-LAN (10.3.3.1): DELAY_MEASURE (function code 23)
-answers the round-trip delay, and a WRITE of g50v1 delivers the written
+answers the outstation's own processing delay (step c), which this
+outstation reports as 0 (#146), and a WRITE of g50v1 delivers the written
 time to the `time_handler` hook and clears NEED_TIME in its own response.
 LAN (10.3.3.2, required of a TCP/IP outstation that sets NEED_TIME per
 4.4.16.1 Rule 2): RECORD_CURRENT_TIME (function code 24) records the
