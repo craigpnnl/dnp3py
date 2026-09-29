@@ -231,6 +231,38 @@ class TestGroup0MultipleObjects:
         assert _decode_g30v1(blocks[1].data) == _G30V1_VALUE
 
 
+class TestGroup0ExactFitNoTruncation:
+    """A group 0 block that exactly consumes the rest of the data, with
+    nothing following it, must still frame: the bounds checks compare with
+    `<`, never `<=`, so an exact fit is not mistaken for a shortfall.
+    """
+
+    def test_ex_5_10_as_the_last_object(self) -> None:
+        header = bytes([0, 241, 0x00])
+        obj_range = bytes([0x00, 0x00])
+        tlv = bytes([0x02, 0x02, 0xDC, 0x05])
+        data = header + obj_range + tlv  # no trailing block
+
+        blocks, truncation = frame_response_object_blocks(data)
+
+        assert truncation is None
+        assert [(b.header.group, b.header.variation) for b in blocks] == [(0, 241)]
+        assert blocks[0].data == obj_range + tlv
+
+    def test_zero_length_value_as_the_last_object(self) -> None:
+        header = bytes([0, 217, 0x17])  # index prefix, so the prefix-size check is also exercised
+        count = bytes([1])
+        index_prefix = bytes([0x00])
+        tlv = bytes([0x01, 0x00])  # type VSTR(1), length 0, no value octets, nothing after
+        data = header + count + index_prefix + tlv
+
+        blocks, truncation = frame_response_object_blocks(data)
+
+        assert truncation is None
+        assert [(b.header.group, b.header.variation) for b in blocks] == [(0, 217)]
+        assert blocks[0].data == count + index_prefix + tlv
+
+
 class TestGroup0NoObjectVariationsUnchanged:
     """Variations 0 and 254 have no object body (4.2.2.7.2.1; A.1.43.2) and
     stay refused as UNKNOWN_WIDTH, the pre-existing behavior for an unmapped
