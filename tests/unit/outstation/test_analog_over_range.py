@@ -287,11 +287,13 @@ class TestNaNRefusedAtWireBoundary:
         assert block_data[2:7] == bytes([0x01, 0x05, 0x00, 0x00, 0x00])
 
 
-class TestCallerReportsQualityAfterRefusal:
-    """An application that knows its own value is unusable reports that itself:
-    the prior value stays on the wire, with a quality flag of the
-    caller's own choosing (11.6.1 Table 11-5 ONLINE; REFERENCE_ERR
-    "might not have the expected accuracy").
+class TestStaticPollHonorsCallerChosenQuality:
+    """The quality byte on a static poll is exactly what the caller set, not
+    a fixed constant. This is the mechanism TestNaNRefusedAtWireBoundary's
+    refusal leaves available: an application that knows its own value is
+    unusable can report the prior value with a quality flag of its own
+    choosing (11.6.1 Table 11-5 ONLINE; REFERENCE_ERR "might not have the
+    expected accuracy"). Neither test here uses NaN.
     """
 
     def test_quality_zero(self) -> None:
