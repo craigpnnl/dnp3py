@@ -712,8 +712,8 @@ def _write_block_error(block: ObjectBlock) -> IIN | None:
     outstation writes; any other object it does not act on is unknown
     (IIN2.1, IEEE 1815-2012 Table 4-14). A qualifier or count its own source
     does not fix is malformed (IIN2.2, 4.5.11): A.23.1.2.3 fixes g50v1 to
-    qualifier 0x07 and count 1; the Level 1-3 profile tables (14.3, 14.4,
-    WRITE row "00 (start-stop)") fix g80v1 to qualifier 0x00.
+    qualifier 0x07 and count 1; the Level 1-3 profile tables (Tables 14-2
+    through 14-4, WRITE row "00 (start-stop)") fix g80v1 to qualifier 0x00.
     """
     header = block.header
     if (header.group, header.variation) == (GROUP_TIME_AND_DATE, 1):
