@@ -51,7 +51,8 @@ _VALID_QUALIFIERS = frozenset(
 # range of 1 object at index/start 7, with an index list where the prefix needs one.
 # 0x4B/0x5B/0x6B instead carry a 1-octet count (Table 4-5 row B) and one
 # size-prefixed object (Table 4-4): the free-format range is self-describing at
-# the wire, so its frame already carries real object bytes on every path.
+# the wire, so its frame is already complete without an appended value, even
+# though its payload octets (0xAA, 0xBB) are arbitrary rather than decoded.
 _VALID_FRAMES = {
     0x00: bytes([0x1E, 0x01, 0x00, 0x07, 0x07]),
     0x01: bytes([0x1E, 0x01, 0x01, 0x07, 0x00, 0x07, 0x00]),
