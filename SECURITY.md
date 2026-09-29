@@ -5,6 +5,9 @@
 | Version | Supported |
 | ------- | --------- |
 | main    | :white_check_mark: |
+| Latest release on PyPI | :white_check_mark: |
+
+Fixes land on main and ship in the next release.
 
 ## Reporting a Vulnerability
 
