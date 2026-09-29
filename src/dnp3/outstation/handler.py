@@ -75,6 +75,14 @@ class CommandHandler(Protocol):
     ``.op_type``). The outstation has already refused a set Queue bit and an
     undefined Op Type. Return NOT_SUPPORTED for any combination the handler does
     not carry out, rather than SUCCESS without acting (IEEE 1815-2012 A.8.1.2.2).
+
+    A control method must return a ``CommandResult`` and must not raise. A
+    raise, or a return whose ``status`` is not a ``CommandStatus`` member, is
+    treated as UNDEFINED for that point and stops every later point in the
+    request from reaching a handler at all (IEEE 1815-2012 4.4.4.3 Rule 5).
+    That status is not proof the point did nothing: a handler that acts and
+    then raises is still reported to the master as not accepted, so an
+    exception after a successful actuation misreports that point.
     """
 
     def select_binary_output(

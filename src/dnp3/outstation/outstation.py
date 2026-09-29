@@ -38,7 +38,7 @@ from dnp3.objects.binary_input import BinaryInputEvent, BinaryInputFlags
 from dnp3.objects.binary_output import BinaryOutputFlags
 from dnp3.objects.counter import Counter32, CounterEvent32Time, FrozenCounter32
 from dnp3.outstation.config import OutstationConfig
-from dnp3.outstation.handler import CommandHandler, DefaultCommandHandler
+from dnp3.outstation.handler import CommandHandler, CommandResult, DefaultCommandHandler
 from dnp3.outstation.peer import UNSPECIFIED_PEER, PeerId
 from dnp3.outstation.state import (
     OutstationState,
@@ -658,6 +658,20 @@ def _parse_ao_block(block: ObjectBlock) -> list[tuple[int, float]]:
         points.append((index, value))
 
     return points
+
+
+class _ControlStop:
+    """Per-request flag: once set, no later control point in the request reaches a handler.
+
+    Created fresh by each of _handle_select, _handle_operate and
+    _handle_direct_operate and passed by reference into their block
+    processors, so it never outlives the request that created it (#46).
+    """
+
+    __slots__ = ("stopped",)
+
+    def __init__(self) -> None:
+        self.stopped = False
 
 
 def _control_block_error(block: ObjectBlock) -> IIN | None:
@@ -1624,6 +1638,7 @@ class Outstation:
         """Handle SELECT request."""
         block_results: list[list[tuple[int, CommandStatus]]] = []
         seq = request.header.control.seq
+        stop = _ControlStop()
 
         self._state.clear_expired_selects(self.config.select_timeout)
 
@@ -1633,9 +1648,9 @@ class Outstation:
 
         for block in request.objects:
             if block.header.group == GROUP_CROB and block.header.variation == 1:
-                block_results.append(self._process_crob_select(block, seq, peer=peer))
+                block_results.append(self._process_crob_select(block, seq, peer=peer, stop=stop))
             elif block.header.group == GROUP_ANALOG_OUTPUT:
-                block_results.append(self._process_ao_select(block, seq, peer=peer))
+                block_results.append(self._process_ao_select(block, seq, peer=peer, stop=stop))
 
         if any(status != CommandStatus.SUCCESS for results in block_results for _, status in results):
             # A non-zero status in any object cancels the entire selection (IEEE 1815-2012 4.4.4.3 Rule 3).
@@ -1644,7 +1659,13 @@ class Outstation:
         return self._build_control_response(request, block_results)
 
     def _process_crob_select(
-        self, block: ObjectBlock, seq: int, *, peer: PeerId = UNSPECIFIED_PEER
+        self,
+        block: ObjectBlock,
+        seq: int,
+        *,
+        peer: PeerId = UNSPECIFIED_PEER,
+        function: FunctionCode = FunctionCode.SELECT,
+        stop: "_ControlStop | None" = None,
     ) -> list[tuple[int, CommandStatus]]:
         """Process CROB SELECT.
 
@@ -1653,8 +1674,12 @@ class Outstation:
         forwarded with their status.  A point another peer holds returns
         BLOCKED_OTHER_MASTER without reaching the handler.  Other valid entries
         are dispatched to the handler and, on success, stored as this peer's
-        pending SELECT state.
+        pending SELECT state. Once ``stop`` is set (a raise or a bad return
+        from an earlier point in this request), every later point is
+        UNDEFINED without being dispatched (4.4.4.3 Rule 5; #46).
         """
+        if stop is None:
+            stop = _ControlStop()
         results: list[tuple[int, CommandStatus]] = []
 
         for crob in _parse_crob_block(block):
@@ -1662,23 +1687,34 @@ class Outstation:
                 results.append((crob.index, crob.status))
                 continue
 
+            if stop.stopped:
+                results.append((crob.index, CommandStatus.UNDEFINED))
+                continue
+
             if self._state.held_by_other_peer(crob.index, peer, self.config.select_timeout):
                 results.append((crob.index, CommandStatus.BLOCKED_OTHER_MASTER))
                 continue
 
-            result = self.handler.select_binary_output(
+            code = crob.control_code
+            status = self._run_control_point(
+                partial(
+                    self.handler.select_binary_output,
+                    index=crob.index,
+                    code=code,
+                    count=crob.op_count,
+                    on_time=crob.on_time,
+                    off_time=crob.off_time,
+                ),
+                function=function,
                 index=crob.index,
-                code=crob.control_code,
-                count=crob.op_count,
-                on_time=crob.on_time,
-                off_time=crob.off_time,
+                stop=stop,
             )
 
-            if result.is_success:
+            if status == CommandStatus.SUCCESS:
                 select_state = SelectState(
                     index=crob.index,
                     is_binary=True,
-                    control_code=crob.control_code,
+                    control_code=code,
                     count=crob.op_count,
                     on_time=crob.on_time,
                     off_time=crob.off_time,
@@ -1687,14 +1723,45 @@ class Outstation:
                 # The store stamps the point with the selection's start time.
                 self._state.add_select(select_state, peer=peer)
 
-            results.append((crob.index, result.status))
+            results.append((crob.index, status))
 
         return results
+
+    def _run_control_point(
+        self,
+        call: Callable[[], CommandResult],
+        *,
+        function: FunctionCode,
+        index: int,
+        stop: "_ControlStop",
+    ) -> CommandStatus:
+        """Call one control handler method for one point, guarding a raise or a bad return.
+
+        Returns the point's status. A raise, or a return that is not a
+        CommandResult with a CommandStatus member, gives the point UNDEFINED
+        (127, Table 11-7) and sets ``stop``, so no later handler call is made
+        in this request, across blocks (4.4.4.3 Rule 5; #46). The status is
+        not proof the point did nothing: a handler that acts and then raises
+        is still reported as not accepted (Rule 7; the CommandHandler
+        docstring states the contract).
+        """
+        try:
+            result = call()
+        except Exception:
+            _log.exception("Control handler raised for %s point %d", function.name, index)
+            stop.stopped = True
+            return CommandStatus.UNDEFINED
+        if not isinstance(result, CommandResult) or not isinstance(result.status, CommandStatus):
+            _log.error("Control handler returned %r for %s point %d, not a CommandResult", result, function.name, index)
+            stop.stopped = True
+            return CommandStatus.UNDEFINED
+        return result.status
 
     def _handle_operate(self, request: RequestFragment, *, peer: PeerId = UNSPECIFIED_PEER) -> ResponseFragment:
         """Handle OPERATE request."""
         block_results: list[list[tuple[int, CommandStatus]]] = []
         seq = request.header.control.seq
+        stop = _ControlStop()
 
         # Clear expired selects first
         self._state.clear_expired_selects(self.config.select_timeout)
@@ -1705,27 +1772,40 @@ class Outstation:
 
         for block in request.objects:
             if block.header.group == GROUP_CROB and block.header.variation == 1:
-                block_results.append(self._process_crob_operate(block, seq, peer=peer))
+                block_results.append(self._process_crob_operate(block, seq, peer=peer, stop=stop))
             elif block.header.group == GROUP_ANALOG_OUTPUT:
-                block_results.append(self._process_ao_operate(block, peer=peer))
+                block_results.append(self._process_ao_operate(block, peer=peer, stop=stop))
 
         return self._build_control_response(request, block_results)
 
     def _process_crob_operate(
-        self, block: ObjectBlock, seq: int, *, peer: PeerId = UNSPECIFIED_PEER
+        self,
+        block: ObjectBlock,
+        seq: int,
+        *,
+        peer: PeerId = UNSPECIFIED_PEER,
+        function: FunctionCode = FunctionCode.OPERATE,
+        stop: "_ControlStop | None" = None,
     ) -> list[tuple[int, CommandStatus]]:
         """Process CROB OPERATE.
 
         Delegates parsing to _parse_crob_block.  Rejected entries are forwarded
         with their status.  Valid entries are checked against this peer's stored
         SELECT state only; mismatches return NO_SELECT and clear this peer's
-        pending state.
+        pending state. Once ``stop`` is set, every later point is UNDEFINED
+        without being dispatched (4.4.4.3 Rule 5; #46).
         """
+        if stop is None:
+            stop = _ControlStop()
         results: list[tuple[int, CommandStatus]] = []
 
         for crob in _parse_crob_block(block):
             if crob.control_code is None:
                 results.append((crob.index, crob.status))
+                continue
+
+            if stop.stopped:
+                results.append((crob.index, CommandStatus.UNDEFINED))
                 continue
 
             select_state = self._state.get_select(crob.index, peer=peer)
@@ -1740,73 +1820,118 @@ class Outstation:
                 self._state.remove_select(crob.index, peer=peer)
                 continue
 
-            result = self.handler.operate_binary_output(
+            code = crob.control_code
+            status = self._run_control_point(
+                partial(
+                    self.handler.operate_binary_output,
+                    index=crob.index,
+                    code=code,
+                    count=crob.op_count,
+                    on_time=crob.on_time,
+                    off_time=crob.off_time,
+                    select_sequence=select_state.sequence,
+                ),
+                function=function,
                 index=crob.index,
-                code=crob.control_code,
-                count=crob.op_count,
-                on_time=crob.on_time,
-                off_time=crob.off_time,
-                select_sequence=select_state.sequence,
+                stop=stop,
             )
 
             self._state.remove_select(crob.index, peer=peer)
-            results.append((crob.index, result.status))
+            results.append((crob.index, status))
 
         return results
 
     def _process_ao_select(
-        self, block: ObjectBlock, seq: int, *, peer: PeerId = UNSPECIFIED_PEER
+        self,
+        block: ObjectBlock,
+        seq: int,
+        *,
+        peer: PeerId = UNSPECIFIED_PEER,
+        function: FunctionCode = FunctionCode.SELECT,
+        stop: "_ControlStop | None" = None,
     ) -> list[tuple[int, CommandStatus]]:
         """Process Analog Output SELECT (Group 41).
 
         A point another peer holds returns BLOCKED_OTHER_MASTER without reaching
         the handler. Other points are dispatched to the handler and, on success,
         stored as this peer's pending SELECT state under group 41, so a CROB
-        selection at the same index is a separate point.
+        selection at the same index is a separate point. Once ``stop`` is set,
+        every later point is UNDEFINED without being dispatched (4.4.4.3 Rule
+        5; #46).
         """
+        if stop is None:
+            stop = _ControlStop()
         points = _parse_ao_block(block)
         results: list[tuple[int, CommandStatus]] = []
 
         for index, value in points:
+            if stop.stopped:
+                results.append((index, CommandStatus.UNDEFINED))
+                continue
+
             if self._state.held_by_other_peer(index, peer, self.config.select_timeout, group=GROUP_ANALOG_OUTPUT):
                 results.append((index, CommandStatus.BLOCKED_OTHER_MASTER))
                 continue
 
-            result = self.handler.select_analog_output(index=index, value=value)
+            status = self._run_control_point(
+                partial(self.handler.select_analog_output, index=index, value=value),
+                function=function,
+                index=index,
+                stop=stop,
+            )
 
-            if result.is_success:
+            if status == CommandStatus.SUCCESS:
                 select_state = SelectState(index=index, is_binary=False, analog_value=value, sequence=seq)
                 self._state.add_select(select_state, peer=peer, group=GROUP_ANALOG_OUTPUT)
 
-            results.append((index, result.status))
+            results.append((index, status))
 
         return results
 
     def _process_ao_operate(
-        self, block: ObjectBlock, *, peer: PeerId = UNSPECIFIED_PEER
+        self,
+        block: ObjectBlock,
+        *,
+        peer: PeerId = UNSPECIFIED_PEER,
+        function: FunctionCode = FunctionCode.OPERATE,
+        stop: "_ControlStop | None" = None,
     ) -> list[tuple[int, CommandStatus]]:
         """Process Analog Output OPERATE (Group 41).
 
         Each point is checked against this peer's group 41 selection only; a
         missing or mismatched selection returns NO_SELECT without reaching the
-        handler.
+        handler. Once ``stop`` is set, every later point is UNDEFINED without
+        being dispatched (4.4.4.3 Rule 5; #46).
         """
+        if stop is None:
+            stop = _ControlStop()
         points = _parse_ao_block(block)
         results: list[tuple[int, CommandStatus]] = []
 
         for index, value in points:
+            if stop.stopped:
+                results.append((index, CommandStatus.UNDEFINED))
+                continue
+
             select_state = self._state.get_select(index, peer=peer, group=GROUP_ANALOG_OUTPUT)
             if select_state is None or not select_state.matches_analog(index, value):
                 results.append((index, CommandStatus.NO_SELECT))
                 self._state.remove_select(index, peer=peer, group=GROUP_ANALOG_OUTPUT)
                 continue
 
-            result = self.handler.operate_analog_output(index=index, value=value, select_sequence=select_state.sequence)
-            if result.is_success:
+            status = self._run_control_point(
+                partial(
+                    self.handler.operate_analog_output, index=index, value=value, select_sequence=select_state.sequence
+                ),
+                function=function,
+                index=index,
+                stop=stop,
+            )
+            if status == CommandStatus.SUCCESS:
                 self._track_ao_command(index, value)
 
             self._state.remove_select(index, peer=peer, group=GROUP_ANALOG_OUTPUT)
-            results.append((index, result.status))
+            results.append((index, status))
 
         return results
 
@@ -1817,22 +1942,33 @@ class Outstation:
             return refusal
 
         block_results: list[list[tuple[int, CommandStatus]]] = []
+        function = request.header.function
+        stop = _ControlStop()
 
         for block in request.objects:
             if block.header.group == GROUP_CROB and block.header.variation == 1:
-                block_results.append(self._process_crob_direct_operate(block))
+                block_results.append(self._process_crob_direct_operate(block, function=function, stop=stop))
             elif block.header.group == GROUP_ANALOG_OUTPUT:
-                block_results.append(self._process_ao_direct_operate(block))
+                block_results.append(self._process_ao_direct_operate(block, function=function, stop=stop))
 
         return self._build_control_response(request, block_results)
 
-    def _process_crob_direct_operate(self, block: ObjectBlock) -> list[tuple[int, CommandStatus]]:
+    def _process_crob_direct_operate(
+        self,
+        block: ObjectBlock,
+        *,
+        function: FunctionCode = FunctionCode.DIRECT_OPERATE,
+        stop: "_ControlStop | None" = None,
+    ) -> list[tuple[int, CommandStatus]]:
         """Process CROB DIRECT_OPERATE.
 
         Delegates parsing to _parse_crob_block.  Rejected entries are forwarded
         with their status; valid entries are dispatched immediately to the handler with no
-        prior SELECT required.
+        prior SELECT required. Once ``stop`` is set, every later point is
+        UNDEFINED without being dispatched (4.4.4.3 Rule 5; #46).
         """
+        if stop is None:
+            stop = _ControlStop()
         results: list[tuple[int, CommandStatus]] = []
 
         for crob in _parse_crob_block(block):
@@ -1840,31 +1976,61 @@ class Outstation:
                 results.append((crob.index, crob.status))
                 continue
 
-            result = self.handler.direct_operate_binary_output(
+            if stop.stopped:
+                results.append((crob.index, CommandStatus.UNDEFINED))
+                continue
+
+            code = crob.control_code
+            status = self._run_control_point(
+                partial(
+                    self.handler.direct_operate_binary_output,
+                    index=crob.index,
+                    code=code,
+                    count=crob.op_count,
+                    on_time=crob.on_time,
+                    off_time=crob.off_time,
+                ),
+                function=function,
                 index=crob.index,
-                code=crob.control_code,
-                count=crob.op_count,
-                on_time=crob.on_time,
-                off_time=crob.off_time,
+                stop=stop,
             )
 
-            results.append((crob.index, result.status))
+            results.append((crob.index, status))
 
         return results
 
-    def _process_ao_direct_operate(self, block: ObjectBlock) -> list[tuple[int, CommandStatus]]:
+    def _process_ao_direct_operate(
+        self,
+        block: ObjectBlock,
+        *,
+        function: FunctionCode = FunctionCode.DIRECT_OPERATE,
+        stop: "_ControlStop | None" = None,
+    ) -> list[tuple[int, CommandStatus]]:
         """Process Analog Output DIRECT_OPERATE (Group 41).
 
         Each object _parse_ao_block returns is dispatched immediately to the
-        handler with no prior SELECT required.
+        handler with no prior SELECT required. Once ``stop`` is set, every
+        later point is UNDEFINED without being dispatched (4.4.4.3 Rule 5;
+        #46).
         """
+        if stop is None:
+            stop = _ControlStop()
         points = _parse_ao_block(block)
         results: list[tuple[int, CommandStatus]] = []
         for index, value in points:
-            result = self.handler.direct_operate_analog_output(index=index, value=value)
-            if result.is_success:
+            if stop.stopped:
+                results.append((index, CommandStatus.UNDEFINED))
+                continue
+
+            status = self._run_control_point(
+                partial(self.handler.direct_operate_analog_output, index=index, value=value),
+                function=function,
+                index=index,
+                stop=stop,
+            )
+            if status == CommandStatus.SUCCESS:
                 self._track_ao_command(index, value)
-            results.append((index, result.status))
+            results.append((index, status))
         return results
 
     def _track_ao_command(self, index: int, value: float) -> None:
@@ -1874,7 +2040,10 @@ class Outstation:
         group 41 succeeds. A no-op when the Database has no point at index or
         the point opts out with config.track_commands = False. A NaN value
         (g41v3/v4) is refused rather than synthesized: the point keeps its
-        prior value and the refusal is logged once.
+        prior value and the refusal is logged once. Any other exception the
+        Database raises is caught and logged too: the output already
+        operated, so the point's control status stays SUCCESS even though its
+        tracked value could not be stored (#46).
         """
         point = self.database.get_analog_output(index)
         if point is None or not point.config.track_commands:
@@ -1883,6 +2052,8 @@ class Outstation:
             self.database.update_analog_output(index, value)
         except ValueError:
             _log.warning("analog output %d: commanded value %r rejected, status unchanged", index, value)
+        except Exception:
+            _log.exception("analog output %d: commanded value %r not stored after operate", index, value)
 
     def _build_control_response(
         self,
