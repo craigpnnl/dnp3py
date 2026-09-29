@@ -112,7 +112,7 @@ def _outstation(handler: DefaultCommandHandler | None = None) -> Outstation:
 
 
 class TestSelectHandlerRaises:
-    """Item 1: a SELECT handler that raises answers a null response, not a propagated exception."""
+    """A SELECT handler that raises answers a null response, not a propagated exception."""
 
     def test_answers_null_response_with_seq_and_parameter_error(self) -> None:
         outstation = _outstation(_RaisingHandler("select"))
@@ -143,7 +143,7 @@ class TestSelectHandlerRaises:
 
 
 class TestOperateHandlerRaises:
-    """Item 1: an OPERATE handler that raises answers a null response after a successful SELECT."""
+    """An OPERATE handler that raises answers a null response after a successful SELECT."""
 
     def test_answers_null_response_and_terminates_the_selection(self) -> None:
         outstation = _outstation(_RaisingHandler("operate"))
@@ -158,7 +158,7 @@ class TestOperateHandlerRaises:
 
 
 class TestDirectOperateHandlerRaises:
-    """Item 1: a DIRECT_OPERATE handler that raises answers a null response."""
+    """A DIRECT_OPERATE handler that raises answers a null response."""
 
     def test_answers_null_response_with_seq_and_parameter_error(self) -> None:
         outstation = _outstation(_RaisingHandler("direct_operate"))
@@ -171,7 +171,7 @@ class TestDirectOperateHandlerRaises:
 
 
 class TestDirectOperateNoAckHandlerRaises:
-    """Item 2: IEEE 1815-2012 4.4.5 forbids any response to a no-ack function code.
+    """IEEE 1815-2012 4.4.5 forbids any response to a no-ack function code.
 
     "The DIRECT_OPERATE_NR function code is similar to the DIRECT_OPERATE
     function code except that the outstation does not send a response
@@ -189,7 +189,7 @@ class TestDirectOperateNoAckHandlerRaises:
 
 
 class TestTimeHandlerRaises:
-    """Item 1: a raising time_handler answers IIN2.2 and leaves NEED_TIME set (#140)."""
+    """A raising time_handler answers IIN2.2 and leaves NEED_TIME set (#140)."""
 
     def test_answers_parameter_error_and_leaves_need_time_set(self) -> None:
         def _raising_time_handler(timestamp: DNP3Timestamp) -> None:
@@ -209,7 +209,7 @@ class TestTimeHandlerRaises:
 
 
 class TestDatabaseReadRaises:
-    """Item 1: a raising database read answers IIN2.2 instead of an unhandled exception."""
+    """A raising database read answers IIN2.2 instead of an unhandled exception."""
 
     def test_answers_null_response_with_seq_and_parameter_error(self) -> None:
         outstation = _outstation()
@@ -241,7 +241,7 @@ class TestOnlyExceptionSubclassesAreCaught:
 
 
 class TestHandlerExceptionIsLogged:
-    """Item 1: the exception is logged with its traceback, not swallowed silently."""
+    """The exception is logged with its traceback, not swallowed silently."""
 
     def test_logs_the_traceback_at_error_level(self, caplog: pytest.LogCaptureFixture) -> None:
         outstation = _outstation(_RaisingHandler("direct_operate"))
