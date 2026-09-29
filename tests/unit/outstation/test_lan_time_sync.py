@@ -78,6 +78,10 @@ class TestRecordCurrentTime:
         assert response.header.function == FunctionCode.RESPONSE
         assert not response.objects
         assert not response.header.iin & (IIN.PARAMETER_ERROR | IIN.OBJECT_UNKNOWN | IIN.NO_FUNC_CODE_SUPPORT)
+        # Item 3 (review round 1, #142): pin the whole response, IIN bits
+        # included (NEED_TIME 0x10 | DEVICE_RESTART 0x80 = 0x90, both set on
+        # a fresh Outstation).
+        assert response.to_bytes() == bytes.fromhex("c5819000")
 
     def test_second_record_replaces_the_first(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """10.3.3.2: 'shall discard the original recorded time and save the
@@ -357,3 +361,44 @@ class TestCallTimeHandlerG50v3FailsClosed:
             outstation._call_time_handler_g50v3(block)
 
         assert delivered == []
+
+
+class TestWriteG50v3RefusalKeepsInstant:
+    """Item 6 LOW-A (review round 1, #142): a refused g50v3 does not consume
+    the recorded instant; a following good WRITE still uses it."""
+
+    def test_good_write_after_a_refused_write_uses_the_kept_instant(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        clock = _FakeClock(50.0)
+        monkeypatch.setattr("dnp3.outstation.outstation.time.monotonic", clock)
+        delivered: list[DNP3Timestamp] = []
+        outstation = Outstation(time_handler=delivered.append)
+        _record_current_time(outstation, seq=1)
+
+        clock.value = 50.1
+        bad_qualifier_block = _g50v3(0x08, (1).to_bytes(2, "little") + _TIME_OCTETS)
+        refusal = _write(outstation, bad_qualifier_block, seq=2)
+        assert IIN.PARAMETER_ERROR in refusal.header.iin
+        assert delivered == []
+
+        clock.value = 50.35  # 350 ms after the ORIGINAL instant at 50.0, not the refusal
+        response = _write(outstation, _g50v3_write(), seq=3)
+
+        assert delivered == [DNP3Timestamp(_TIME_MS + 350)]
+        assert not response.header.iin & IIN.PARAMETER_ERROR
+
+
+class TestWriteG50v3FractionalElapsed:
+    """Item 6 LOW-B (review round 1, #142): a fractional elapsed time is
+    rounded to the nearest millisecond, not truncated."""
+
+    def test_fractional_elapsed_milliseconds_round_to_nearest(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        clock = _FakeClock(0.0)
+        monkeypatch.setattr("dnp3.outstation.outstation.time.monotonic", clock)
+        delivered: list[DNP3Timestamp] = []
+        outstation = Outstation(time_handler=delivered.append)
+        _record_current_time(outstation, seq=1)
+        clock.value = 0.1236  # 123.6 ms: round() gives 124, a truncating int() would give 123
+
+        _write(outstation, _g50v3_write(), seq=2)
+
+        assert delivered == [DNP3Timestamp(_TIME_MS + 124)]
