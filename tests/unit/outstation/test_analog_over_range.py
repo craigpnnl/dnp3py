@@ -7,12 +7,16 @@ analog input encoders narrowed with a bare int(), which raised for any
 value outside the 32-bit signed range and for infinity, failing the whole
 response (issue #159).
 
-Neither IEEE 1815-2012 nor IEEE 1815.2-2025 states a reporting rule for
-NaN. TestNaNBehaviorAtBase pins the current behavior rather than choosing
-one.
+A NaN analog input is refused at the database boundary instead
+(database/point.py): the point keeps its prior value and flags, and
+nothing is synthesized on the wire. TestNaNRefusedAtWireBoundary covers
+the poll-response side of that refusal; the point-level construction and
+update assertions live in tests/unit/database/test_analog_input_nan.py.
 """
 
 import math
+
+import pytest
 
 from dnp3.application.builder import build_class_poll, build_integrity_poll
 from dnp3.application.fragment import ResponseFragment
@@ -220,46 +224,78 @@ class TestClassZeroPollWithOverRangePoints:
         assert IIN.PARAMETER_ERROR not in responses[0].header.iin
 
 
-class TestNaNBehaviorAtBase:
-    """NaN reporting is not settled by either standard: behavior is left as at base.
+class TestNaNRefusedAtWireBoundary:
+    """A NaN analog input never reaches the wire: it is refused at add/update time.
 
-    Base behavior: int(nan) raises ValueError inside the point serializer,
-    process_request's handler-exception catch (outstation.py) turns that
-    into a null response with IIN.PARAMETER_ERROR, exactly as it did before
-    #159 for every out-of-range analog value. TestStaticOverRange and
-    TestEventOverRange cover the finite and infinite out-of-range cases,
-    which this fix does change.
+    database/point.py's AnalogInputPoint raises ValueError for NaN at
+    construction and at the top of update(), before any assignment
+    (#159). An outstation built around a refused add or update therefore
+    serves the prior value, unpoisoned, with no IIN2.2 (PARAMETER_ERROR)
+    and no synthesized data.
     """
 
-    def test_static_nan_raises_and_is_answered_as_parameter_error(self) -> None:
+    def test_static_poll_reports_prior_value_after_refused_update(self) -> None:
         db = Database()
-        db.add_analog_input(0, value=math.nan, quality=ONLINE)
-        outstation = Outstation(database=db)
+        point = db.add_analog_input(0, value=100.0, quality=ONLINE)
 
+        with pytest.raises(ValueError, match="NaN"):
+            db.update_analog_input(0, value=math.nan, quality=ONLINE)
+
+        assert point.value == 100.0
+        assert point.quality == ONLINE
+
+        outstation = Outstation(database=db)
         responses = outstation.process_request(build_integrity_poll().to_bytes())
 
         assert len(responses) == 1
-        assert IIN.PARAMETER_ERROR in responses[0].header.iin
-        assert responses[0].objects == (), "no value may be synthesized for NaN"
+        assert IIN.PARAMETER_ERROR not in responses[0].header.iin
+        block_data = _extract_object_data(responses, group=30, variation=1)
+        assert block_data[2:] == bytes([0x01, 0x64, 0x00, 0x00, 0x00])
 
-    def test_event_nan_update_generates_no_event(self) -> None:
-        """A NaN update never reaches the g32v1 serializer at all.
-
-        AnalogInputPoint.update's deadband check is `abs(value -
-        last_event_value) >= deadband`; abs(nan - x) is nan, and every
-        comparison against nan is False, so the event is never queued.
-        This guard lives in database/point.py, untouched by #159: unlike
-        the static path, the event path's NaN behavior is "silently
-        dropped", not "raises", and both are unchanged by this fix.
-        """
+    def test_second_point_refused_first_point_bytes_unaffected(self) -> None:
         db = Database()
-        db.add_analog_input(0, AnalogInputConfig(event_class=EventClass.CLASS_1, deadband=0))
-        changed = db.update_analog_input(0, value=math.nan, quality=ONLINE)
-        assert changed is False, "a NaN update's deadband comparison (NaN >= 0) is always False"
+        db.add_analog_input(0, value=1.0, quality=ONLINE)
+        with pytest.raises(ValueError, match="NaN"):
+            db.add_analog_input(1, value=math.nan, quality=ONLINE)
 
         outstation = Outstation(database=db)
-        responses = outstation.process_request(build_class_poll(class_1=True, class_2=False, class_3=False).to_bytes())
+        responses = outstation.process_request(build_integrity_poll().to_bytes())
+        block_data = _extract_object_data(responses, group=30, variation=1)
+        assert block_data[2:] == bytes([0x01, 0x01, 0x00, 0x00, 0x00]), (
+            "a refused second point must not change the first point's bytes"
+        )
 
-        assert len(responses) == 1
-        assert responses[0].objects == (), "no event was queued, so none can be reported"
-        assert IIN.PARAMETER_ERROR not in responses[0].header.iin
+    def test_refused_update_queues_no_event_and_a_later_update_does(self) -> None:
+        db = Database()
+        db.add_analog_input(0, AnalogInputConfig(event_class=EventClass.CLASS_1, deadband=0))
+        events_before = len(db.event_buffer.class1.events)
+
+        with pytest.raises(ValueError, match="NaN"):
+            db.update_analog_input(0, value=math.nan, quality=ONLINE)
+
+        assert len(db.event_buffer.class1.events) == events_before
+
+        outstation = Outstation(database=db)
+        empty_poll = outstation.process_request(build_class_poll(class_1=True, class_2=False, class_3=False).to_bytes())
+        assert empty_poll[0].objects == (), "no event was queued for the refused update"
+
+        changed = db.update_analog_input(0, value=5.0)
+        assert changed is True
+
+        responses = outstation.process_request(build_class_poll(class_1=True, class_2=False, class_3=False).to_bytes())
+        block_data = _extract_object_data(responses, group=32, variation=1)
+        assert block_data[2:7] == bytes([0x01, 0x05, 0x00, 0x00, 0x00])
+
+
+class TestCallerReportsQualityAfterRefusal:
+    """An application that knows its own value is unusable reports that itself:
+    the prior value stays on the wire, with a quality flag of the
+    caller's own choosing (11.6.1 Table 11-5 ONLINE; REFERENCE_ERR
+    "might not have the expected accuracy").
+    """
+
+    def test_quality_zero(self) -> None:
+        assert _static_ai(100.0, quality=AnalogQuality(0)) == bytes([0x00, 0x64, 0x00, 0x00, 0x00])
+
+    def test_quality_online_and_reference_err(self) -> None:
+        assert _static_ai(100.0, quality=ONLINE | AnalogQuality.REFERENCE_ERR) == bytes([0x41, 0x64, 0x00, 0x00, 0x00])
