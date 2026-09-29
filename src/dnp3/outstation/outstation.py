@@ -838,11 +838,15 @@ class Outstation:
         on an otherwise well-formed request. Until a later fix for #46 adds a
         per-point control guard, a multi-point control that fails partway
         is answered as a whole: earlier points may already have run, but the
-        response carries no per-point status and a same-sequence retry calls
-        the handler again for every point. A no-ack function (IEEE 1815-2012
-        4.4.5) gets none, matching _refuse_unframed. Only Exception
-        subclasses are caught: a KeyboardInterrupt, SystemExit or
-        asyncio.CancelledError still propagates.
+        response carries no per-point status. A same-sequence DIRECT_OPERATE
+        retry calls the handler again for every point; a same-sequence
+        OPERATE retry does not, since the selection was already terminated
+        in the ``finally`` around ``_handle_operate``, so every point
+        (including one that already ran) answers NO_SELECT with zero
+        handler calls. A no-ack function (IEEE 1815-2012 4.4.5) gets none,
+        matching _refuse_unframed. Only Exception subclasses are caught: a
+        KeyboardInterrupt, SystemExit or asyncio.CancelledError still
+        propagates.
         """
         resolved_peer = peer if peer is not None else UNSPECIFIED_PEER
         try:
