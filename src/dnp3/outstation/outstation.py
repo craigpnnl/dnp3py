@@ -1701,12 +1701,12 @@ class Outstation:
         results: list[tuple[int, CommandStatus]] = []
 
         for crob in _parse_crob_block(block):
-            if crob.control_code is None:
-                results.append((crob.index, crob.status))
-                continue
-
             if stop.stopped:
                 results.append((crob.index, CommandStatus.UNDEFINED))
+                continue
+
+            if crob.control_code is None:
+                results.append((crob.index, crob.status))
                 continue
 
             if self._state.held_by_other_peer(crob.index, peer, self.config.select_timeout):
@@ -1819,12 +1819,12 @@ class Outstation:
         results: list[tuple[int, CommandStatus]] = []
 
         for crob in _parse_crob_block(block):
-            if crob.control_code is None:
-                results.append((crob.index, crob.status))
-                continue
-
             if stop.stopped:
                 results.append((crob.index, CommandStatus.UNDEFINED))
+                continue
+
+            if crob.control_code is None:
+                results.append((crob.index, crob.status))
                 continue
 
             select_state = self._state.get_select(crob.index, peer=peer)
@@ -1991,12 +1991,12 @@ class Outstation:
         results: list[tuple[int, CommandStatus]] = []
 
         for crob in _parse_crob_block(block):
-            if crob.control_code is None:
-                results.append((crob.index, crob.status))
-                continue
-
             if stop.stopped:
                 results.append((crob.index, CommandStatus.UNDEFINED))
+                continue
+
+            if crob.control_code is None:
+                results.append((crob.index, crob.status))
                 continue
 
             code = crob.control_code
