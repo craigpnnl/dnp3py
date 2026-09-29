@@ -36,6 +36,7 @@ from dnp3.database import AnalogEvent, BinaryEvent, CounterEvent, Database, Even
 from dnp3.objects.analog_input import AnalogInput32, AnalogInputEvent32
 from dnp3.objects.binary_input import BinaryInputEvent, BinaryInputFlags
 from dnp3.objects.binary_output import BinaryOutputFlags
+from dnp3.objects.binary_output import CommandStatus as ObjectsCommandStatus
 from dnp3.objects.counter import Counter32, CounterEvent32Time, FrozenCounter32
 from dnp3.outstation.config import OutstationConfig
 from dnp3.outstation.handler import CommandHandler, CommandResult, DefaultCommandHandler
@@ -680,16 +681,21 @@ def _coerce_command_status(value: object) -> CommandStatus | None:
     dnp3.objects.binary_output.CommandStatus mirrors this module's CommandStatus
     numerically (Table 4-2 and Table 11-7 share the same codes) but is a
     separate class, and it is a publicly exported name a handler author may
-    import instead of the core one. A plain int matching a defined value is
-    accepted the same way. A bool is never accepted: bool is an int subclass in
-    Python, and True/False are not status codes (#46).
+    import instead of the core one; an instance of either is accepted. A
+    plain int (``type(value) is int`` exactly, not a bool or any other int
+    subclass such as an unrelated IntEnum) matching a defined value is
+    accepted the same way, so a value from an unrelated enum that happens to
+    share a numeric value (FunctionCode.CONFIRM is 0, the same as SUCCESS) is
+    refused rather than silently coerced (#46).
     """
-    if isinstance(value, bool) or not isinstance(value, int):
-        return None
-    try:
+    if isinstance(value, CommandStatus | ObjectsCommandStatus):
         return CommandStatus(int(value))
-    except ValueError:
-        return None
+    if type(value) is int:
+        try:
+            return CommandStatus(value)
+        except ValueError:
+            return None
+    return None
 
 
 def _control_block_error(block: ObjectBlock) -> IIN | None:
