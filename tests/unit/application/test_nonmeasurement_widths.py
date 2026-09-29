@@ -74,8 +74,9 @@ class TestOctetStringGroupsFrameAndStepOver:
     """g110 (A.41.1) and g111 (A.42.1): width equals the variation number
     (OSTRn), computed at lookup time rather than read from a table row, so
     a block is still bounded and the g30v1 block after it is reached intact.
-    Index-prefixed (qualifier 0x17): A.41.1.2.3/A.42.1.2.3 note reading and
-    writing an octet string by absolute (index) addressing.
+    Index-prefixed (qualifier 0x17): A.41.1.2.3 alone notes reading and
+    writing an octet string by absolute (index) addressing; A.42.1.2.3 only
+    lists g111's permitted function codes.
     """
 
     @pytest.mark.parametrize("group", [110, 111], ids=["g110", "g111"])
