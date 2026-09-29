@@ -171,6 +171,16 @@ class TestGroup0Truncation:
         assert blocks == []
         assert truncation == Truncation(TruncationReason.DATA_SHORTER_THAN_DECLARED, 0, 0, 217, 0x00)
 
+    def test_earlier_block_stays_framed_ahead_of_a_truncated_group0_block(self) -> None:
+        leading = _G30V1_TAIL
+        truncated = bytes([0, 217, 0x00, 0x00, 0x00, 0x01])  # type octet present, length octet missing
+        data = leading + truncated
+
+        blocks, truncation = frame_response_object_blocks(data)
+
+        assert [(b.header.group, b.header.variation) for b in blocks] == [(30, 1)]
+        assert truncation == Truncation(TruncationReason.DATA_SHORTER_THAN_DECLARED, len(leading), 0, 217, 0x00)
+
 
 class TestGroup0QualifierChecks:
     """A malformed qualifier is refused before the group 0 walk starts, the

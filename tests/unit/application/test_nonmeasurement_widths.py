@@ -66,12 +66,13 @@ class TestFixedWidthRowsFrameAndStepOver:
         the g30v1 block after it is reached intact, the shape #82's own
         group 0 slice (test_group0_framing.py) proves for the Table 12-1 rows.
         """
-        data = bytes([0x00, 0x01, 0x00, 0x00, 0x00]) + bytes([0x02, 0x02, 0x05, 0xDC]) + _G30V1_TAIL
+        # 5.5.5 EX 5-10's own value bytes (0x05DC little-endian = 1500), wire order DC 05.
+        data = bytes([0x00, 0x01, 0x00, 0x00, 0x00]) + bytes([0x02, 0x02, 0xDC, 0x05]) + _G30V1_TAIL
 
         blocks = parse_response_object_blocks(data)
 
         assert [(b.header.group, b.header.variation) for b in blocks] == [(0, 1), (30, 1)]
-        assert blocks[0].data == bytes([0x00, 0x00, 0x02, 0x02, 0x05, 0xDC])
+        assert blocks[0].data == bytes([0x00, 0x00, 0x02, 0x02, 0xDC, 0x05])
         assert _decode_g30v1(blocks[1].data).value == _G30V1_VALUE
 
 
