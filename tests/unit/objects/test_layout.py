@@ -309,11 +309,10 @@ class TestOctetStringLayout:
     @pytest.mark.parametrize("group", [110, 111], ids=["g110", "g111"])
     @pytest.mark.parametrize("variation", [-1, 256])
     def test_out_of_range_variation_answers_none(self, group: int, variation: int) -> None:
-        # A.41.1.2.2: a variation's length "may not exceed 255"; the wire
-        # field itself never carries a negative or over-255 value, but the
-        # function must still answer None rather than raise or fabricate a
-        # layout, the same as every other group answers for a pair it has
-        # no row for.
+        # A.41.1.2.2 caps a variation's length at 255. The wire field itself
+        # never carries a negative or over-255 value, but the function must
+        # still answer None rather than raise or fabricate a layout, the
+        # same as every other group answers for a pair it has no row for.
         assert layout_for(group, variation) is None
 
     @pytest.mark.parametrize("group", [109, 112], ids=["g109", "g112"])
