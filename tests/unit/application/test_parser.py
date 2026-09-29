@@ -439,17 +439,16 @@ class TestParseResponseObjectBlocks:
         assert len(blocks) == 1
         assert blocks[0].header.group == 60
 
-    @pytest.mark.parametrize(("group", "variation"), [(30, 1), (200, 0)], ids=["g30v1-known", "g200v0-unknown"])
-    def test_all_objects_block_with_index_prefix_frames_as_its_header(self, group: int, variation: int) -> None:
+    @pytest.mark.parametrize(
+        ("group", "variation"), [(30, 1), (200, 0), (1, 1)], ids=["g30v1-known", "g200v0-unknown", "g1v1-packed"]
+    )
+    def test_all_objects_block_with_index_prefix_is_refused(self, group: int, variation: int) -> None:
+        """Table 4-6 pairs an index prefix only with its own count range, never all-objects."""
         header = bytes([group, variation, 0x16])
 
-        assert frame_response_object_blocks(header + _G7) == ([_block(header), _block(_G7)], None)
-
-    def test_all_objects_packed_block_with_index_prefix_stops(self) -> None:
-        """IEEE 1815-2012 A.2.1 packs bits only over a contiguous range, so g1v1 with an index prefix has no length."""
-        assert frame_response_object_blocks(bytes([0x01, 0x01, 0x16]) + _G7) == (
+        assert frame_response_object_blocks(header + _G7) == (
             [],
-            Truncation(TruncationReason.PACKED_WITH_INDEX_PREFIX, 0, 1, 1, 0x16),
+            Truncation(TruncationReason.RESERVED_QUALIFIER, 0, group, variation, 0x16),
         )
 
     def test_all_objects_block_of_unknown_width_frames_as_its_header(self) -> None:
@@ -682,6 +681,38 @@ class TestResponseFramingStops:
         assert fragment.objects == (_block(_B1),)
         assert fragment.truncation == Truncation(TruncationReason.RESERVED_QUALIFIER, 6, 1, 2, qualifier)
 
+    @pytest.mark.parametrize(
+        "qualifier",
+        [0x86, 0x96, 0xC6],
+        ids=["res-bit-all-objects", "res-bit-index-prefix-count", "res-bit-with-reserved-prefix"],
+    )
+    def test_reserved_bit_stops(self, qualifier: int) -> None:
+        """4.2.2.7.3.1: the qualifier's Res bit is reserved and must be clear (#112)."""
+        fragment = self._parse(_B1 + bytes([0x01, 0x02, qualifier, 0x00, 0x00]))
+
+        assert fragment.objects == (_block(_B1),)
+        assert fragment.truncation == Truncation(TruncationReason.RESERVED_QUALIFIER, 6, 1, 2, qualifier)
+
+    @pytest.mark.parametrize(
+        "qualifier",
+        [0x10, 0x18, 0x19],
+        ids=["index-prefix-start-stop", "index-prefix-count-too-wide-2byte", "index-prefix-count-too-wide-4byte"],
+    )
+    def test_index_prefix_with_non_matching_range_stops(self, qualifier: int) -> None:
+        """Table 4-6 pairs a 1-octet index prefix only with a 1-octet count range (#112)."""
+        fragment = self._parse(_B1 + bytes([0x1E, 0x01, qualifier]))
+
+        assert fragment.objects == (_block(_B1),)
+        assert fragment.truncation == Truncation(TruncationReason.RESERVED_QUALIFIER, 6, 30, 1, qualifier)
+
+    @pytest.mark.parametrize("qualifier", [0x46, 0x56, 0x66], ids=["1-byte-size", "2-byte-size", "4-byte-size"])
+    def test_size_prefix_with_all_objects_stops(self, qualifier: int) -> None:
+        """A size prefix names no objects to size against an all-objects range (#112)."""
+        fragment = self._parse(_B1 + bytes([0x1E, 0x01, qualifier]))
+
+        assert fragment.objects == (_block(_B1),)
+        assert fragment.truncation == Truncation(TruncationReason.SIZE_PREFIX, 6, 30, 1, qualifier)
+
     def test_error_from_a_registered_size_is_not_reported_as_a_reserved_qualifier(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -889,13 +920,14 @@ class TestRequestBlocksAreFramedSeparately:
         assert fragment.objects == (_block(bytes([0x1E, 0x00, 0x00, 0x05, 0x03])), _block(_G60V1_ALL))
         assert fragment.truncation is None
 
-    def test_header_only_index_prefixed_start_stop_below_start_consumes_its_range(self) -> None:
+    def test_header_only_index_prefixed_start_stop_is_refused(self) -> None:
+        """Table 4-6 has no index-prefix, start-stop combination, so this qualifier is refused (#112)."""
         prefixed = bytes([0x01, 0x02, 0x10, 0x05, 0x03])
 
         fragment = _request(FunctionCode.READ, prefixed + _G60V1_ALL)
 
-        assert fragment.objects == (_block(prefixed), _block(_G60V1_ALL))
-        assert fragment.truncation is None
+        assert fragment.objects == ()
+        assert fragment.truncation == Truncation(TruncationReason.RESERVED_QUALIFIER, 0, 1, 2, 0x10)
 
     def test_parse_object_headers_consumes_the_index_list_only(self) -> None:
         assert parse_object_headers(bytes.fromhex("01 02 17 02 01 04") + _G60V1_ALL) == [
