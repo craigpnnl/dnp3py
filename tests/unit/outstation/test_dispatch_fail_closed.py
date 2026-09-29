@@ -55,6 +55,15 @@ def _crob(index: int) -> ObjectBlock:
     return ObjectBlock(header=header, data=bytes([1, index]) + _CROB_BODY)
 
 
+def _crob_multi(*indices: int) -> ObjectBlock:
+    """A well-formed g12v1 block, qualifier 0x17, one object per index, in wire order."""
+    header = ObjectHeader(group=12, variation=1, qualifier=0x17)
+    data = bytes([len(indices)])
+    for index in indices:
+        data += bytes([index]) + _CROB_BODY
+    return ObjectBlock(header=header, data=data)
+
+
 def _g50v1_write(seq: int) -> RequestFragment:
     """A well-formed WRITE of g50v1 (A.23.1.2.3): qualifier 0x07, count 1, one timestamp."""
     octets = bytes.fromhex("00c4a5321701")  # 10.3.2 worked example.
@@ -100,17 +109,22 @@ def _echo_response(request: RequestFragment, statuses: list[int], *, iin2: int =
 
 
 class _RaisingHandler(DefaultCommandHandler):
-    """Every control method succeeds except the one named ``raises``, which raises ``exc``."""
+    """Every control method succeeds except the one named ``raises``, which raises ``exc``.
 
-    def __init__(self, raises: str, exc: type[BaseException] = ValueError) -> None:
+    ``raise_on_index`` narrows the raise to one point, so a multi-point
+    request can have an earlier point succeed before the raising one.
+    """
+
+    def __init__(self, raises: str, exc: type[BaseException] = ValueError, raise_on_index: int | None = None) -> None:
         super().__init__()
         self.raises = raises
         self.exc = exc
+        self.raise_on_index = raise_on_index
 
     def select_binary_output(
         self, index: int, code: ControlCode, count: int, on_time: int, off_time: int
     ) -> CommandResult:
-        if self.raises == "select":
+        if self.raises == "select" and self.raise_on_index in (None, index):
             raise self.exc("boom: select_binary_output")
         return CommandResult.success()
 
@@ -161,11 +175,17 @@ class TestSelectHandlerRaises:
         assert IIN.PARAMETER_ERROR not in responses[0].header.iin
 
     def test_leaves_no_selection_armed(self) -> None:
-        outstation = _outstation(_RaisingHandler("select"))
+        """Two points, raise on the second: proves the FIRST point's already-armed select is cleared too.
 
-        outstation.process_request(build_select_request(objects=(_crob(1),), seq=5).to_bytes(), peer=MASTER_A)
+        With only one point, this assertion cannot fail: that point was never
+        armed in the first place, since it raised before ``add_select`` ran.
+        """
+        outstation = _outstation(_RaisingHandler("select", raise_on_index=2))
+
+        outstation.process_request(build_select_request(objects=(_crob_multi(1, 2),), seq=5).to_bytes(), peer=MASTER_A)
 
         assert outstation._state.get_select(1, peer=MASTER_A) is None
+        assert outstation._state.get_select(2, peer=MASTER_A) is None
 
     def test_well_formed_select_is_unaffected(self) -> None:
         """Control: a non-raising handler still gets the ordinary SELECT echo, not IIN2.2."""
