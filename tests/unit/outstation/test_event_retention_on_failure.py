@@ -20,8 +20,8 @@ import pytest
 from dnp3.application.builder import build_all_objects_request, build_class_poll, build_read_request
 from dnp3.application.fragment import ObjectBlock, RequestFragment, ResponseFragment
 from dnp3.core.enums import FunctionCode
-from dnp3.core.flags import IIN, AnalogQuality
-from dnp3.database import Database, DatabaseConfig, Event, EventClass
+from dnp3.core.flags import IIN, AnalogQuality, CounterQuality
+from dnp3.database import AnalogEvent, CounterEvent, Database, DatabaseConfig, Event, EventClass
 from dnp3.database.point import AnalogInputConfig, BinaryInputConfig, CounterConfig
 from dnp3.outstation.outstation import Outstation
 
@@ -414,3 +414,49 @@ class TestMultiClassReadEmptiesEveryClass:
         responses = outstation.process_request(combined.to_bytes())
 
         self._assert_all_three_present_and_emptied(db, responses)
+
+
+class TestEventKeyIsScopedByClass:
+    """A serial alone does not identify an event; two classes can share one (#46).
+
+    ClassBuffer.add falls back to its own per-class counter when called
+    with no explicit serial (event_buffer.py); that counter starts at 0
+    independently of the EventBuffer's shared one, so an event added this
+    way can carry the same serial as an event in a different class added
+    through the normal Database path. Dedup and removal keyed by serial
+    alone would then drop one class's event from the response while still
+    removing it from the buffer.
+    """
+
+    def test_colliding_serials_in_two_classes_both_survive_and_are_removed(self) -> None:
+        db = Database()
+        db.add_binary_input(0, BinaryInputConfig(event_class=EventClass.CLASS_1))
+        db.add_analog_input(0, AnalogInputConfig(event_class=EventClass.CLASS_2, deadband=0))
+        outstation = Outstation(database=db)
+
+        db.update_binary_input(0, value=True)  # class 1 event via the normal, shared-counter path
+        # A class 2 event added directly on the ClassBuffer, bypassing the
+        # EventBuffer's shared counter: its own counter also starts at 0.
+        db.event_buffer.class2.add(AnalogEvent(index=0, value=5.0, quality=ONLINE, timestamp=None))
+        # A class 3 event, same colliding serial, that this poll never reads
+        # (class_3=False below): proves removal is scoped to the class each
+        # key names, not just that dedup is. A flat, cross-class removal of
+        # the collected serial would also wipe this untouched event.
+        db.event_buffer.class3.add(CounterEvent(index=0, value=99, quality=CounterQuality.ONLINE, timestamp=None))
+        class1_serial = db.event_buffer.class1.read_with_serials()[0][0]
+        class2_serial = db.event_buffer.class2.read_with_serials()[0][0]
+        class3_serial = db.event_buffer.class3.read_with_serials()[0][0]
+        assert class1_serial == class2_serial == class3_serial  # the collision this test exists to cover
+
+        request = build_class_poll(class_1=True, class_2=True, class_3=False, seq=0)
+        responses = outstation.process_request(request.to_bytes())
+
+        bi_block = _find_block(responses, group=2, variation=1)
+        ai_block = _find_block(responses, group=32, variation=1)
+        assert bi_block is not None
+        assert ai_block is not None
+        assert _decode_binary_events(bi_block) == [0]
+        assert _decode_analog_events(ai_block) == [(0, 5)]
+        assert db.event_buffer.class1.count == 0
+        assert db.event_buffer.class2.count == 0
+        assert db.event_buffer.class3.count == 1  # never polled, must survive despite the colliding serial
