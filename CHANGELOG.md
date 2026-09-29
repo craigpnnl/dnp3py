@@ -7,6 +7,488 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 <!-- version list -->
 
+## v0.6.0 (2026-09-29)
+
+### Bug Fixes
+
+- **application**: Accept every index-prefix code Table 4-6 allows
+  ([#112](https://github.com/craigpnnl/dnp3py/pull/112),
+  [`cdafe55`](https://github.com/craigpnnl/dnp3py/commit/cdafe550bb4766e385faab39014d51036784f3aa))
+
+- **application**: Frame size-prefixed free-format blocks
+  ([#82](https://github.com/craigpnnl/dnp3py/pull/82),
+  [`d7a66a9`](https://github.com/craigpnnl/dnp3py/commit/d7a66a9b325f8ae818e5dd692a6fc1a8df2053b8))
+
+- **application**: Read the 256-octet extension for attribute type 255
+  ([#82](https://github.com/craigpnnl/dnp3py/pull/82),
+  [`4e53607`](https://github.com/craigpnnl/dnp3py/commit/4e53607599768e1c69deb67b8692d2079e6204f7))
+
+- **application**: Refuse qualifiers Table 4-6 does not allow
+  ([#112](https://github.com/craigpnnl/dnp3py/pull/112),
+  [`cd1c7c7`](https://github.com/craigpnnl/dnp3py/commit/cd1c7c7132c23e5a13286859805c24525c71971c))
+
+- **application**: Reject a malformed group 0 qualifier before the walk
+  ([#82](https://github.com/craigpnnl/dnp3py/pull/82),
+  [`b36b201`](https://github.com/craigpnnl/dnp3py/commit/b36b2017c23983c7cb95a435108b540f47abbfe3))
+
+- **application**: Reserve qualifier 0x0B, not treat it as an unsupported range
+  ([#112](https://github.com/craigpnnl/dnp3py/pull/112),
+  [`42deb9f`](https://github.com/craigpnnl/dnp3py/commit/42deb9fcb1b521d0a414415516b700bc2261eb16))
+
+- **database**: Refuse NaN analog input at construction and update
+  ([#159](https://github.com/craigpnnl/dnp3py/pull/159),
+  [`52eed91`](https://github.com/craigpnnl/dnp3py/commit/52eed91c746a7f4e729fe0e82ac6572a36595b16))
+
+- **database**: Validate last_event_value for NaN in AnalogInputPoint
+  ([#159](https://github.com/craigpnnl/dnp3py/pull/159),
+  [`2a61fd6`](https://github.com/craigpnnl/dnp3py/commit/2a61fd6e59ab2191a82c76b0e19f619ef9ad9797))
+
+- **datalink**: Make frame resynchronization iterative
+  ([#64](https://github.com/craigpnnl/dnp3py/pull/64),
+  [`d01d215`](https://github.com/craigpnnl/dnp3py/commit/d01d2155b58018c9b3e3b24ccc526a12360f8e4c))
+
+- **datalink**: Reject LENGTH below the header-only minimum
+  ([#65](https://github.com/craigpnnl/dnp3py/pull/65),
+  [`77c22c8`](https://github.com/craigpnnl/dnp3py/commit/77c22c8a30bbb0b1bc37986735f435dc3fa33a7f))
+
+- **datalink**: Resync when a header's LENGTH is below 5
+  ([#65](https://github.com/craigpnnl/dnp3py/pull/65),
+  [`011127a`](https://github.com/craigpnnl/dnp3py/commit/011127a90a0a01ddfbea39635d6635651eda69d2))
+
+- **master**: Narrow process_response to the parser's ParseError
+  ([#66](https://github.com/craigpnnl/dnp3py/pull/66),
+  [`6cb0a0f`](https://github.com/craigpnnl/dnp3py/commit/6cb0a0fe1fe45692e412d9fde37b532530fc86a6))
+
+- **mesa**: Refuse NaN in analog output validation and store
+  ([#171](https://github.com/craigpnnl/dnp3py/pull/171),
+  [`dfbfb64`](https://github.com/craigpnnl/dnp3py/commit/dfbfb64534da332520a6c08a513f94f7a6b020a2))
+
+- **objects**: Bound g110 and g111 octet-string variation to 1-255
+  ([#82](https://github.com/craigpnnl/dnp3py/pull/82),
+  [`7f46de0`](https://github.com/craigpnnl/dnp3py/commit/7f46de0107b938451109afe6992b35cfa6c9bd71))
+
+- **objects**: Correct g101 BCD widths to 2, 4, 8 octets
+  ([#82](https://github.com/craigpnnl/dnp3py/pull/82),
+  [`18bffbb`](https://github.com/craigpnnl/dnp3py/commit/18bffbb2bc95889b6ef1e5977c031cc14044f130))
+
+- **outstation**: Accept a status from either CommandStatus enum or a matching int
+  ([#46](https://github.com/craigpnnl/dnp3py/pull/46),
+  [`0b5b6de`](https://github.com/craigpnnl/dnp3py/commit/0b5b6deaa71978fcdb4e637cd4df1d8cb06b5d35))
+
+- **outstation**: Answer a dispatch handler exception with IIN2.2
+  ([#46](https://github.com/craigpnnl/dnp3py/pull/46),
+  [`a9341f4`](https://github.com/craigpnnl/dnp3py/commit/a9341f490eeb9731c1ef808e438e87eb51280f7e))
+
+- **outstation**: Check the stop before a per-object parse rejection
+  ([#46](https://github.com/craigpnnl/dnp3py/pull/46),
+  [`531ca8b`](https://github.com/craigpnnl/dnp3py/commit/531ca8b4524e8bef22bc099eef9094fcc79c76ff))
+
+- **outstation**: Correct the fail-closed docstring and log the function by name
+  ([#46](https://github.com/craigpnnl/dnp3py/pull/46),
+  [`14374e5`](https://github.com/craigpnnl/dnp3py/commit/14374e51ce8fba5f1fd7e5d983b13352781024c1))
+
+- **outstation**: Do not encode a buffered event twice when a request names its class through two
+  blocks ([#46](https://github.com/craigpnnl/dnp3py/pull/46),
+  [`0c9e777`](https://github.com/craigpnnl/dnp3py/commit/0c9e7779e426c204285fcf489b2644d08066c2f6))
+
+- **outstation**: Drop internal rule labels from failure-logging comments
+  ([#46](https://github.com/craigpnnl/dnp3py/pull/46),
+  [`a9aadcf`](https://github.com/craigpnnl/dnp3py/commit/a9aadcfa1ded02562d7eb2dfc61dbd0f91d73f5d))
+
+- **outstation**: Guard the analog output lookup, not just the update
+  ([#46](https://github.com/craigpnnl/dnp3py/pull/46),
+  [`bec371a`](https://github.com/craigpnnl/dnp3py/commit/bec371a930af6d2d469a71dacc49892b72171420))
+
+- **outstation**: Keep buffered events until the response built from them succeeds
+  ([#46](https://github.com/craigpnnl/dnp3py/pull/46),
+  [`5cc286a`](https://github.com/craigpnnl/dnp3py/commit/5cc286a94600843adddd0dd4d6e5f2352671b185))
+
+- **outstation**: Key event dedup and removal by class and serial, not serial alone
+  ([#46](https://github.com/craigpnnl/dnp3py/pull/46),
+  [`2dccc9f`](https://github.com/craigpnnl/dnp3py/commit/2dccc9f07b549893c8e299a2cc62b2e214ec7d12))
+
+- **outstation**: Make two log messages name the actual failure
+  ([#46](https://github.com/craigpnnl/dnp3py/pull/46),
+  [`18c3fb5`](https://github.com/craigpnnl/dnp3py/commit/18c3fb510b9d2bdcb4932257a82514dcde5452ec))
+
+- **outstation**: Rate-limit handler failure logs and add a failure counter
+  ([#46](https://github.com/craigpnnl/dnp3py/pull/46),
+  [`549d192`](https://github.com/craigpnnl/dnp3py/commit/549d1923cfcb2695fb50e5419e11908ceee84e37))
+
+- **outstation**: Rate-limit the NaN refusal warning under its own key
+  ([#46](https://github.com/craigpnnl/dnp3py/pull/46),
+  [`171f8dc`](https://github.com/craigpnnl/dnp3py/commit/171f8dc4afae4a4f8f298606da654bc4a8b16ec0))
+
+- **outstation**: Refuse an unrelated int subclass as a control status
+  ([#46](https://github.com/craigpnnl/dnp3py/pull/46),
+  [`4978d82`](https://github.com/craigpnnl/dnp3py/commit/4978d829149ccb28d6a5b3894f5ab7a718df2b59))
+
+- **outstation**: Report over-range analog input as its limit with OVER_RANGE
+  ([#159](https://github.com/craigpnnl/dnp3py/pull/159),
+  [`7edc286`](https://github.com/craigpnnl/dnp3py/commit/7edc286f86886173f7813f1a955496ceae1eacf0))
+
+- **outstation**: Require the handler method name for a control point failure
+  ([#46](https://github.com/craigpnnl/dnp3py/pull/46),
+  [`b49e5c0`](https://github.com/craigpnnl/dnp3py/commit/b49e5c09865c6654e0802f541e9b9ce1f7858fb3))
+
+- **outstation**: State the suppressed count relative to the previous record
+  ([#46](https://github.com/craigpnnl/dnp3py/pull/46),
+  [`15d6b36`](https://github.com/craigpnnl/dnp3py/commit/15d6b367566ed9c00b771c3ff4c8004a5cb485f8))
+
+- **outstation**: Stop a control request at the first raising point
+  ([#46](https://github.com/craigpnnl/dnp3py/pull/46),
+  [`f1daee5`](https://github.com/craigpnnl/dnp3py/commit/f1daee562bbf28567b4a1977e8d06cdefbccd3b8))
+
+### Chores
+
+- **tests**: Replace em-dash with hyphen in test_command_handler.py comment
+  ([`21553ca`](https://github.com/craigpnnl/dnp3py/commit/21553caddbda9bf2c30702d52b30fd86397c8753))
+
+### Code Style
+
+- **application**: Apply ruff format to the EX 5-2 test
+  ([`32c16a3`](https://github.com/craigpnnl/dnp3py/commit/32c16a3f40c90ac5f972f48849f419b529de44a5))
+
+- **application**: Name the attribute type/length window's magic 2
+  ([#82](https://github.com/craigpnnl/dnp3py/pull/82),
+  [`966b5f4`](https://github.com/craigpnnl/dnp3py/commit/966b5f45cf1151455754937995af945c3b660338))
+
+- **tests**: Format the resync tests with CI's ruff
+  ([#64](https://github.com/craigpnnl/dnp3py/pull/64),
+  [`4494be4`](https://github.com/craigpnnl/dnp3py/commit/4494be4a5a37095b710da10dab4bb786bec8faf5))
+
+- **tests**: Run ruff format on the new framing test file
+  ([#82](https://github.com/craigpnnl/dnp3py/pull/82),
+  [`ed960cc`](https://github.com/craigpnnl/dnp3py/commit/ed960cc8142487821e08640db2570fd9e891f668))
+
+### Continuous Integration
+
+- Give every CI job a timeout ([#157](https://github.com/craigpnnl/dnp3py/pull/157),
+  [`dd2cb1d`](https://github.com/craigpnnl/dnp3py/commit/dd2cb1d6e29735ce8adc138f827b3284820507a7))
+
+### Documentation
+
+- Add a security policy with private reporting instructions
+  ([#180](https://github.com/craigpnnl/dnp3py/pull/180),
+  [`e2ebeec`](https://github.com/craigpnnl/dnp3py/commit/e2ebeec018606a8dca8d8ea591606ac53f5fb7ab))
+
+- **application**: Correct the free-format fixture comment's payload claim
+  ([#82](https://github.com/craigpnnl/dnp3py/pull/82),
+  [`597b02f`](https://github.com/craigpnnl/dnp3py/commit/597b02ffcc7048e8fb49f91484356824463fb8a5))
+
+- **application**: Correct the g111 addressing-note citation
+  ([#82](https://github.com/craigpnnl/dnp3py/pull/82),
+  [`dd59cd8`](https://github.com/craigpnnl/dnp3py/commit/dd59cd8a96af3c58abf63f0c35444d75adf7bd0b))
+
+- **application**: Correct the valid-qualifier count and the gap reason
+  ([#112](https://github.com/craigpnnl/dnp3py/pull/112),
+  [`ab6fab2`](https://github.com/craigpnnl/dnp3py/commit/ab6fab20d7bdf02690b9d31e94ad6b26d886cf07))
+
+- **application**: Describe what SIZE_PREFIX and RESERVED_QUALIFIER cover
+  ([#112](https://github.com/craigpnnl/dnp3py/pull/112),
+  [`157cf58`](https://github.com/craigpnnl/dnp3py/commit/157cf58388a6b746d5d270d7455eaf604535a293))
+
+- **application**: Drop the closed 0xB gap from the UNSUPPORTED_RANGE comment
+  ([#82](https://github.com/craigpnnl/dnp3py/pull/82),
+  [`b144ed1`](https://github.com/craigpnnl/dnp3py/commit/b144ed174c6543627c26481b5e409397cf32b513))
+
+- **changelog**: Repair the compare-link footer for 0.3.2 to 0.5.0
+  ([#40](https://github.com/craigpnnl/dnp3py/pull/40),
+  [`c54792e`](https://github.com/craigpnnl/dnp3py/commit/c54792eb5edcec9c5096ef360acdf6c476634580))
+
+- **datalink**: Paraphrase the minimum LENGTH clause
+  ([#65](https://github.com/craigpnnl/dnp3py/pull/65),
+  [`6eac26e`](https://github.com/craigpnnl/dnp3py/commit/6eac26e7cd450518a75355e1870a722fae25c26c))
+
+- **master**: Document process_response's ParseError-only contract
+  ([#66](https://github.com/craigpnnl/dnp3py/pull/66),
+  [`9da80cc`](https://github.com/craigpnnl/dnp3py/commit/9da80cc81327cb9edcf3e3c0d7e64ef6b068584c))
+
+- **objects**: Paraphrase the A.41.1.2.2 length-cap comment
+  ([#82](https://github.com/craigpnnl/dnp3py/pull/82),
+  [`2dab644`](https://github.com/craigpnnl/dnp3py/commit/2dab6447e4839f433123b97d90b9c28c9264c2ee))
+
+- **outstation**: Cite 10.3.3.2 generally for the discard-on-repeat rule
+  ([#46](https://github.com/craigpnnl/dnp3py/pull/46),
+  [`8a9baf2`](https://github.com/craigpnnl/dnp3py/commit/8a9baf2f796f3d227a925c727658e9c98501b380))
+
+- **outstation**: Correct a stale NaN claim in _clamp_int_range
+  ([#159](https://github.com/craigpnnl/dnp3py/pull/159),
+  [`7387302`](https://github.com/craigpnnl/dnp3py/commit/7387302e498c6820d353e59b269ee085c352b265))
+
+- **outstation**: Drop quoted standard text from comments
+  ([#46](https://github.com/craigpnnl/dnp3py/pull/46),
+  [`de5f373`](https://github.com/craigpnnl/dnp3py/commit/de5f373375d11dcca5a06bbfd10dd4077df94811))
+
+- **outstation**: Drop the internal slice label from the docstring
+  ([#46](https://github.com/craigpnnl/dnp3py/pull/46),
+  [`3e3ea02`](https://github.com/craigpnnl/dnp3py/commit/3e3ea02ad8f5512535b77359242844e31a7eec61))
+
+- **outstation**: State both OPERATE and DIRECT_OPERATE retry behaviour
+  ([#46](https://github.com/craigpnnl/dnp3py/pull/46),
+  [`c298471`](https://github.com/craigpnnl/dnp3py/commit/c298471f36cb42496dcb77337b2977ff4e275a30))
+
+### Features
+
+- **application**: Frame group 0 attribute values as their own TLV width
+  ([#82](https://github.com/craigpnnl/dnp3py/pull/82),
+  [`10a4520`](https://github.com/craigpnnl/dnp3py/commit/10a45201d7964687c318440fd8a9cc27575c03ec))
+
+- **objects**: Add fixed-width layout rows for non-measurement objects
+  ([#82](https://github.com/craigpnnl/dnp3py/pull/82),
+  [`349317d`](https://github.com/craigpnnl/dnp3py/commit/349317d1a8a1dbcdaa4aca835415093db48801cd))
+
+- **objects**: Size g110 and g111 octet strings by variation
+  ([#82](https://github.com/craigpnnl/dnp3py/pull/82),
+  [`e77ff50`](https://github.com/craigpnnl/dnp3py/commit/e77ff50c16a2a94bed15f200e8b17fae03e04439))
+
+### Refactoring
+
+- **outstation**: Require the stop flag on every control processor
+  ([#46](https://github.com/craigpnnl/dnp3py/pull/46),
+  [`301ae86`](https://github.com/craigpnnl/dnp3py/commit/301ae866736c5d8ad1b0df301a56fa5a6e22d41a))
+
+### Testing
+
+- **application**: Correct the g120 qualifier note in the class docstring
+  ([#82](https://github.com/craigpnnl/dnp3py/pull/82),
+  [`3562eba`](https://github.com/craigpnnl/dnp3py/commit/3562eba7f32eca504f83c5b48efdb570d83f0126))
+
+- **application**: Cover a group 0 block naming more than one object
+  ([#82](https://github.com/craigpnnl/dnp3py/pull/82),
+  [`54ada49`](https://github.com/craigpnnl/dnp3py/commit/54ada4962f3d41a62babe6aca820cf3915ee0dcf))
+
+- **application**: Cover a group 0 block with nothing after it
+  ([#82](https://github.com/craigpnnl/dnp3py/pull/82),
+  [`7020843`](https://github.com/craigpnnl/dnp3py/commit/702084363ec8ebdfe006cff660876d46bde8fda2))
+
+- **application**: Frame every free-format group ahead of a following block
+  ([#82](https://github.com/craigpnnl/dnp3py/pull/82),
+  [`1d32c2e`](https://github.com/craigpnnl/dnp3py/commit/1d32c2eab6ccacf1325b91b2e8706b171599b8b3))
+
+- **application**: Frame g110 and g111 blocks past their declared width
+  ([#82](https://github.com/craigpnnl/dnp3py/pull/82),
+  [`9bf8df0`](https://github.com/craigpnnl/dnp3py/commit/9bf8df045d4b3bd44e27df9113b0725e9e93183d))
+
+- **application**: Frame g110 and g111 with qualifier 0x28 and 0x00, and pin variation 0 as still
+  unknown width ([#82](https://github.com/craigpnnl/dnp3py/pull/82),
+  [`a16b7b7`](https://github.com/craigpnnl/dnp3py/commit/a16b7b720f6382899c5c5eaf8b5c3f7b37528ebc))
+
+- **application**: Frame size-prefixed qualifiers in the qualifier table tests
+  ([#82](https://github.com/craigpnnl/dnp3py/pull/82),
+  [`b280289`](https://github.com/craigpnnl/dnp3py/commit/b2802893aa8ddeaf554153baf11953f162670193))
+
+- **application**: Keep an earlier block ahead of a truncated group 0 one
+  ([#82](https://github.com/craigpnnl/dnp3py/pull/82),
+  [`19a3904`](https://github.com/craigpnnl/dnp3py/commit/19a390462aa06638e1315b7593b911360165a8ff))
+
+- **application**: Keep group 0 variations 0 and 254 refused
+  ([#82](https://github.com/craigpnnl/dnp3py/pull/82),
+  [`be786e5`](https://github.com/craigpnnl/dnp3py/commit/be786e5639b66343cb36f08e4061f651ca6361de))
+
+- **application**: Pin a zero-length object exactly filling the data
+  ([#82](https://github.com/craigpnnl/dnp3py/pull/82),
+  [`ed38068`](https://github.com/craigpnnl/dnp3py/commit/ed38068f3271d264c86138024c862950a3565709))
+
+- **application**: Pin count 0 as a valid empty free-format block
+  ([#82](https://github.com/craigpnnl/dnp3py/pull/82),
+  [`66cf578`](https://github.com/craigpnnl/dnp3py/commit/66cf578c77037b0ca1de64ff3cd6947ee9726b8e))
+
+- **application**: Pin g0v1 as data-carrying, not unsized
+  ([#82](https://github.com/craigpnnl/dnp3py/pull/82),
+  [`01604c1`](https://github.com/craigpnnl/dnp3py/commit/01604c136387c6a9d2287a773950fa83af415845))
+
+- **application**: Pin g101v1 width from hand-encoded BCD octets
+  ([#82](https://github.com/craigpnnl/dnp3py/pull/82),
+  [`a3767ad`](https://github.com/craigpnnl/dnp3py/commit/a3767ad18df3e14daef55ee66f85345ab161cc2e))
+
+- **application**: Pin get_range_size(FREE_FORMAT) at its own row
+  ([#82](https://github.com/craigpnnl/dnp3py/pull/82),
+  [`762378b`](https://github.com/craigpnnl/dnp3py/commit/762378be47f97c3b46202b458333ff913634a396))
+
+- **application**: Pin the free-format file READ from the standard's example
+  ([`f8f72f8`](https://github.com/craigpnnl/dnp3py/commit/f8f72f8ba81e8b78c196e3f649a57db36f40493f))
+
+- **application**: Prove g70 free-format framing across all three prefix widths
+  ([#82](https://github.com/craigpnnl/dnp3py/pull/82),
+  [`c69857e`](https://github.com/craigpnnl/dnp3py/commit/c69857e54babeba457e16bd4f2634d7c5ca85075))
+
+- **application**: Read a declared size from the whole size field
+  ([#82](https://github.com/craigpnnl/dnp3py/pull/82),
+  [`fe1b1fa`](https://github.com/craigpnnl/dnp3py/commit/fe1b1fa6390b58bd2fc5028b8f885dfea836ca55))
+
+- **application**: Refuse a truncated group 0 attribute window
+  ([#82](https://github.com/craigpnnl/dnp3py/pull/82),
+  [`8a8c9a1`](https://github.com/craigpnnl/dnp3py/commit/8a8c9a186bd903fbe3a8e1c43c419f81cea88e49))
+
+- **application**: Refuse a truncated size field of zero octets
+  ([#82](https://github.com/craigpnnl/dnp3py/pull/82),
+  [`31822c6`](https://github.com/craigpnnl/dnp3py/commit/31822c622e77aad01d2f4d6b2aaa65cc312b8020))
+
+- **application**: State the g120v2 qualifier guidance correctly
+  ([#82](https://github.com/craigpnnl/dnp3py/pull/82),
+  [`1f0870b`](https://github.com/craigpnnl/dnp3py/commit/1f0870bfb3653220c3c35cc74bd5586a633a81df))
+
+- **coverage_gaps**: Pass stop= to the four processor calls missing it
+  ([#46](https://github.com/craigpnnl/dnp3py/pull/46),
+  [`f4dd946`](https://github.com/craigpnnl/dnp3py/commit/f4dd9467185504fa060b7b1aa28621fbc76da8a2))
+
+- **database**: Cover the NaN analog input refusal at every boundary
+  ([#159](https://github.com/craigpnnl/dnp3py/pull/159),
+  [`01a8c92`](https://github.com/craigpnnl/dnp3py/commit/01a8c92d83e086674adec27f2bff7db1e7016357))
+
+- **database**: Strengthen mutant coverage and validate last_event_value
+  ([#159](https://github.com/craigpnnl/dnp3py/pull/159),
+  [`383ee68`](https://github.com/craigpnnl/dnp3py/commit/383ee68644e09578cf35632a35ebd98efb6cc2d4))
+
+- **datalink**: Compare delivered frames by to_bytes, split at odd offset
+  ([#64](https://github.com/craigpnnl/dnp3py/pull/64),
+  [`8a5b376`](https://github.com/craigpnnl/dnp3py/commit/8a5b376979e4059fc0f58bcfb118b210d9ee3895))
+
+- **datalink**: Fail fast, not hang, if a CRC branch stops consuming bytes
+  ([#64](https://github.com/craigpnnl/dnp3py/pull/64),
+  [`185d551`](https://github.com/craigpnnl/dnp3py/commit/185d5513d3800ea247b12e80fc26f435ad7efa77))
+
+- **datalink**: Overlap, split-feed and refusal-site coverage for #65
+  ([`e95fcf9`](https://github.com/craigpnnl/dnp3py/commit/e95fcf9dfbdc695bc26695016076a953b0c4e97b))
+
+- **datalink**: Prove data-block CRC failure keeps hunting in one feed
+  ([#64](https://github.com/craigpnnl/dnp3py/pull/64),
+  [`84bfbb8`](https://github.com/craigpnnl/dnp3py/commit/84bfbb87e76d9cf6fb9903d39386ad1c0fe851a0))
+
+- **datalink**: Prove no RecursionError over 3000 bad data blocks
+  ([#64](https://github.com/craigpnnl/dnp3py/pull/64),
+  [`c3244f2`](https://github.com/craigpnnl/dnp3py/commit/c3244f2f36c04e1e0fa69d3ea958e60e615ce645))
+
+- **master**: Confirm g110 and g111 blocks deliver nothing
+  ([#82](https://github.com/craigpnnl/dnp3py/pull/82),
+  [`709e82a`](https://github.com/craigpnnl/dnp3py/commit/709e82ac03d02874cbd5bc4f845661168aeb65f9))
+
+- **master**: Cover ValueError and IndexError in non-ParseError propagation
+  ([#66](https://github.com/craigpnnl/dnp3py/pull/66),
+  [`beea965`](https://github.com/craigpnnl/dnp3py/commit/beea965c841a3e91cbca77ec2e4b27af95bbe306))
+
+- **master**: Pin a full-length fragment with an unknown function code
+  ([#66](https://github.com/craigpnnl/dnp3py/pull/66),
+  [`ff09598`](https://github.com/craigpnnl/dnp3py/commit/ff095982ad38db387b37b7015d943e88b40b3a73))
+
+- **master**: Pin each new kind's own point kind against the undelivered set
+  ([#82](https://github.com/craigpnnl/dnp3py/pull/82),
+  [`ceb7c54`](https://github.com/craigpnnl/dnp3py/commit/ceb7c5498de85a4f22928e78bd81d865c4384b51))
+
+- **master**: Pin the five new PointKinds as undelivered
+  ([#82](https://github.com/craigpnnl/dnp3py/pull/82),
+  [`d3fc8bc`](https://github.com/craigpnnl/dnp3py/commit/d3fc8bcaf5a7c95de03f34339200bbc59c509059))
+
+- **mesa**: Cover the NaN refusal in MesaCommandHandler and its AO store
+  ([#171](https://github.com/craigpnnl/dnp3py/pull/171),
+  [`567ee84`](https://github.com/craigpnnl/dnp3py/commit/567ee847abc70df5b2403c2894c8279cc4e415ba))
+
+- **outstation**: Assert g32v1 quality is carried from the event, not fixed
+  ([#159](https://github.com/craigpnnl/dnp3py/pull/159),
+  [`8530fda`](https://github.com/craigpnnl/dnp3py/commit/8530fda07e992b58e02adc3e4d6c383ff4c2d127))
+
+- **outstation**: Assert literal wire bytes and full buffer drain on event tests
+  ([#46](https://github.com/craigpnnl/dnp3py/pull/46),
+  [`c30977f`](https://github.com/craigpnnl/dnp3py/commit/c30977f43c06e43a66c732715b3a8c7a871b271f))
+
+- **outstation**: Assert the coercion on _run_control_point's return, not the wire byte
+  ([#46](https://github.com/craigpnnl/dnp3py/pull/46),
+  [`cb089b0`](https://github.com/craigpnnl/dnp3py/commit/cb089b0ad386c162efa8ffaf79c8112da8ed1059))
+
+- **outstation**: Build one over-range expected value from literals
+  ([#159](https://github.com/craigpnnl/dnp3py/pull/159),
+  [`80ba7eb`](https://github.com/craigpnnl/dnp3py/commit/80ba7ebb6da80cbf6b6603ca50320f50d87313e6))
+
+- **outstation**: Close mutant-survival gaps in the event dedup tests
+  ([#46](https://github.com/craigpnnl/dnp3py/pull/46),
+  [`68dfdb7`](https://github.com/craigpnnl/dnp3py/commit/68dfdb716d1b088b1dc4286d82f29da48236b0ed))
+
+- **outstation**: Cover a None or False status, and an unrelated IntEnum
+  ([#46](https://github.com/craigpnnl/dnp3py/pull/46),
+  [`8b117ca`](https://github.com/craigpnnl/dnp3py/commit/8b117ca2501956bd622a62435b5a964ecf8391b0))
+
+- **outstation**: Cover accepted status forms, the parse-order fix, cross-block stops and a raising
+  lookup ([#46](https://github.com/craigpnnl/dnp3py/pull/46),
+  [`c6a7c5e`](https://github.com/craigpnnl/dnp3py/commit/c6a7c5e06b9d09506c77878a6f94ed8090aa4c2d))
+
+- **outstation**: Cover rate-limited failure logging
+  ([#46](https://github.com/craigpnnl/dnp3py/pull/46),
+  [`d2c94b9`](https://github.com/craigpnnl/dnp3py/commit/d2c94b9c5514c3c78ac1fa04717694dee4942a18))
+
+- **outstation**: Cover the ERROR log record on every reachable no-ack raise
+  ([#46](https://github.com/craigpnnl/dnp3py/pull/46),
+  [`1e2e993`](https://github.com/craigpnnl/dnp3py/commit/1e2e993ca66039b865998634c0f22f1f67156142))
+
+- **outstation**: Cover the per-point control guard
+  ([#46](https://github.com/craigpnnl/dnp3py/pull/46),
+  [`ddfcf69`](https://github.com/craigpnnl/dnp3py/commit/ddfcf6926f71590dbe8036b1a20ac662d529f3c6))
+
+- **outstation**: Cover the rate limiter's window boundary, key fields and warning path
+  ([#46](https://github.com/craigpnnl/dnp3py/pull/46),
+  [`cf77f35`](https://github.com/craigpnnl/dnp3py/commit/cf77f3597f8198de23c1196921a2c3a5591693d2))
+
+- **outstation**: Cover the stop-before-parse order for SELECT and OPERATE
+  ([#46](https://github.com/craigpnnl/dnp3py/pull/46),
+  [`35456f9`](https://github.com/craigpnnl/dnp3py/commit/35456f9824b9851bb79d0967f176de8aa9fe01e2))
+
+- **outstation**: Drive the SELECT timer tests with a fake clock
+  ([#160](https://github.com/craigpnnl/dnp3py/pull/160),
+  [`75f5718`](https://github.com/craigpnnl/dnp3py/commit/75f5718683d996b94b5f973473fc912b0c35bd7f))
+
+- **outstation**: Drop a test of Python's int(), trim docstring narrative
+  ([#159](https://github.com/craigpnnl/dnp3py/pull/159),
+  [`57eb6d8`](https://github.com/craigpnnl/dnp3py/commit/57eb6d8f5d88909c7fb68cef6ffeb838c0850beb))
+
+- **outstation**: Drop internal item labels from time-write test docstrings
+  ([#46](https://github.com/craigpnnl/dnp3py/pull/46),
+  [`7b6912c`](https://github.com/craigpnnl/dnp3py/commit/7b6912c77e9b698c81c24104e5fcc713d81db2a7))
+
+- **outstation**: Drop private item-number references from new test docstrings
+  ([#46](https://github.com/craigpnnl/dnp3py/pull/46),
+  [`1892748`](https://github.com/craigpnnl/dnp3py/commit/1892748e4e56e705a8c9dd39c44f700b1ad54e50))
+
+- **outstation**: Make the logged-function-name assertion exact
+  ([#46](https://github.com/craigpnnl/dnp3py/pull/46),
+  [`ea27d9a`](https://github.com/craigpnnl/dnp3py/commit/ea27d9a8aa9dd44f588e4306dbe2323fa917c38f))
+
+- **outstation**: Make the select-armed assertion able to fail
+  ([#46](https://github.com/craigpnnl/dnp3py/pull/46),
+  [`3d6e208`](https://github.com/craigpnnl/dnp3py/commit/3d6e208f0e8dc3032ce5485a2a84bcf859e29d95))
+
+- **outstation**: Move control-raise tests to the per-point echo
+  ([#46](https://github.com/craigpnnl/dnp3py/pull/46),
+  [`bb44e81`](https://github.com/craigpnnl/dnp3py/commit/bb44e8130254859f845ed72e1432f9e297fdf506))
+
+- **outstation**: Move select-sequence raise tests to the per-point echo
+  ([#46](https://github.com/craigpnnl/dnp3py/pull/46),
+  [`2710a6a`](https://github.com/craigpnnl/dnp3py/commit/2710a6a4647a1ee6e8b7d2e1362424f4e3d9d0ae))
+
+- **outstation**: Pass the handler method to a direct control point call
+  ([#46](https://github.com/craigpnnl/dnp3py/pull/46),
+  [`dc9cf43`](https://github.com/craigpnnl/dnp3py/commit/dc9cf43083931fdc4169da6e921ce5324c7979bc))
+
+- **outstation**: Pin int() truncation and true-value boundary for the analog clamp
+  ([#159](https://github.com/craigpnnl/dnp3py/pull/159),
+  [`dd07514`](https://github.com/craigpnnl/dnp3py/commit/dd075147166e4e7d306ee1aefde2941d96f4c039))
+
+- **outstation**: Pin that an existing OVER_RANGE bit survives an in-range value
+  ([#159](https://github.com/craigpnnl/dnp3py/pull/159),
+  [`5e28017`](https://github.com/craigpnnl/dnp3py/commit/5e28017c1ea75012a721a192dbf00ed444a2cdca))
+
+- **outstation**: Rename the caller-quality test class to match what it tests
+  ([#159](https://github.com/craigpnnl/dnp3py/pull/159),
+  [`0b90b60`](https://github.com/craigpnnl/dnp3py/commit/0b90b602c1f503fce86af6f6b711241059998fd7))
+
+- **outstation**: State the tracking-failure test's purpose without internal labels
+  ([#46](https://github.com/craigpnnl/dnp3py/pull/46),
+  [`7839a3d`](https://github.com/craigpnnl/dnp3py/commit/7839a3dcf09aff2af0fc410f943d220f05f11438))
+
+- **request**: Frame a WRITE of g110/g111 and pin the outstation's write-path answer
+  ([#82](https://github.com/craigpnnl/dnp3py/pull/82),
+  [`7062a09`](https://github.com/craigpnnl/dnp3py/commit/7062a0909e59129751627e600f0b6f8abc384ec0))
+
+
 ## v0.5.0 (2026-09-29)
 
 ### Bug Fixes
