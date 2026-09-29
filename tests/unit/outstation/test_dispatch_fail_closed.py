@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Callable
 
 import pytest
 
@@ -63,6 +64,13 @@ def _direct_operate_no_ack(*objects: ObjectBlock, seq: int = 0) -> RequestFragme
     return RequestFragment(header=header, objects=objects)
 
 
+def _freeze_no_ack(function: FunctionCode, *, seq: int = 0) -> RequestFragment:
+    """A g20v0 (all counters) freeze-family request; 4.4.6-4.4.8 forbid a response to its no-ack form."""
+    header = ObjectHeader(group=20, variation=0, qualifier=0x06)
+    block = ObjectBlock(header=header, data=b"")
+    return RequestFragment(header=RequestHeader.build(function=function, seq=seq), objects=(block,))
+
+
 def _null_response(seq: int, iin2: int) -> bytes:
     """A null RESPONSE (FIR, FIN) from a freshly restarted outstation, with IIN2 set as given."""
     return bytes([0xC0 | seq, 0x81, _IIN1_RESTART, iin2])
@@ -95,6 +103,11 @@ class _RaisingHandler(DefaultCommandHandler):
     ) -> CommandResult:
         if self.raises == "direct_operate":
             raise self.exc("boom: direct_operate_binary_output")
+        return CommandResult.success()
+
+    def freeze_counters(self, start: int, stop: int, clear: bool) -> CommandResult:
+        if self.raises == "freeze":
+            raise self.exc("boom: freeze_counters")
         return CommandResult.success()
 
 
@@ -170,22 +183,64 @@ class TestDirectOperateHandlerRaises:
         assert responses[0].to_bytes() == _null_response(7, _IIN2_PARAMETER_ERROR)
 
 
-class TestDirectOperateNoAckHandlerRaises:
-    """IEEE 1815-2012 4.4.5 forbids any response to a no-ack function code.
+class TestNoAckHandlerRaises:
+    """IEEE 1815-2012 4.4.5 to 4.4.8 forbid any response to a no-ack function code.
 
-    DIRECT_OPERATE_NO_ACK behaves like DIRECT_OPERATE except that the
-    outstation sends no response at all (4.4.5); that silence is
-    unconditional, so the same silence applies whether the request succeeds
-    or a handler raises.
+    That silence is unconditional: the same silence applies whether the
+    request succeeds or a handler raises. With no response, the ERROR log
+    record is the only signal a raise happened, so it must fire every time.
+    FREEZE_AT_TIME_NO_ACK is not in this set: the outstation has no executor
+    for it, so it never reaches a handler that could raise (existing gap,
+    out of this fix's scope).
     """
 
-    def test_answers_nothing(self) -> None:
-        outstation = _outstation(_RaisingHandler("direct_operate"))
+    @pytest.mark.parametrize(
+        ("build_request", "raises", "function_name"),
+        [
+            pytest.param(
+                lambda: _direct_operate_no_ack(_crob(1), seq=4),
+                "direct_operate",
+                "DIRECT_OPERATE_NO_ACK",
+                id="direct_operate_no_ack",
+            ),
+            pytest.param(
+                lambda: _freeze_no_ack(FunctionCode.IMMEDIATE_FREEZE_NO_ACK),
+                "freeze",
+                "IMMEDIATE_FREEZE_NO_ACK",
+                id="immediate_freeze_no_ack",
+            ),
+            pytest.param(
+                lambda: _freeze_no_ack(FunctionCode.FREEZE_CLEAR_NO_ACK),
+                "freeze",
+                "FREEZE_CLEAR_NO_ACK",
+                id="freeze_clear_no_ack",
+            ),
+        ],
+    )
+    def test_answers_nothing_and_logs_one_error(
+        self,
+        build_request: Callable[[], RequestFragment],
+        raises: str,
+        function_name: str,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        outstation = _outstation(_RaisingHandler(raises))
 
-        request = _direct_operate_no_ack(_crob(1), seq=4)
-        responses = outstation.process_request(request.to_bytes(), peer=MASTER_A)
+        with caplog.at_level(logging.ERROR, logger="dnp3.outstation.outstation"):
+            responses = outstation.process_request(build_request().to_bytes(), peer=MASTER_A)
 
         assert responses == []
+        records = [r for r in caplog.records if r.name == "dnp3.outstation.outstation"]
+        assert len(records) == 1
+        assert records[0].exc_info is not None
+        assert function_name in records[0].getMessage()
+
+    def test_keyboard_interrupt_propagates(self) -> None:
+        outstation = _outstation(_RaisingHandler("direct_operate", exc=KeyboardInterrupt))
+        request = _direct_operate_no_ack(_crob(1), seq=4)
+
+        with pytest.raises(KeyboardInterrupt):
+            outstation.process_request(request.to_bytes(), peer=MASTER_A)
 
 
 class TestTimeHandlerRaises:
