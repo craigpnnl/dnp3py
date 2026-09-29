@@ -78,9 +78,8 @@ class TestRecordCurrentTime:
         assert response.header.function == FunctionCode.RESPONSE
         assert not response.objects
         assert not response.header.iin & (IIN.PARAMETER_ERROR | IIN.OBJECT_UNKNOWN | IIN.NO_FUNC_CODE_SUPPORT)
-        # Item 3 (review round 1, #142): pin the whole response, IIN bits
-        # included (NEED_TIME 0x10 | DEVICE_RESTART 0x80 = 0x90, both set on
-        # a fresh Outstation).
+        # Pin the whole response, IIN bits included (NEED_TIME 0x10 |
+        # DEVICE_RESTART 0x80 = 0x90, both set on a fresh Outstation).
         assert response.to_bytes() == bytes.fromhex("c5819000")
 
     def test_second_record_replaces_the_first(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -254,9 +253,9 @@ class TestWriteG50v3MalformedFrame:
 
 
 class TestRecordCurrentTimePerPeer:
-    """Item 1 (review round 1, #142): the recorded instant is kept per peer,
-    so one master's RECORD_CURRENT_TIME never shifts or is consumed by
-    another master's g50v3, and it does not outlive the peer's connection.
+    """The recorded instant is kept per peer (#142), so one master's
+    RECORD_CURRENT_TIME never shifts or is consumed by another master's
+    g50v3, and it does not outlive the peer's connection.
     """
 
     def test_another_peers_g50v3_cannot_consume_this_peers_instant(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -308,9 +307,9 @@ class TestRecordCurrentTimePerPeer:
 
 
 class TestWriteG50v3Bounded:
-    """Item 4 (review round 1, #142): a written time plus elapsed time that
-    would not fit the 48-bit timestamp is refused in the check pass, before
-    any handler call and before the sum is ever constructed."""
+    """A written time plus elapsed time that would not fit the 48-bit
+    timestamp is refused in the check pass (#142), before any handler call
+    and before the sum is ever constructed."""
 
     def test_sum_over_48_bits_answers_parameter_error_and_delivers_nothing(
         self, monkeypatch: pytest.MonkeyPatch
@@ -345,11 +344,11 @@ class TestWriteG50v3Bounded:
 
 
 class TestCallTimeHandlerG50v3FailsClosed:
-    """Item 4 (review round 1, #142): the 'cannot happen' guard in
-    _call_time_handler_g50v3 fails closed. _write_block_check refuses any
-    peer with no recorded instant before this method is ever called, so
-    reaching it with none is a bug in that guarantee; it must raise rather
-    than silently deliver nothing while the caller still clears NEED_TIME.
+    """The 'cannot happen' guard in _call_time_handler_g50v3 fails closed
+    (#142). _write_block_check refuses any peer with no recorded instant
+    before this method is ever called, so reaching it with none is a bug in
+    that guarantee; it must raise rather than silently deliver nothing
+    while the caller still clears NEED_TIME.
     """
 
     def test_raises_when_reached_with_no_recorded_instant(self) -> None:
@@ -364,8 +363,8 @@ class TestCallTimeHandlerG50v3FailsClosed:
 
 
 class TestWriteG50v3RefusalKeepsInstant:
-    """Item 6 LOW-A (review round 1, #142): a refused g50v3 does not consume
-    the recorded instant; a following good WRITE still uses it."""
+    """A refused g50v3 does not consume the recorded instant (#142); a
+    following good WRITE still uses it."""
 
     def test_good_write_after_a_refused_write_uses_the_kept_instant(self, monkeypatch: pytest.MonkeyPatch) -> None:
         clock = _FakeClock(50.0)
@@ -388,8 +387,8 @@ class TestWriteG50v3RefusalKeepsInstant:
 
 
 class TestWriteG50v3FractionalElapsed:
-    """Item 6 LOW-B (review round 1, #142): a fractional elapsed time is
-    rounded to the nearest millisecond, not truncated."""
+    """A fractional elapsed time is rounded to the nearest millisecond,
+    not truncated (#142)."""
 
     def test_fractional_elapsed_milliseconds_round_to_nearest(self, monkeypatch: pytest.MonkeyPatch) -> None:
         clock = _FakeClock(0.0)
