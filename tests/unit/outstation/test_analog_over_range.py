@@ -69,8 +69,10 @@ class TestStaticOverRange:
         assert _static_ai(float(INT32_MAX)) == AnalogInput32(quality=ONLINE, value=INT32_MAX).to_bytes()
 
     def test_above_int32_max_clamps_over_range(self) -> None:
-        # 1e12 is the issue's reproduction value.
-        expected = AnalogInput32(quality=ONLINE | AnalogQuality.OVER_RANGE, value=INT32_MAX).to_bytes()
+        # 1e12 is the issue's reproduction value. Literal bytes, not AnalogInput32:
+        # the SUT calls AnalogInput32 itself, so building expected from it would
+        # only prove self-agreement.
+        expected = bytes([int(ONLINE | AnalogQuality.OVER_RANGE)]) + INT32_MAX.to_bytes(4, "little", signed=True)
         assert _static_ai(1e12) == expected
 
     def test_int32_min_is_in_range(self) -> None:
