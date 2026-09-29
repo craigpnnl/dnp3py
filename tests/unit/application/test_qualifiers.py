@@ -516,6 +516,10 @@ class TestGetRangeSize:
         """UINT32_COUNT is 4 bytes."""
         assert get_range_size(RangeCode.UINT32_COUNT) == 4
 
+    def test_free_format(self) -> None:
+        """FREE_FORMAT (Table 4-5 row B) is a 1-byte object count."""
+        assert get_range_size(RangeCode.FREE_FORMAT) == 1
+
 
 class TestGetPrefixSize:
     """Tests for get_prefix_size helper."""

@@ -359,6 +359,7 @@ def get_range_size(range_code: RangeCode) -> int:
         RangeCode.UINT8_COUNT: 1,
         RangeCode.UINT16_COUNT: 2,
         RangeCode.UINT32_COUNT: 4,
+        RangeCode.FREE_FORMAT: 1,  # Table 4-5 row B: a 1-octet object count.
     }
     return sizes.get(range_code, 0)
 

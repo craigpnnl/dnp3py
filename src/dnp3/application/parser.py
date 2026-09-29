@@ -161,6 +161,7 @@ def _parse_count_range(data: bytes, range_code: RangeCode, required: int) -> Par
         RangeCode.UINT8_COUNT: CountRange.from_bytes_1,
         RangeCode.UINT16_COUNT: CountRange.from_bytes_2,
         RangeCode.UINT32_COUNT: CountRange.from_bytes_4,
+        RangeCode.FREE_FORMAT: CountRange.from_bytes_1,  # Table 4-5 row B: 1-octet count.
     }
     parser = parsers.get(range_code)
     if parser is None:
@@ -196,7 +197,12 @@ def _parse_range(data: bytes, range_code: RangeCode) -> ParsedRange:
         return _parse_start_stop_range(data, range_code, required)
 
     # Count ranges
-    count_codes = {RangeCode.UINT8_COUNT, RangeCode.UINT16_COUNT, RangeCode.UINT32_COUNT}
+    count_codes = {
+        RangeCode.UINT8_COUNT,
+        RangeCode.UINT16_COUNT,
+        RangeCode.UINT32_COUNT,
+        RangeCode.FREE_FORMAT,
+    }
     if range_code in count_codes:
         return _parse_count_range(data, range_code, required)
 
@@ -291,6 +297,48 @@ def _parse_object_block(
     # Include range data + object data
     range_and_object_data = data[OBJECT_HEADER_SIZE : consumed + total_object_size]
     return ObjectBlock(header=header, data=range_and_object_data), consumed + total_object_size
+
+
+def _walk_free_format_block(data: bytes, header: ObjectHeader) -> tuple[ObjectBlock, int]:
+    """Frame one size-prefixed free-format block (qualifier 0x4B, 0x5B or 0x6B).
+
+    Table 4-6: this is the only pairing valid with the free-format range. The
+    range field is a 1-octet object count (Table 4-5 row B); each object then
+    carries its own size field ahead of its data, since the group's wire
+    format has no fixed or registry width to look up. Objects are walked to
+    locate the next header, not decoded: their bytes are kept as-is in the
+    block's data.
+
+    Args:
+        data: Raw bytes starting at the object header.
+        header: The already-parsed header for `data`.
+
+    Returns:
+        Tuple of (ObjectBlock, bytes_consumed).
+
+    Raises:
+        ParseError: If the count field, an object's size field, or its
+            declared payload runs past the end of the data.
+    """
+    consumed = OBJECT_HEADER_SIZE
+    parsed_range = _parse_range(data[consumed:], header.range_code)
+    consumed += parsed_range.bytes_consumed
+    prefix_size = get_prefix_size(header.prefix_code)
+
+    for _ in range(parsed_range.count):
+        remaining = data[consumed:]
+        if len(remaining) < prefix_size:
+            msg = f"Object size field requires {prefix_size} bytes, got {len(remaining)}"
+            raise ParseError(msg)
+        object_size = int.from_bytes(remaining[:prefix_size], byteorder="little")
+        consumed += prefix_size
+        remaining = data[consumed:]
+        if len(remaining) < object_size:
+            msg = f"Object data requires {object_size} bytes, got {len(remaining)}"
+            raise ParseError(msg)
+        consumed += object_size
+
+    return ObjectBlock(header=header, data=data[OBJECT_HEADER_SIZE:consumed]), consumed
 
 
 def parse_request_header(data: bytes) -> tuple[RequestHeader, int]:
@@ -498,6 +546,18 @@ def _frame_object_blocks(
         header = ObjectHeader.from_bytes(remaining)
         if _has_reserved_code(header.qualifier):
             return blocks, _stopped_at(TruncationReason.RESERVED_QUALIFIER, offset, header)
+
+        if header.range_code == RangeCode.FREE_FORMAT and header.prefix_code.value in _SIZE_PREFIX_CODES_RAW:
+            # Table 4-6's one valid free-format pairing: each object sizes
+            # itself, ahead of both length-lookup functions below.
+            try:
+                block, block_consumed = _walk_free_format_block(remaining, header)
+            except ParseError:
+                return blocks, _stopped_at(TruncationReason.DATA_SHORTER_THAN_DECLARED, offset, header)
+            blocks.append(block)
+            offset += block_consumed
+            continue
+
         length_or_reason = lookup(header)
 
         length_of: _DataLength | None = None
