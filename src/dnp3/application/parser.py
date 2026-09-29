@@ -80,6 +80,23 @@ _SIZE_PREFIX_CODES_RAW = frozenset(
     {PrefixCode.UINT8_SIZE.value, PrefixCode.UINT16_SIZE.value, PrefixCode.UINT32_SIZE.value}
 )
 
+# A.1: group 0 variations without a per-object TLV (variation 0, general rule
+# 4.2.2.7.2.1: variation 0 is request-only; variation 254, A.1.43.2: "does not
+# have objects"). Both fall through to the ordinary lookup, which finds no
+# layout or registry row and stops at UNKNOWN_WIDTH.
+_GROUP_0_NO_OBJECT_VARIATIONS = frozenset({0, 254})
+
+# A.1.1.2.2 (and every other A.1 variation): attribute data type code (1
+# octet) plus length (1 octet), ahead of each object's value.
+_ATTRIBUTE_TYPE_LENGTH_SIZE = 2
+
+# Table 5-16 (5.5.4.3): attribute data type code 255 (U8BS8EXLIST) is the one
+# code whose true length is not its length octet alone: the object's length
+# is 256 plus the length octet's value, so a list past 255 octets can still
+# be declared.
+_EXTENDED_LIST_TYPE_CODE = 255
+_EXTENDED_LIST_LENGTH_OFFSET = 256
+
 
 # Request functions whose object headers carry no object data (IEEE 1815-2012 4.4): a
 # block is its header, its range field and any index list. Every other request is
@@ -341,6 +358,62 @@ def _walk_free_format_block(data: bytes, header: ObjectHeader) -> tuple[ObjectBl
     return ObjectBlock(header=header, data=data[OBJECT_HEADER_SIZE:consumed]), consumed
 
 
+def _walk_group0_block(data: bytes, header: ObjectHeader) -> tuple[ObjectBlock, int]:
+    """Frame one group 0 device-attribute block by its per-object TLV width.
+
+    A.1.1.2.2 (and every other A.1 variation): each attribute value is a
+    UINT8 attribute data type code, a UINT8 length, then `length` octets of
+    value. Width per object is 2 + length; objects are walked to locate the
+    next header, not decoded. An index prefix (qualifier 0x17, EX 5-11) sits
+    ahead of each object's type/length pair; a start-stop range (qualifier
+    0x00, EX 5-10) has none.
+
+    Args:
+        data: Raw bytes starting at the object header.
+        header: The already-parsed header for `data`.
+
+    Returns:
+        Tuple of (ObjectBlock, bytes_consumed).
+
+    Raises:
+        ParseError: If the range field, an object's type/length window, or its
+            declared value runs past the end of the data.
+        _RangeNamesNoObject: If a start-stop range's stop index is below its
+            start index: this path never frames a header-only block, so a
+            stop below start names no object here (4.2.2.7.3.3).
+    """
+    consumed = OBJECT_HEADER_SIZE
+    parsed_range = _parse_range(data[consumed:], header.range_code)
+    consumed += parsed_range.bytes_consumed
+    if header.range_code in _START_STOP_CODES and parsed_range.count < 1:
+        msg = f"Start-stop range {parsed_range.start}..{parsed_range.stop} names no object"
+        raise _RangeNamesNoObject(msg)
+    prefix_size = get_prefix_size(header.prefix_code)
+
+    for _ in range(parsed_range.count):
+        remaining = data[consumed:]
+        if len(remaining) < prefix_size:
+            msg = f"Object index prefix requires {prefix_size} bytes, got {len(remaining)}"
+            raise ParseError(msg)
+        consumed += prefix_size
+        remaining = data[consumed:]
+        if len(remaining) < _ATTRIBUTE_TYPE_LENGTH_SIZE:
+            msg = f"Attribute type/length window requires {_ATTRIBUTE_TYPE_LENGTH_SIZE} bytes, got {len(remaining)}"
+            raise ParseError(msg)
+        type_code = remaining[0]
+        value_length = remaining[1]
+        if type_code == _EXTENDED_LIST_TYPE_CODE:
+            value_length += _EXTENDED_LIST_LENGTH_OFFSET
+        consumed += _ATTRIBUTE_TYPE_LENGTH_SIZE
+        remaining = data[consumed:]
+        if len(remaining) < value_length:
+            msg = f"Attribute value requires {value_length} bytes, got {len(remaining)}"
+            raise ParseError(msg)
+        consumed += value_length
+
+    return ObjectBlock(header=header, data=data[OBJECT_HEADER_SIZE:consumed]), consumed
+
+
 def parse_request_header(data: bytes) -> tuple[RequestHeader, int]:
     """Parse request header from bytes.
 
@@ -554,6 +627,29 @@ def _frame_object_blocks(
                 block, block_consumed = _walk_free_format_block(remaining, header)
             except ParseError:
                 return blocks, _stopped_at(TruncationReason.DATA_SHORTER_THAN_DECLARED, offset, header)
+            blocks.append(block)
+            offset += block_consumed
+            continue
+
+        if (
+            header.group == 0
+            and header.variation not in _GROUP_0_NO_OBJECT_VARIATIONS
+            and lookup is _lookup_data_length
+        ):
+            # Table 12-1: READ carries no group 0 attribute data (function
+            # code 1, qualifier 00/06 only). Every request `_HEADER_ONLY_FUNCTIONS`
+            # does not name (WRITE, SELECT, OPERATE, and the rest) and every
+            # RESPONSE (129) do. `lookup is _lookup_data_length` is exactly
+            # that split: a header-only request never reaches here.
+            unsupported = _unsupported_qualifier(header)
+            if unsupported is not None:
+                return blocks, _stopped_at(unsupported, offset, header)
+            try:
+                block, block_consumed = _walk_group0_block(remaining, header)
+            except ParseError:
+                return blocks, _stopped_at(TruncationReason.DATA_SHORTER_THAN_DECLARED, offset, header)
+            except _RangeNamesNoObject:
+                return blocks, _stopped_at(TruncationReason.RANGE_NAMES_NO_OBJECT, offset, header)
             blocks.append(block)
             offset += block_consumed
             continue

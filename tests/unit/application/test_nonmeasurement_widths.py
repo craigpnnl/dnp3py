@@ -58,16 +58,22 @@ class TestFixedWidthRowsFrameAndStepOver:
         assert blocks[1].data == _G30V1_TAIL[3:]
         assert _decode_g30v1(blocks[1].data).value == _G30V1_VALUE
 
-    def test_control_group_zero_is_still_unsized(self) -> None:
-        """g0v1 is outside this slice (its width is a per-object TLV, not a table row):
-
-        it must still lose the g30v1 block after it, exactly as before this change.
+    def test_group_zero_v1_frames_as_a_per_object_tlv(self) -> None:
+        """g0v1 is outside this slice (its width is a per-object TLV, not a
+        table row), but the TLV rule (A.1.1.2.2's formal structure; 5.5.4.3's
+        attribute data type codes) is generic to any group 0 variation other
+        than 0 and 254, defined row or not: it now frames as one block, and
+        the g30v1 block after it is reached intact, the shape #82's own
+        group 0 slice (test_group0_framing.py) proves for the Table 12-1 rows.
         """
-        data = bytes([0x00, 0x01, 0x00, 0x00, 0x00]) + bytes([0x02, 0x02, 0x05, 0xDC]) + _G30V1_TAIL
+        # 5.5.5 EX 5-10's own value bytes (0x05DC little-endian = 1500), wire order DC 05.
+        data = bytes([0x00, 0x01, 0x00, 0x00, 0x00]) + bytes([0x02, 0x02, 0xDC, 0x05]) + _G30V1_TAIL
 
         blocks = parse_response_object_blocks(data)
 
-        assert blocks == []
+        assert [(b.header.group, b.header.variation) for b in blocks] == [(0, 1), (30, 1)]
+        assert blocks[0].data == bytes([0x00, 0x00, 0x02, 0x02, 0xDC, 0x05])
+        assert _decode_g30v1(blocks[1].data).value == _G30V1_VALUE
 
 
 class TestOctetStringGroupsFrameAndStepOver:
@@ -143,7 +149,8 @@ class TestOctetStringGroupsFrameAndStepOver:
     def test_variation_zero_still_stops_at_unknown_width(self, group: int) -> None:
         """A.41.1.1/Table 12-30: variation 0 is not a response layout before
         or after this change, so a block claiming it still loses the g30v1
-        block that follows it, the same as g0v1 does above.
+        block that follows it, the same UNKNOWN_WIDTH fallback an unmapped
+        group or variation hits generally.
         """
         data = bytes([group, 0x00, 0x00, 0x00, 0x00]) + _G30V1_TAIL
 
