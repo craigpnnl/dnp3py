@@ -96,6 +96,61 @@ class TestOctetStringGroupsFrameAndStepOver:
         assert blocks[0].data == count + objects
         assert _decode_g30v1(blocks[1].data).value == _G30V1_VALUE
 
+    @pytest.mark.parametrize("group", [110, 111], ids=["g110", "g111"])
+    @pytest.mark.parametrize("variation", [1, 5, 255])
+    def test_block_then_g30v1_qualifier_0x28_count_two(self, group: int, variation: int) -> None:
+        """Qualifier 0x28 (prefix code 2, UINT16_INDEX; range code 8,
+        UINT16_COUNT): a 2-octet count and a 2-octet index prefix, two
+        objects, proves the count and index-prefix width are independent of
+        the octet-string width.
+        """
+        assert layout_for(group, variation) is not None, f"g{group}v{variation} has no layout"
+        qualifier = 0x28
+        count = (2).to_bytes(2, "little")
+        objects = b"".join(
+            n.to_bytes(2, "little") + bytes((m % 256) for m in range(1, 1 + variation)) for n in range(2)
+        )
+        data = bytes([group, variation, qualifier]) + count + objects + _G30V1_TAIL
+
+        blocks = parse_response_object_blocks(data)
+
+        assert [(b.header.group, b.header.variation) for b in blocks] == [(group, variation), (30, 1)]
+        assert blocks[0].data == count + objects
+        assert _decode_g30v1(blocks[1].data).value == _G30V1_VALUE
+
+    @pytest.mark.parametrize("group", [110, 111], ids=["g110", "g111"])
+    @pytest.mark.parametrize("variation", [1, 5, 255])
+    def test_block_then_g30v1_qualifier_0x00_start_stop(self, group: int, variation: int) -> None:
+        """Qualifier 0x00 (start-stop, no index prefix): A.41/A.42 name no
+        qualifier restriction (Table 12-30's qualifier-code columns hold no
+        entries), and every object in one block shares the block's
+        variation and width, so a contiguous start-stop range is structurally
+        as valid here as it is for any fixed-width group.
+        """
+        assert layout_for(group, variation) is not None, f"g{group}v{variation} has no layout"
+        qualifier = 0x00
+        range_field = bytes([0x05, 0x06])  # start-stop 5..6: two objects
+        objects = b"".join(bytes((m % 256) for m in range(1, 1 + variation)) for _n in range(2))
+        data = bytes([group, variation, qualifier]) + range_field + objects + _G30V1_TAIL
+
+        blocks = parse_response_object_blocks(data)
+
+        assert [(b.header.group, b.header.variation) for b in blocks] == [(group, variation), (30, 1)]
+        assert blocks[0].data == range_field + objects
+        assert _decode_g30v1(blocks[1].data).value == _G30V1_VALUE
+
+    @pytest.mark.parametrize("group", [110, 111], ids=["g110", "g111"])
+    def test_variation_zero_still_stops_at_unknown_width(self, group: int) -> None:
+        """A.41.1.1/Table 12-30: variation 0 is not a response layout before
+        or after this change, so a block claiming it still loses the g30v1
+        block that follows it, the same as g0v1 does above.
+        """
+        data = bytes([group, 0x00, 0x00, 0x00, 0x00]) + _G30V1_TAIL
+
+        blocks = parse_response_object_blocks(data)
+
+        assert blocks == []
+
 
 class TestG101V1HandEncoded:
     """A.39.1: BCD4 is 4 digits, one nibble per digit, 2 octets total.
