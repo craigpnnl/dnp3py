@@ -176,7 +176,7 @@ class TestSelectAnalogOutput:
     ) -> None:
         result = handler.select_analog_output(index=0, value=50.0)
         assert result.status == CommandStatus.SUCCESS
-        # Select is validation only — store should not change
+        # Select is validation only - store should not change
         assert ao_store.get(0).value == 0.0
 
     def test_value_exceeds_max_returns_out_of_range(self, handler: MesaCommandHandler) -> None:
