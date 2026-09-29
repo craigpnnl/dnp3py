@@ -67,6 +67,34 @@ class TestFrameParserResyncNoRecursionError:
         frames = list(parser.feed(b"\x05\x64" * 32768))
         assert frames == []
 
+    def test_many_data_block_crc_failures_then_valid_frame(self) -> None:
+        """3000 consecutive CRC-valid-header, bad-data-block frames, then
+        one valid frame, must not raise: the old recursive fallback
+        self-called once per skipped frame and blew the stack well before
+        this count."""
+        bad_frame = DataLinkFrame.build(
+            destination=1,
+            source=2,
+            control=ControlByte.from_int(0xC4),
+            user_data=b"0123456789ABCDEF",
+        )
+        bad_bytes = bytearray(bad_frame.to_bytes())
+        bad_bytes[-1] ^= 0xFF  # corrupt the data block CRC
+        garbage = bytes(bad_bytes) * 3000
+
+        good_frame = DataLinkFrame.build(
+            destination=5,
+            source=6,
+            control=ControlByte.from_int(0xC3),
+            user_data=b"still delivered",
+        )
+
+        parser = FrameParser()
+        frames = list(parser.feed(garbage + good_frame.to_bytes()))
+
+        assert len(frames) == 1
+        assert frames[0].to_bytes() == good_frame.to_bytes()
+
 
 class TestFrameParserResyncConsumesBytesOnCrcFailure:
     """Both CRC-failure branches (header and data block) must discard a
@@ -135,8 +163,10 @@ class TestFrameParserResyncIsNotRecursive:
     itself. Proven by wrapping the method and counting nested (not
     sequential) invocations: a call that returns before the next one starts
     keeps the count at 1; a self-call raises it to 2. This kills a mutant
-    that restores either `return self._try_parse_frame()` site without
-    needing to reconstruct thousands of bytes of input."""
+    that restores either `return self._try_parse_frame()` site with a
+    single corrupted frame; it does not by itself prove the data-block path
+    is free of RecursionError at the scale a real peer could send. See
+    TestFrameParserResyncNoRecursionError for that end-to-end proof."""
 
     @staticmethod
     def _max_nesting_depth(parser: FrameParser, data: bytes) -> int:
