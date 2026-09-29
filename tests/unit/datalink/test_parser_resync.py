@@ -29,9 +29,7 @@ def _feed_within_bound(parser: FrameParser, data: bytes) -> list[object]:
     thread = threading.Thread(target=run, daemon=True)
     thread.start()
     thread.join(_HANG_BOUND_SECONDS)
-    assert not thread.is_alive(), (
-        "feed() did not return within the bound; the loop stopped consuming bytes"
-    )
+    assert not thread.is_alive(), "feed() did not return within the bound; the loop stopped consuming bytes"
     return frames
 
 
