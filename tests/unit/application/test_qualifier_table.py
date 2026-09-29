@@ -1,11 +1,16 @@
 """Every qualifier octet against IEEE 1815-2012 Table 4-6.
 
-Table 4-6 defines 19 valid (prefix, range) combinations. Every other octet,
-including one with the reserved bit set (4.2.2.7.3.1), is not a defined
-qualifier: parsing must stop rather than accept it (#112). The valid sweep
-runs on both the request path (`frame_request_object_blocks`, header-only,
-so a valid code needs no object value bytes) and the response path
-(`frame_response_object_blocks`, which needs a real g30v1 value per object).
+Table 4-6 (pages 76-77 of the standard) lists 19 (prefix, range) cells as
+valid; every other cell is shaded reserved. Every octet outside those 19,
+including one with the reserved bit set (4.2.2.7.3.1), is refused: parsing
+must stop rather than accept it (#112). Range codes 0x03 to 0x05 are shaded
+in Table 4-6 too, but this library refuses them with UNSUPPORTED_RANGE, its
+own gap (it does not implement the vendor-specific virtual-address ranges
+4.2.2.7.3.3 describes for group 102), not a reason the table itself states.
+The valid sweep runs on both the request path (`frame_request_object_blocks`,
+header-only, so a valid code needs no object value bytes) and the response
+path (`frame_response_object_blocks`, which needs a real g30v1 value per
+object).
 """
 
 import pytest
