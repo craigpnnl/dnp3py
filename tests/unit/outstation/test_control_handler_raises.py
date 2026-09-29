@@ -26,8 +26,9 @@ from dnp3.database.point import AnalogOutputPoint
 from dnp3.objects.binary_output import CommandStatus as ObjectsCommandStatus
 from dnp3.outstation.config import OutstationConfig
 from dnp3.outstation.handler import CommandHandler, CommandResult, DefaultCommandHandler
-from dnp3.outstation.outstation import Outstation
+from dnp3.outstation.outstation import Outstation, _ControlStop
 from dnp3.outstation.peer import PeerId
+from dnp3.outstation.state import SelectState
 
 MASTER_A = PeerId(source=3, connection=1)
 MASTER_B = PeerId(source=9, connection=2)
@@ -207,7 +208,7 @@ class TestDirectOperateStopsAfterRaise:
         assert responses[0].to_bytes() == _expected_echo(request, [[_UNDEFINED], [_UNDEFINED]])
 
     def test_a_later_malformed_object_still_echoes_undefined_after_a_stop(self) -> None:
-        """The stop check must run before the per-object parse rejection (rule C3).
+        """The stop check must run before the per-object parse rejection.
 
         Point 2 has an undefined Op Type, which _parse_crob_block rejects with
         its own FORMAT_ERROR (3) regardless of ``stop``; once point 1 has
@@ -304,6 +305,17 @@ class TestSelectStopsAfterRaise:
         assert handler.calls == [("select_binary_output", 1)]
         assert responses[0].to_bytes() == _expected_echo(request, [[_UNDEFINED, _UNDEFINED]])
 
+    def test_a_later_malformed_object_still_echoes_undefined_after_a_stop(self) -> None:
+        """The stop check must run before the per-object parse rejection in _process_crob_select too."""
+        handler = _CallTrackingHandler(raise_on={"select_binary_output": {1}})
+        outstation = _outstation(handler)
+
+        request = _request(FunctionCode.SELECT, _crob_block_with_malformed_last(1, malformed_index=2), seq=4)
+        responses = outstation.process_request(request.to_bytes(), peer=MASTER_A)
+
+        assert handler.calls == [("select_binary_output", 1)]
+        assert responses[0].to_bytes() == _expected_echo(request, [[_UNDEFINED, _UNDEFINED]])
+
 
 class TestOperateStopsAfterRaise:
     """OPERATE: a raise stops later points; the selection still ends (existing finally)."""
@@ -359,6 +371,27 @@ class TestOperateStopsAfterRaise:
         ]
         assert ("operate_analog_output", 6) not in handler.calls
         assert responses[0].to_bytes() == _expected_echo(request, [[_UNDEFINED, _UNDEFINED]])
+
+    def test_a_later_malformed_object_still_echoes_undefined_after_a_stop(self) -> None:
+        """The stop check must run before the per-object parse rejection in _process_crob_operate too.
+
+        Tested at processor level: process_request's OPERATE path requires the
+        request body to match the SELECT's octets exactly (Table 4-9), so an
+        OPERATE carrying an extra malformed object beyond what was selected
+        can never reach the handler through it.
+        """
+        handler = _CallTrackingHandler(raise_on={"operate_binary_output": {1}})
+        outstation = _outstation(handler)
+        outstation._state.add_select(
+            SelectState(index=1, is_binary=True, control_code=ControlCode.LATCH_ON, count=1, on_time=0, off_time=0),
+            peer=MASTER_A,
+        )
+
+        block = _crob_block_with_malformed_last(1, malformed_index=2)
+        results = outstation._process_crob_operate(block, seq=0, peer=MASTER_A, stop=_ControlStop())
+
+        assert handler.calls == [("operate_binary_output", 1)]
+        assert results == [(1, CommandStatus.UNDEFINED), (2, CommandStatus.UNDEFINED)]
 
 
 class TestAnalogOutputDirectOperateRaises:
