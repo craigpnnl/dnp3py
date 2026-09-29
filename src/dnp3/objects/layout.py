@@ -46,6 +46,7 @@ class PointKind(Enum):
     UNSIGNED_INTEGER = "unsigned_integer"
     AUTHENTICATION = "authentication"
     SECURITY_STATISTIC = "security_statistic"
+    OCTET_STRING = "octet_string"
 
 
 class ValueCodec(Enum):
@@ -59,6 +60,7 @@ class ValueCodec(Enum):
     FLOAT32 = "float32"
     FLOAT64 = "float64"
     RECORD = "record"
+    OCTET_STRING = "octet_string"
 
 
 class TimeKind(Enum):
@@ -326,9 +328,21 @@ _TABLE: dict[tuple[int, int], WireLayout] = {
 
 LAYOUTS: Mapping[tuple[int, int], WireLayout] = MappingProxyType(_TABLE)
 
+# Groups whose width is the variation number itself (OSTRn), not a table row:
+# g110 octet strings (A.41.1) and g111 octet string events (A.42.1). Variation
+# 0 is request-only in both (Table 12-30) and is excluded here.
+_OCTET_STRING_GROUPS = frozenset({110, 111})
+
+
+def _octet_string_layout(variation: int) -> WireLayout:
+    # A.41.1.2.2 / A.42.1.2.2: OSTRn is n octets of value, no flags, no time.
+    return WireLayout(PointKind.OCTET_STRING, variation, 0, False, ValueCodec.OCTET_STRING, TimeKind.NONE)
+
 
 def layout_for(group: int, variation: int) -> WireLayout | None:
     """Return the layout of a group and variation, or None if it has none."""
+    if group in _OCTET_STRING_GROUPS and variation != 0:
+        return _octet_string_layout(variation)
     return LAYOUTS.get((group, variation))
 
 

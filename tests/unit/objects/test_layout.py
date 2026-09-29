@@ -282,6 +282,30 @@ class TestLayoutFields:
             LAYOUTS[(30, 99)] = LAYOUTS[(30, 1)]  # type: ignore[index]
 
 
+class TestOctetStringLayout:
+    """g110 and g111 (A.41.1.2.2, A.42.1.2.2): width equals the variation
+    number (OSTRn), computed on lookup rather than held as a table row, so
+    it is not in LAYOUTS and TestEveryRow's key-set pin is unaffected.
+    """
+
+    @pytest.mark.parametrize("group", [110, 111], ids=["g110", "g111"])
+    @pytest.mark.parametrize("variation", [1, 5, 255])
+    def test_width_equals_variation(self, group: int, variation: int) -> None:
+        layout = layout_for(group, variation)
+        assert layout is not None
+        assert layout == WireLayout(PointKind.OCTET_STRING, variation, 0, False, ValueCodec.OCTET_STRING, TimeKind.NONE)
+        assert object_width(group, variation) == variation
+
+    @pytest.mark.parametrize("group", [110, 111], ids=["g110", "g111"])
+    def test_variation_zero_is_request_only(self, group: int) -> None:
+        # Table 12-30: response column is "--" for g110v0 and g111v0.
+        assert layout_for(group, 0) is None
+
+    def test_not_a_table_row(self) -> None:
+        assert (110, 1) not in LAYOUTS
+        assert (111, 1) not in LAYOUTS
+
+
 class TestLayoutValidation:
     """A layout that could not describe a real object is refused at construction."""
 
