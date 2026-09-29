@@ -3627,7 +3627,9 @@ class TestOutstationCROBPaths:
         header = ObjectHeader(group=12, variation=1, qualifier=0x17)
         block = ObjectBlock(header=header, data=b"")
 
-        results = outstation._process_crob_select(block, seq=0)
+        from dnp3.outstation.outstation import _ControlStop
+
+        results = outstation._process_crob_select(block, seq=0, stop=_ControlStop())
         assert results == []
 
     def test_crob_operate_empty_data(self) -> None:
@@ -3642,7 +3644,9 @@ class TestOutstationCROBPaths:
         header = ObjectHeader(group=12, variation=1, qualifier=0x17)
         block = ObjectBlock(header=header, data=b"")
 
-        results = outstation._process_crob_operate(block, seq=0)
+        from dnp3.outstation.outstation import _ControlStop
+
+        results = outstation._process_crob_operate(block, seq=0, stop=_ControlStop())
         assert results == []
 
     def test_crob_direct_operate_empty_data(self) -> None:
@@ -3657,7 +3661,9 @@ class TestOutstationCROBPaths:
         header = ObjectHeader(group=12, variation=1, qualifier=0x17)
         block = ObjectBlock(header=header, data=b"")
 
-        results = outstation._process_crob_direct_operate(block)
+        from dnp3.outstation.outstation import _ControlStop
+
+        results = outstation._process_crob_direct_operate(block, stop=_ControlStop())
         assert results == []
 
 
@@ -4383,7 +4389,10 @@ class TestAOUnknownVariation:
         header_v1 = ObjectHeader(group=41, variation=1, qualifier=0x17)
         payload_v1 = b"\x01\x00" + (10).to_bytes(4, "little", signed=True) + b"\x00"
         block_v1 = ObjectBlock(header=header_v1, data=payload_v1)
-        assert outstation._process_ao_direct_operate(block_v1) == [(0, CommandStatus.SUCCESS)]
+
+        from dnp3.outstation.outstation import _ControlStop
+
+        assert outstation._process_ao_direct_operate(block_v1, stop=_ControlStop()) == [(0, CommandStatus.SUCCESS)]
         assert calls == [(0, 10.0)]
 
         calls.clear()

@@ -906,33 +906,39 @@ class TestCROBUnknownQualifier:
 
     def test_direct_operate_unknown_qualifier_returns_format_error(self) -> None:
         """_process_crob_direct_operate returns FORMAT_ERROR for unknown qualifier 0x06."""
+        from dnp3.outstation.outstation import _ControlStop
+
         outstation = Outstation()
         outstation.database.add_binary_output(0)
 
         block = self._make_g12_block(qualifier=0x06)
-        results = outstation._process_crob_direct_operate(block)
+        results = outstation._process_crob_direct_operate(block, stop=_ControlStop())
 
         assert len(results) == 1
         assert results[0][1] == CommandStatus.FORMAT_ERROR, f"Expected FORMAT_ERROR, got {results[0][1]}"
 
     def test_select_unknown_qualifier_returns_format_error(self) -> None:
         """_process_crob_select returns FORMAT_ERROR for unknown qualifier 0x06."""
+        from dnp3.outstation.outstation import _ControlStop
+
         outstation = Outstation()
         outstation.database.add_binary_output(0)
 
         block = self._make_g12_block(qualifier=0x06)
-        results = outstation._process_crob_select(block, seq=0)
+        results = outstation._process_crob_select(block, seq=0, stop=_ControlStop())
 
         assert len(results) == 1
         assert results[0][1] == CommandStatus.FORMAT_ERROR, f"Expected FORMAT_ERROR, got {results[0][1]}"
 
     def test_operate_unknown_qualifier_returns_format_error(self) -> None:
         """_process_crob_operate returns FORMAT_ERROR for unknown qualifier 0x06."""
+        from dnp3.outstation.outstation import _ControlStop
+
         outstation = Outstation()
         outstation.database.add_binary_output(0)
 
         block = self._make_g12_block(qualifier=0x06)
-        results = outstation._process_crob_operate(block, seq=0)
+        results = outstation._process_crob_operate(block, seq=0, stop=_ControlStop())
 
         assert len(results) == 1
         assert results[0][1] == CommandStatus.FORMAT_ERROR, f"Expected FORMAT_ERROR, got {results[0][1]}"
