@@ -38,7 +38,7 @@ from dnp3.database import BinaryInputPoint, Database
 from dnp3.outstation.config import OutstationConfig
 from dnp3.outstation.handler import CommandResult, DefaultCommandHandler
 from dnp3.outstation.outstation import Outstation
-from dnp3.outstation.peer import PeerId
+from dnp3.outstation.peer import UNSPECIFIED_PEER, PeerId
 
 MASTER_A = PeerId(source=3, connection=1)
 
@@ -355,6 +355,6 @@ class TestHandlerExceptionIsLogged:
         assert len(records) == 1
         record = records[0]
         assert record.levelno == logging.ERROR
-        assert record.args == (FunctionCode.DIRECT_OPERATE.name, 1)
+        assert record.args == (FunctionCode.DIRECT_OPERATE.name, 1, UNSPECIFIED_PEER)
         assert record.exc_info is not None
         assert record.exc_info[0] is ValueError

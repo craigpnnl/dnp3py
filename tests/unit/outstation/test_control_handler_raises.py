@@ -594,6 +594,7 @@ class TestAcceptedStatusForms:
         status = outstation._run_control_point(
             lambda: CommandResult(status=returned_status),  # type: ignore[arg-type]
             function=FunctionCode.DIRECT_OPERATE,
+            handler_method="direct_operate_binary_output",
             index=1,
             stop=stop,
         )
