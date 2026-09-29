@@ -1683,7 +1683,7 @@ class Outstation:
         *,
         peer: PeerId = UNSPECIFIED_PEER,
         function: FunctionCode = FunctionCode.SELECT,
-        stop: "_ControlStop | None" = None,
+        stop: "_ControlStop",
     ) -> list[tuple[int, CommandStatus]]:
         """Process CROB SELECT.
 
@@ -1696,8 +1696,6 @@ class Outstation:
         from an earlier point in this request), every later point is
         UNDEFINED without being dispatched (4.4.4.3 Rule 5; #46).
         """
-        if stop is None:
-            stop = _ControlStop()
         results: list[tuple[int, CommandStatus]] = []
 
         for crob in _parse_crob_block(block):
@@ -1804,7 +1802,7 @@ class Outstation:
         *,
         peer: PeerId = UNSPECIFIED_PEER,
         function: FunctionCode = FunctionCode.OPERATE,
-        stop: "_ControlStop | None" = None,
+        stop: "_ControlStop",
     ) -> list[tuple[int, CommandStatus]]:
         """Process CROB OPERATE.
 
@@ -1814,8 +1812,6 @@ class Outstation:
         pending state. Once ``stop`` is set, every later point is UNDEFINED
         without being dispatched (4.4.4.3 Rule 5; #46).
         """
-        if stop is None:
-            stop = _ControlStop()
         results: list[tuple[int, CommandStatus]] = []
 
         for crob in _parse_crob_block(block):
@@ -1867,7 +1863,7 @@ class Outstation:
         *,
         peer: PeerId = UNSPECIFIED_PEER,
         function: FunctionCode = FunctionCode.SELECT,
-        stop: "_ControlStop | None" = None,
+        stop: "_ControlStop",
     ) -> list[tuple[int, CommandStatus]]:
         """Process Analog Output SELECT (Group 41).
 
@@ -1878,8 +1874,6 @@ class Outstation:
         every later point is UNDEFINED without being dispatched (4.4.4.3 Rule
         5; #46).
         """
-        if stop is None:
-            stop = _ControlStop()
         points = _parse_ao_block(block)
         results: list[tuple[int, CommandStatus]] = []
 
@@ -1913,7 +1907,7 @@ class Outstation:
         *,
         peer: PeerId = UNSPECIFIED_PEER,
         function: FunctionCode = FunctionCode.OPERATE,
-        stop: "_ControlStop | None" = None,
+        stop: "_ControlStop",
     ) -> list[tuple[int, CommandStatus]]:
         """Process Analog Output OPERATE (Group 41).
 
@@ -1922,8 +1916,6 @@ class Outstation:
         handler. Once ``stop`` is set, every later point is UNDEFINED without
         being dispatched (4.4.4.3 Rule 5; #46).
         """
-        if stop is None:
-            stop = _ControlStop()
         points = _parse_ao_block(block)
         results: list[tuple[int, CommandStatus]] = []
 
@@ -1977,7 +1969,7 @@ class Outstation:
         block: ObjectBlock,
         *,
         function: FunctionCode = FunctionCode.DIRECT_OPERATE,
-        stop: "_ControlStop | None" = None,
+        stop: "_ControlStop",
     ) -> list[tuple[int, CommandStatus]]:
         """Process CROB DIRECT_OPERATE.
 
@@ -1986,8 +1978,6 @@ class Outstation:
         prior SELECT required. Once ``stop`` is set, every later point is
         UNDEFINED without being dispatched (4.4.4.3 Rule 5; #46).
         """
-        if stop is None:
-            stop = _ControlStop()
         results: list[tuple[int, CommandStatus]] = []
 
         for crob in _parse_crob_block(block):
@@ -2023,7 +2013,7 @@ class Outstation:
         block: ObjectBlock,
         *,
         function: FunctionCode = FunctionCode.DIRECT_OPERATE,
-        stop: "_ControlStop | None" = None,
+        stop: "_ControlStop",
     ) -> list[tuple[int, CommandStatus]]:
         """Process Analog Output DIRECT_OPERATE (Group 41).
 
@@ -2032,8 +2022,6 @@ class Outstation:
         later point is UNDEFINED without being dispatched (4.4.4.3 Rule 5;
         #46).
         """
-        if stop is None:
-            stop = _ControlStop()
         points = _parse_ao_block(block)
         results: list[tuple[int, CommandStatus]] = []
         for index, value in points:
