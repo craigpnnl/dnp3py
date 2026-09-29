@@ -6,6 +6,8 @@ and AO store according to MESA profile semantics.
 
 from __future__ import annotations
 
+import math
+
 from dnp3.core.enums import ControlCode
 from dnp3.database import Database
 from dnp3.mesa.ao_store import AnalogOutputStore
@@ -128,11 +130,16 @@ class MesaCommandHandler(DefaultCommandHandler):
     # -- Analog output helpers ------------------------------------------------
 
     def _validate_analog_output(self, index: int, value: float) -> CommandResult | None:
-        """Return an error result if the AO index is missing or value out of range."""
+        """Return an error result if the AO index is missing or value out of range.
+
+        NaN fails both range comparisons silently (every comparison against
+        NaN is False), so it is checked explicitly and answered the same
+        way the range check already answers: OUT_OF_RANGE, not a raise.
+        """
         ao = self._ao_store.get(index)
         if ao is None:
             return CommandResult.not_supported(f"Analog output {index} not found")
-        if value < ao.minimum or value > ao.maximum:
+        if math.isnan(value) or value < ao.minimum or value > ao.maximum:
             return CommandResult.out_of_range(f"Value {value} outside [{ao.minimum}, {ao.maximum}]")
         return None
 
