@@ -309,9 +309,9 @@ _TABLE: dict[tuple[int, int], WireLayout] = {
     (86, 2): _octets(PointKind.DATA_SET_CHARACTERISTICS, 1, _REC, flags=False),
     # A.39.1-3: BCD value alone, no flags. Not a binary UINT, so RECORD rather
     # than UINT: framed and stepped over only, per #82.
-    (101, 1): _octets(PointKind.BCD_INTEGER, 4, _REC, flags=False),
-    (101, 2): _octets(PointKind.BCD_INTEGER, 8, _REC, flags=False),
-    (101, 3): _octets(PointKind.BCD_INTEGER, 16, _REC, flags=False),
+    (101, 1): _octets(PointKind.BCD_INTEGER, 2, _REC, flags=False),
+    (101, 2): _octets(PointKind.BCD_INTEGER, 4, _REC, flags=False),
+    (101, 3): _octets(PointKind.BCD_INTEGER, 8, _REC, flags=False),
     # A.40.1: UINT8 value alone, no flags.
     (102, 1): _octets(PointKind.UNSIGNED_INTEGER, 1, _UINT, flags=False),
     # A.45.3: UINT32 Challenge Sequence Number + UINT16 User Number, no flags.
