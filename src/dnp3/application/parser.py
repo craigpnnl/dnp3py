@@ -62,10 +62,16 @@ _RESERVED_RANGE_CODES = frozenset({0x0A, 0x0C, 0x0D, 0x0E, 0x0F})
 # 4.2.2.7.3.1: qualifier bit 7 is reserved and must be clear.
 _RESERVED_BIT = 0x80
 
-# Table 4-6: an index prefix (codes 1 to 3) is defined only paired with the
-# count range of the same width (0x17, 0x28, 0x39). Keyed on the raw 3-bit
-# prefix field so it can be checked before the qualifier is known decodable.
-_INDEX_PREFIX_MATCHING_RANGE = {0x1: 0x7, 0x2: 0x8, 0x3: 0x9}
+# Table 4-6: an index prefix (codes 1 to 3) is defined with any count range
+# (7 to 9), whatever its own width (0x17-0x19, 0x27-0x29, 0x37-0x39). Keyed on
+# the raw 3-bit prefix and 4-bit range fields so they can be checked before
+# the qualifier is known decodable.
+_INDEX_PREFIX_CODES_RAW = frozenset(
+    {PrefixCode.UINT8_INDEX.value, PrefixCode.UINT16_INDEX.value, PrefixCode.UINT32_INDEX.value}
+)
+_INDEX_PREFIX_VALID_RANGES = frozenset(
+    {RangeCode.UINT8_COUNT.value, RangeCode.UINT16_COUNT.value, RangeCode.UINT32_COUNT.value}
+)
 
 
 # Request functions whose object headers carry no object data (IEEE 1815-2012 4.4): a
@@ -397,18 +403,17 @@ def _has_reserved_code(qualifier: int) -> bool:
 
     Covers the reserved bit (4.2.2.7.3.1), prefix code 7 and range codes 0xA
     and 0xC to 0xF (Tables 4-4, 4-5), and an index prefix paired with any
-    range but its own count code (Table 4-6). A size prefix's Table 4-6 range
+    range but a count range (Table 4-6). A size prefix's Table 4-6 range
     rule is instead a length-lookup result (`_unsupported_qualifier`), since a
     size prefix can lack a usable width for other reasons too.
     """
     prefix = (qualifier >> 4) & 0x07
     range_code = qualifier & 0x0F
-    matching_range = _INDEX_PREFIX_MATCHING_RANGE.get(prefix)
     return bool(
         qualifier & _RESERVED_BIT
         or prefix == _RESERVED_PREFIX_CODE
         or range_code in _RESERVED_RANGE_CODES
-        or (matching_range is not None and range_code != matching_range)
+        or (prefix in _INDEX_PREFIX_CODES_RAW and range_code not in _INDEX_PREFIX_VALID_RANGES)
     )
 
 

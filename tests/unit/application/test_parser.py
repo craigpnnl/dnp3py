@@ -37,6 +37,8 @@ from dnp3.core.flags import IIN
 _B1 = bytes.fromhex("01 02 00 09 09 81")
 # g30v1 (A.14.1: flag, INT32 little-endian), count 1, index 7, value 200.
 _G7 = bytes.fromhex("1E 01 17 01 07 01 C8 00 00 00")
+# The value portion of _G7 alone, for building other g30v1 object frames.
+_G30V1_VALUE_1 = bytes.fromhex("01 C8 00 00 00")
 _RESPONSE_HEADER = bytes([0xC0, 0x81, 0x00, 0x00])
 
 
@@ -684,7 +686,7 @@ class TestResponseFramingStops:
     @pytest.mark.parametrize(
         "qualifier",
         [0x86, 0x96, 0xC6],
-        ids=["res-bit-all-objects", "res-bit-index-prefix-count", "res-bit-with-reserved-prefix"],
+        ids=["res-bit-all-objects", "res-bit-index-prefix-all-objects", "res-bit-size-prefix-all-objects"],
     )
     def test_reserved_bit_stops(self, qualifier: int) -> None:
         """4.2.2.7.3.1: the qualifier's Res bit is reserved and must be clear (#112)."""
@@ -693,17 +695,22 @@ class TestResponseFramingStops:
         assert fragment.objects == (_block(_B1),)
         assert fragment.truncation == Truncation(TruncationReason.RESERVED_QUALIFIER, 6, 1, 2, qualifier)
 
-    @pytest.mark.parametrize(
-        "qualifier",
-        [0x10, 0x18, 0x19],
-        ids=["index-prefix-start-stop", "index-prefix-count-too-wide-2byte", "index-prefix-count-too-wide-4byte"],
-    )
-    def test_index_prefix_with_non_matching_range_stops(self, qualifier: int) -> None:
-        """Table 4-6 pairs a 1-octet index prefix only with a 1-octet count range (#112)."""
-        fragment = self._parse(_B1 + bytes([0x1E, 0x01, qualifier]))
+    def test_index_prefix_with_start_stop_range_stops(self) -> None:
+        """Table 4-6 pairs a 1-octet index prefix only with a count range, not start-stop (#112)."""
+        fragment = self._parse(_B1 + bytes([0x1E, 0x01, 0x10]))
 
         assert fragment.objects == (_block(_B1),)
-        assert fragment.truncation == Truncation(TruncationReason.RESERVED_QUALIFIER, 6, 30, 1, qualifier)
+        assert fragment.truncation == Truncation(TruncationReason.RESERVED_QUALIFIER, 6, 30, 1, 0x10)
+
+    @pytest.mark.parametrize("qualifier", [0x18, 0x19], ids=["2-byte-count", "4-byte-count"])
+    def test_index_prefix_with_any_count_range_frames(self, qualifier: int) -> None:
+        """Table 4-6: an index prefix pairs with any count range, not only its own width (#112)."""
+        frame = bytes([0x1E, 0x01, qualifier]) + (b"\x01\x00" if qualifier == 0x18 else b"\x01\x00\x00\x00") + b"\x07"
+
+        fragment = self._parse(_B1 + frame + _G30V1_VALUE_1)
+
+        assert fragment.objects == (_block(_B1), _block(frame + _G30V1_VALUE_1))
+        assert fragment.truncation is None
 
     @pytest.mark.parametrize("qualifier", [0x46, 0x56, 0x66], ids=["1-byte-size", "2-byte-size", "4-byte-size"])
     def test_size_prefix_with_all_objects_stops(self, qualifier: int) -> None:
