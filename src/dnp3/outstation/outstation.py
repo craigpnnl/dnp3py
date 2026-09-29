@@ -402,9 +402,10 @@ def _clamp_int_range(value: float, min_value: int, max_value: int) -> tuple[int,
 
     The range check runs before int(), because a stored value may be
     infinite and int(inf) raises OverflowError. NaN fails both
-    comparisons and falls to int(value), which raises ValueError: this is
-    deliberate (#159 leaves NaN as it was, since neither IEEE 1815-2012 nor
-    IEEE 1815.2-2025 states a reporting rule for it).
+    comparisons and falls to int(value), which raises ValueError; a live
+    caller never triggers that path today, since AnalogInputPoint and
+    AnalogOutputPoint both refuse NaN before it reaches their stored
+    value or any event derived from it (#159, #171).
 
     Args:
         value: The measured value, finite, infinite, or NaN.

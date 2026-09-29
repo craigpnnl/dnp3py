@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, replace
 
 __all__ = ["AnalogOutputStore", "AnalogOutputValue"]
@@ -42,12 +43,14 @@ class AnalogOutputStore:
 
         Returns a new ``AnalogOutputValue`` with the updated value.
         Raises ``KeyError`` if the index is not found.
-        Raises ``ValueError`` if *value* is outside [minimum, maximum].
+        Raises ``ValueError`` if *value* is NaN or outside [minimum, maximum].
+        NaN is checked explicitly: it fails both range comparisons silently,
+        since every comparison against NaN is False.
         """
         ao = self._store.get(index)
         if ao is None:
             raise KeyError(index)
-        if value < ao.minimum or value > ao.maximum:
+        if math.isnan(value) or value < ao.minimum or value > ao.maximum:
             raise ValueError(f"Value {value} is outside [{ao.minimum}, {ao.maximum}]")
         updated = replace(ao, value=value)
         self._store[index] = updated
