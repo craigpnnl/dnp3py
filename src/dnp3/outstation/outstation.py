@@ -835,8 +835,8 @@ class Outstation:
         request rather than the connection (#46). IIN2.2 here is a reuse
         beyond its two defined triggers (4.5.11: parse failure, or points
         that do not exist); no other IIN bit fits a caught handler exception
-        on an otherwise well-formed request. Until the per-point control
-        guard (#46 slice 2) lands, a multi-point control that fails partway
+        on an otherwise well-formed request. Until a later fix for #46 adds a
+        per-point control guard, a multi-point control that fails partway
         is answered as a whole: earlier points may already have run, but the
         response carries no per-point status and a same-sequence retry calls
         the handler again for every point. A no-ack function (IEEE 1815-2012
