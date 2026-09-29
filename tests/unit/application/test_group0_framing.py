@@ -13,6 +13,7 @@ Bytes built from the clauses and their worked examples (5.5.5 EX 5-10,
 ``test_free_format_framing.py`` uses for g70.
 """
 
+from dnp3.application.fragment import Truncation, TruncationReason
 from dnp3.application.parser import (
     frame_request_object_blocks,
     frame_response_object_blocks,
@@ -100,6 +101,33 @@ class TestGroup0ResponseFramesPerObjectTLV:
         assert [(b.header.group, b.header.variation) for b in blocks] == [(0, 217), (30, 1)]
         assert blocks[0].data == obj_range + tlv
         assert _decode_g30v1(blocks[1].data) == _G30V1_VALUE
+
+
+class TestGroup0Truncation:
+    """A type/length window or a declared value running past the end stops
+    the block, as DATA_SHORTER_THAN_DECLARED, with no read past the input.
+    """
+
+    def test_truncated_type_length_window(self) -> None:
+        header = bytes([0, 217, 0x00])
+        obj_range = bytes([0x00, 0x00])
+        data = header + obj_range + bytes([0x01])  # type octet present, length octet missing
+
+        blocks, truncation = frame_response_object_blocks(data)
+
+        assert blocks == []
+        assert truncation == Truncation(TruncationReason.DATA_SHORTER_THAN_DECLARED, 0, 0, 217, 0x00)
+
+    def test_oversized_declared_length(self) -> None:
+        header = bytes([0, 217, 0x00])
+        obj_range = bytes([0x00, 0x00])
+        # declares 10 octets of value, only 2 remain
+        data = header + obj_range + bytes([0x01, 0x0A, 0xAA, 0xBB])
+
+        blocks, truncation = frame_response_object_blocks(data)
+
+        assert blocks == []
+        assert truncation == Truncation(TruncationReason.DATA_SHORTER_THAN_DECLARED, 0, 0, 217, 0x00)
 
 
 class TestGroup0RequestPath:
