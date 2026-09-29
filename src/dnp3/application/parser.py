@@ -90,6 +90,13 @@ _GROUP_0_NO_OBJECT_VARIATIONS = frozenset({0, 254})
 # octet) plus length (1 octet), ahead of each object's value.
 _ATTRIBUTE_TYPE_LENGTH_SIZE = 2
 
+# Table 5-16 (5.5.4.3): attribute data type code 255 (U8BS8EXLIST) is the one
+# code whose true length is not its length octet alone: the object's length
+# is 256 plus the length octet's value, so a list past 255 octets can still
+# be declared.
+_EXTENDED_LIST_TYPE_CODE = 255
+_EXTENDED_LIST_LENGTH_OFFSET = 256
+
 
 # Request functions whose object headers carry no object data (IEEE 1815-2012 4.4): a
 # block is its header, its range field and any index list. Every other request is
@@ -387,7 +394,10 @@ def _walk_group0_block(data: bytes, header: ObjectHeader) -> tuple[ObjectBlock, 
         if len(remaining) < _ATTRIBUTE_TYPE_LENGTH_SIZE:
             msg = f"Attribute type/length window requires {_ATTRIBUTE_TYPE_LENGTH_SIZE} bytes, got {len(remaining)}"
             raise ParseError(msg)
+        type_code = remaining[0]
         value_length = remaining[1]
+        if type_code == _EXTENDED_LIST_TYPE_CODE:
+            value_length += _EXTENDED_LIST_LENGTH_OFFSET
         consumed += _ATTRIBUTE_TYPE_LENGTH_SIZE
         remaining = data[consumed:]
         if len(remaining) < value_length:

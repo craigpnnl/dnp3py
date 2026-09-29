@@ -103,6 +103,48 @@ class TestGroup0ResponseFramesPerObjectTLV:
         assert _decode_g30v1(blocks[1].data) == _G30V1_VALUE
 
 
+class TestGroup0ExtendedLength:
+    """Table 5-16 (5.5.4.3): attribute data type code 255 (U8BS8EXLIST) is
+    the one code whose true length is not its length octet alone. Code 254
+    (as EX 5-11 uses) has no such extension.
+    """
+
+    def test_type_255_value_over_255_octets_then_g30v1(self) -> None:
+        # length octet 4 -> true length 256 + 4 = 260 octets, well past what
+        # a bare length octet (max 255) could ever declare.
+        header = bytes([0, 217, 0x00])
+        obj_range = bytes([0x00, 0x00])
+        length_octet = 4
+        true_length = 256 + length_octet
+        value = bytes(n % 256 for n in range(true_length))
+        tlv = bytes([255, length_octet]) + value
+        data = header + obj_range + tlv + _G30V1_TAIL
+
+        blocks, truncation = frame_response_object_blocks(data)
+
+        assert truncation is None
+        assert [(b.header.group, b.header.variation) for b in blocks] == [(0, 217), (30, 1)]
+        assert blocks[0].data == obj_range + tlv
+        assert _decode_g30v1(blocks[1].data) == _G30V1_VALUE
+
+    def test_type_255_length_octet_zero_is_the_256_boundary(self) -> None:
+        # length octet 0 -> true length 256 + 0 = 256: the smallest value only
+        # an extended (type 255) object can declare, one past the 255-octet
+        # ceiling a bare length octet holds.
+        header = bytes([0, 217, 0x00])
+        obj_range = bytes([0x00, 0x00])
+        value = bytes(n % 256 for n in range(256))
+        tlv = bytes([255, 0]) + value
+        data = header + obj_range + tlv + _G30V1_TAIL
+
+        blocks, truncation = frame_response_object_blocks(data)
+
+        assert truncation is None
+        assert [(b.header.group, b.header.variation) for b in blocks] == [(0, 217), (30, 1)]
+        assert blocks[0].data == obj_range + tlv
+        assert _decode_g30v1(blocks[1].data) == _G30V1_VALUE
+
+
 class TestGroup0Truncation:
     """A type/length window or a declared value running past the end stops
     the block, as DATA_SHORTER_THAN_DECLARED, with no read past the input.
