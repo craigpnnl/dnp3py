@@ -7,9 +7,32 @@ of the public `feed()` API. These tests prove the parser stays iterative and
 still delivers every valid frame.
 """
 
+import threading
+
 from dnp3.datalink.control import ControlByte
 from dnp3.datalink.frame import DataLinkFrame
 from dnp3.datalink.parser import FrameParser
+
+# A mutant that stops the CRC-failure branches from discarding a byte
+# makes feed() loop forever on unparseable input. Running feed() on a
+# joined thread turns that into a fast test failure instead of a hung
+# suite.
+_HANG_BOUND_SECONDS = 5.0
+
+
+def _feed_within_bound(parser: FrameParser, data: bytes) -> list[object]:
+    frames: list[object] = []
+
+    def run() -> None:
+        frames.extend(parser.feed(data))
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    thread.join(_HANG_BOUND_SECONDS)
+    assert not thread.is_alive(), (
+        "feed() did not return within the bound; the loop stopped consuming bytes"
+    )
+    return frames
 
 
 class TestFrameParserResyncNoRecursionError:
@@ -42,6 +65,35 @@ class TestFrameParserResyncNoRecursionError:
         frame list rather than raising."""
         parser = FrameParser()
         frames = list(parser.feed(b"\x05\x64" * 32768))
+        assert frames == []
+
+
+class TestFrameParserResyncConsumesBytesOnCrcFailure:
+    """Both CRC-failure branches (header and data block) must discard a
+    byte before hunting again. A mutant that removes either discard makes
+    feed() loop forever on unparseable input, so these tests run it on a
+    bounded thread and fail fast rather than hang the whole suite."""
+
+    def test_header_crc_failure_branch_consumes_bytes(self) -> None:
+        """Bytes that never form a valid header must be fully consumed
+        within the bound, yielding no frames."""
+        garbage = b"\x05\x64" * 4096
+        frames = _feed_within_bound(FrameParser(), garbage)
+        assert frames == []
+
+    def test_data_block_crc_failure_branch_consumes_bytes(self) -> None:
+        """A frame with a bad data-block CRC and nothing valid after it
+        must be fully consumed within the bound, yielding no frames."""
+        frame = DataLinkFrame.build(
+            destination=1,
+            source=2,
+            control=ControlByte.from_int(0xC4),
+            user_data=b"0123456789ABCDEF",
+        )
+        bad_bytes = bytearray(frame.to_bytes())
+        bad_bytes[-1] ^= 0xFF  # corrupt the data block CRC
+
+        frames = _feed_within_bound(FrameParser(), bytes(bad_bytes))
         assert frames == []
 
 
