@@ -89,23 +89,23 @@ class TestWellFormedResponseIsUnchanged:
 class TestNonParseErrorPropagates:
     """Anything the parser did not itself signal as a parse failure escapes."""
 
-    def test_injected_runtime_error_is_not_swallowed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    @pytest.mark.parametrize(
+        ("exc_type", "message"),
+        [
+            (RuntimeError, "not a parse failure"),
+            (TypeError, "wrong shape"),
+            (ValueError, "not a parse failure either"),
+            (IndexError, "out of range"),
+        ],
+    )
+    def test_injected_error_is_not_swallowed(
+        self, monkeypatch: pytest.MonkeyPatch, exc_type: type[Exception], message: str
+    ) -> None:
         def _boom(data: bytes) -> object:
-            msg = "not a parse failure"
-            raise RuntimeError(msg)
+            raise exc_type(message)
 
         monkeypatch.setattr(master_module, "parse_response", _boom)
         master = Master()
 
-        with pytest.raises(RuntimeError, match="not a parse failure"):
-            master.process_response(WELL_FORMED_RESPONSE)
-
-    def test_injected_type_error_is_not_swallowed(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        def _boom(data: bytes) -> object:
-            raise TypeError("wrong shape")
-
-        monkeypatch.setattr(master_module, "parse_response", _boom)
-        master = Master()
-
-        with pytest.raises(TypeError, match="wrong shape"):
+        with pytest.raises(exc_type, match=message):
             master.process_response(WELL_FORMED_RESPONSE)
