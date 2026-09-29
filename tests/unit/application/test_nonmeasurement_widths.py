@@ -46,9 +46,7 @@ class TestFixedWidthRowsFrameAndStepOver:
         [(0x00, bytes([0x05, 0x06]), b""), (0x17, bytes([0x02]), bytes([0x09]))],
         ids=["start-stop", "count-index"],
     )
-    def test_block_then_g30v1(
-        self, group: int, variation: int, width: int, framing: tuple[int, bytes, bytes]
-    ) -> None:
+    def test_block_then_g30v1(self, group: int, variation: int, width: int, framing: tuple[int, bytes, bytes]) -> None:
         assert layout_for(group, variation) is not None, f"g{group}v{variation} has no layout row"
         qualifier, range_field, prefix = framing
         objects = b"".join(prefix + bytes(range(0x10 * n + 1, 0x10 * n + 1 + width)) for n in range(2))
