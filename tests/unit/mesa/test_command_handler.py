@@ -2,13 +2,21 @@
 
 from __future__ import annotations
 
+import math
+import struct
+
 import pytest
 
+from dnp3.application.builder import build_direct_operate_request
+from dnp3.application.fragment import ObjectBlock
+from dnp3.application.qualifiers import ObjectHeader
 from dnp3.core.enums import CommandStatus, ControlCode
 from dnp3.database import AnalogInputConfig, BinaryInputConfig, BinaryOutputConfig, Database, DatabaseConfig
 from dnp3.mesa.ao_store import AnalogOutputStore, AnalogOutputValue
 from dnp3.mesa.command_handler import MesaCommandHandler
+from dnp3.outstation import Outstation
 from dnp3.outstation.handler import CommandResult
+from dnp3.outstation.peer import PeerId
 
 
 @pytest.fixture()
@@ -165,6 +173,20 @@ class TestDirectOperateAnalogOutput:
         result = handler.direct_operate_analog_output(index=999, value=50.0)
         assert result.status == CommandStatus.NOT_SUPPORTED
 
+    def test_nan_returns_out_of_range_store_and_ai_unchanged(
+        self,
+        handler: MesaCommandHandler,
+        ao_store: AnalogOutputStore,
+        database: Database,
+    ) -> None:
+        """NaN fails both range comparisons silently (#171): it is checked
+        explicitly and answered the same way an out-of-range value already
+        is, rather than reaching the store or the AI mirror at all."""
+        result = handler.direct_operate_analog_output(index=0, value=math.nan)
+        assert result.status == CommandStatus.OUT_OF_RANGE
+        assert ao_store.get(0).value == 0.0
+        assert database.get_analog_input(0).value == 0.0
+
 
 class TestSelectAnalogOutput:
     """Tests for select_analog_output."""
@@ -187,6 +209,11 @@ class TestSelectAnalogOutput:
         result = handler.select_analog_output(index=999, value=50.0)
         assert result.status == CommandStatus.NOT_SUPPORTED
 
+    def test_nan_returns_out_of_range(self, handler: MesaCommandHandler, ao_store: AnalogOutputStore) -> None:
+        result = handler.select_analog_output(index=0, value=math.nan)
+        assert result.status == CommandStatus.OUT_OF_RANGE
+        assert ao_store.get(0).value == 0.0
+
 
 class TestOperateAnalogOutput:
     """Tests for operate_analog_output."""
@@ -201,6 +228,37 @@ class TestOperateAnalogOutput:
         assert result.status == CommandStatus.SUCCESS
         assert ao_store.get(0).value == 75.0
         assert database.get_analog_input(0).value == 75.0
+
+    def test_nan_returns_out_of_range_store_and_ai_unchanged(
+        self,
+        handler: MesaCommandHandler,
+        ao_store: AnalogOutputStore,
+        database: Database,
+    ) -> None:
+        result = handler.operate_analog_output(index=0, value=math.nan, select_sequence=1)
+        assert result.status == CommandStatus.OUT_OF_RANGE
+        assert ao_store.get(0).value == 0.0
+        assert database.get_analog_input(0).value == 0.0
+
+
+class TestAnalogOutputStoreSetValueRefusesNaN:
+    """AnalogOutputStore.set_value has its own NaN guard (#171), independent
+    of MesaCommandHandler's validator: a direct caller of the store is
+    covered too, not just the control-command path."""
+
+    def test_set_value_nan_raises_and_store_unchanged(self) -> None:
+        store = AnalogOutputStore()
+        store.add(AnalogOutputValue(index=0, value=5.0, minimum=0.0, maximum=100.0))
+        with pytest.raises(ValueError, match=r"nan"):
+            store.set_value(0, math.nan)
+        assert store.get(0).value == 5.0
+
+    def test_set_value_negative_nan_raises(self) -> None:
+        store = AnalogOutputStore()
+        store.add(AnalogOutputValue(index=0, value=5.0, minimum=0.0, maximum=100.0))
+        with pytest.raises(ValueError, match=r"nan"):
+            store.set_value(0, -math.nan)
+        assert store.get(0).value == 5.0
 
 
 class TestOperateBinaryOutputLatchOff:
@@ -446,3 +504,60 @@ class TestSelectMatchesOperate:
         result = handler.select_binary_output(index=0, code=ControlCode(octet), count=1, on_time=0, off_time=0)
         assert result.status == CommandStatus.NOT_SUPPORTED
         assert database.get_binary_output(0).value is False
+
+
+def _ao_block(points: list[tuple[int, float]]) -> ObjectBlock:
+    """g41v3 (float32) block carrying every (index, value) pair given, in order."""
+    data = bytes([len(points)])
+    for index, value in points:
+        data += index.to_bytes(1, "little") + struct.pack("<f", value) + bytes([0])
+    return ObjectBlock(header=ObjectHeader(group=41, variation=3, qualifier=0x17), data=data)
+
+
+class TestOutstationDirectOperateNaNAmongValidPoints:
+    """A NaN point does not stop the block: #46's per-point guard only stops
+    later handler calls on a raise, and OUT_OF_RANGE is a returned status,
+    not a raise (#171)."""
+
+    def _outstation(self) -> tuple[Outstation, AnalogOutputStore, Database]:
+        db = Database(config=DatabaseConfig())
+        db.add_analog_input(0, AnalogInputConfig())
+        db.add_analog_input(1, AnalogInputConfig())
+        store = AnalogOutputStore()
+        store.add(AnalogOutputValue(index=0, value=0.0, minimum=0.0, maximum=100.0))
+        store.add(AnalogOutputValue(index=1, value=0.0, minimum=0.0, maximum=100.0))
+        handler = MesaCommandHandler(
+            database=db,
+            ao_store=store,
+            associated_indices={0: ("AI", 0), 1: ("AI", 1)},
+        )
+        return Outstation(database=db, handler=handler), store, db
+
+    def test_nan_point_out_of_range_valid_point_still_operated(self) -> None:
+        outstation, store, db = self._outstation()
+        request = build_direct_operate_request(objects=(_ao_block([(0, math.nan), (1, 42.0)]),), seq=0)
+        responses = outstation.process_request(request.to_bytes(), peer=PeerId(source=3, connection=1))
+
+        assert len(responses) == 1
+        echoed = responses[0].objects[0]
+        # qualifier 0x17: data[0]=count, then per point: 1-byte index, 4-byte
+        # float32, 1-byte status (6 bytes per point). Status sits at offset
+        # 5 within each point's 6 bytes.
+        point_size = 6
+        status0 = echoed.data[1 + 5]
+        status1 = echoed.data[1 + point_size + 5]
+        assert status0 == int(CommandStatus.OUT_OF_RANGE)
+        assert status1 == int(CommandStatus.SUCCESS)
+
+        ao0 = store.get(0)
+        ao1 = store.get(1)
+        ai0 = db.get_analog_input(0)
+        ai1 = db.get_analog_input(1)
+        assert ao0 is not None
+        assert ao1 is not None
+        assert ai0 is not None
+        assert ai1 is not None
+        assert ao0.value == 0.0, "the NaN point's store value must not change"
+        assert ao1.value == 42.0, "the valid point must still be operated"
+        assert ai0.value == 0.0
+        assert ai1.value == 42.0
