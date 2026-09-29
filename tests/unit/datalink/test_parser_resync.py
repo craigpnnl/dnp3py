@@ -45,6 +45,39 @@ class TestFrameParserResyncNoRecursionError:
         assert frames == []
 
 
+class TestFrameParserResyncDataBlockFailureKeepsHunting:
+    """A bad data-block CRC must not stop the hunt within the same
+    feed() call: the parser has to keep skipping bytes and looking for
+    the next frame, not give up as soon as one bad block is seen."""
+
+    def test_data_block_crc_failure_then_valid_frame_in_one_feed(self) -> None:
+        """A frame with a bad data-block CRC directly followed by a
+        valid frame, both in one feed() call, still yields the valid
+        frame. Kills the mutant that returns from the data-block
+        CRC-failure branch instead of continuing the hunt."""
+        bad_frame = DataLinkFrame.build(
+            destination=1,
+            source=2,
+            control=ControlByte.from_int(0xC4),
+            user_data=b"0123456789ABCDEF",  # one full 16-byte data block
+        )
+        bad_bytes = bytearray(bad_frame.to_bytes())
+        bad_bytes[-1] ^= 0xFF  # corrupt the data block CRC
+
+        good_frame = DataLinkFrame.build(
+            destination=3,
+            source=4,
+            control=ControlByte.from_int(0xC3),
+            user_data=b"good frame data",
+        )
+
+        parser = FrameParser()
+        frames = list(parser.feed(bytes(bad_bytes) + good_frame.to_bytes()))
+
+        assert len(frames) == 1
+        assert frames[0].to_bytes() == good_frame.to_bytes()
+
+
 class TestFrameParserResyncIsNotRecursive:
     """Each CRC-failure branch must not call `_try_parse_frame` from within
     itself. Proven by wrapping the method and counting nested (not
