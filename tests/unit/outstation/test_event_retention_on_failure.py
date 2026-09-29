@@ -12,15 +12,17 @@ been built without raising.
 
 from __future__ import annotations
 
+import dataclasses
 from collections.abc import Sequence
 
 import pytest
 
-from dnp3.application.builder import build_class_poll
-from dnp3.application.fragment import ObjectBlock, ResponseFragment
+from dnp3.application.builder import build_all_objects_request, build_class_poll, build_read_request
+from dnp3.application.fragment import ObjectBlock, RequestFragment, ResponseFragment
+from dnp3.core.enums import FunctionCode
 from dnp3.core.flags import IIN, AnalogQuality
-from dnp3.database import Database, Event, EventClass
-from dnp3.database.point import AnalogInputConfig, BinaryInputConfig
+from dnp3.database import Database, DatabaseConfig, Event, EventClass
+from dnp3.database.point import AnalogInputConfig, BinaryInputConfig, CounterConfig
 from dnp3.outstation.outstation import Outstation
 
 ONLINE = AnalogQuality.ONLINE
@@ -63,6 +65,25 @@ def _decode_analog_events(block_data: bytes) -> list[tuple[int, int]]:
         value = int.from_bytes(block_data[offset + 2 : offset + 6], "little", signed=True)
         events.append((index, value))
         offset += 6
+    return events
+
+
+def _decode_binary_events(block_data: bytes) -> list[int]:
+    """Decode a g2v1 (qualifier 0x17, 1-byte index) event block into a list of indexes."""
+    count = block_data[0]
+    return [block_data[1 + i * 2] for i in range(count)]
+
+
+def _decode_counter_events(block_data: bytes) -> list[tuple[int, int]]:
+    """Decode a g22v5 (qualifier 0x17, 1-byte index) event block into (index, value) pairs."""
+    count = block_data[0]
+    events = []
+    offset = 1
+    for _ in range(count):
+        index = block_data[offset]
+        value = int.from_bytes(block_data[offset + 2 : offset + 6], "little", signed=False)
+        events.append((index, value))
+        offset += 12  # 1 index + 1 flags + 4 value + 6 timestamp
     return events
 
 
@@ -193,3 +214,117 @@ class TestEventAddedDuringBuildSurvives:
         assert db.event_buffer.class1.count == 1  # the event added mid-build remains buffered
         remaining = db.event_buffer.class1.read_with_serials()
         assert remaining[0][1].index == 1
+
+
+class TestOneEventIsNotEncodedTwice:
+    """A request naming one class through two blocks encodes each event once (#46).
+
+    Before this fix, reading no longer removed events, so a request naming
+    the same class through two blocks (the same class-poll block twice, or
+    g2v0 alongside g60v2) read and encoded the still-buffered event a
+    second time.
+    """
+
+    def test_repeated_class_poll_encodes_the_class_once(self) -> None:
+        db = Database()
+        db.add_binary_input(0, BinaryInputConfig(event_class=EventClass.CLASS_1))
+        db.update_binary_input(0, value=True)
+        outstation = Outstation(database=db)
+
+        request = build_class_poll(class_1=True, class_2=False, class_3=False, seq=0)
+        doubled = dataclasses.replace(request, objects=tuple(request.objects) * 2)
+        responses = outstation.process_request(doubled.to_bytes())
+
+        matching_blocks = [o for f in responses for o in f.objects if o.header.group == 2]
+        assert len(matching_blocks) == 1
+        assert _decode_binary_events(bytes(matching_blocks[0].data)) == [0]
+        assert db.event_buffer.class1.count == 0
+
+    def test_g2v0_plus_g60v2_encodes_the_class_once(self) -> None:
+        db = Database()
+        db.add_binary_input(0, BinaryInputConfig(event_class=EventClass.CLASS_1))
+        db.update_binary_input(0, value=True)
+        outstation = Outstation(database=db)
+
+        g2_all = build_all_objects_request(function=FunctionCode.READ, group=2, variation=0, seq=0)
+        class1_poll = build_class_poll(class_1=True, class_2=False, class_3=False, seq=0)
+        combined = RequestFragment(
+            header=class1_poll.header,
+            objects=tuple(g2_all.objects) + tuple(class1_poll.objects),
+        )
+        responses = outstation.process_request(combined.to_bytes())
+
+        matching_blocks = [o for f in responses for o in f.objects if o.header.group == 2]
+        assert len(matching_blocks) == 1
+        assert _decode_binary_events(bytes(matching_blocks[0].data)) == [0]
+        assert db.event_buffer.class1.count == 0
+
+    def test_300_event_repeated_class_poll_fits_in_one_fragment_as_at_base(self) -> None:
+        db = Database(config=DatabaseConfig(max_binary_inputs=310))
+        for i in range(300):
+            db.add_binary_input(i, BinaryInputConfig(event_class=EventClass.CLASS_1), value=False)
+        for i in range(300):
+            db.update_binary_input(i, value=True)
+        outstation = Outstation(database=db)
+
+        request = build_class_poll(class_1=True, class_2=False, class_3=False, seq=0)
+        doubled = dataclasses.replace(request, objects=tuple(request.objects) * 2)
+        responses = outstation.process_request(doubled.to_bytes())
+
+        assert len(responses) == 1  # as at base: 300 events, encoded once, fit one fragment
+        assert db.event_buffer.class1.count == 0
+
+
+class TestMultiClassReadEmptiesEveryClass:
+    """A poll or read naming several classes, or several event groups, empties every one (#46).
+
+    A mutant that removes only the last block's serials, or that drops
+    class 3 (g60v4) or g22 serials specifically, passes a single-class
+    test but fails these.
+    """
+
+    @staticmethod
+    def _seeded_database() -> Database:
+        db = Database()
+        db.add_binary_input(0, BinaryInputConfig(event_class=EventClass.CLASS_1))
+        db.add_analog_input(0, AnalogInputConfig(event_class=EventClass.CLASS_2, deadband=0))
+        db.add_counter(0, CounterConfig(event_class=EventClass.CLASS_3, deadband=0))
+        db.update_binary_input(0, value=True)
+        db.update_analog_input(0, value=5.0, quality=ONLINE)
+        db.update_counter(0, value=7)
+        return db
+
+    def _assert_all_three_present_and_emptied(self, db: Database, responses: Sequence[ResponseFragment]) -> None:
+        bi_block = _find_block(responses, group=2, variation=1)
+        ai_block = _find_block(responses, group=32, variation=1)
+        ctr_block = _find_block(responses, group=22, variation=5)
+        assert bi_block is not None
+        assert ai_block is not None
+        assert ctr_block is not None
+        assert _decode_binary_events(bi_block) == [0]
+        assert _decode_analog_events(ai_block) == [(0, 5)]
+        assert _decode_counter_events(ctr_block) == [(0, 7)]
+        assert db.event_buffer.class1.count == 0
+        assert db.event_buffer.class2.count == 0
+        assert db.event_buffer.class3.count == 0
+
+    def test_class_1_2_3_poll_empties_all_three_classes(self) -> None:
+        db = self._seeded_database()
+        outstation = Outstation(database=db)
+
+        request = build_class_poll(class_1=True, class_2=True, class_3=True, seq=0)
+        responses = outstation.process_request(request.to_bytes())
+
+        self._assert_all_three_present_and_emptied(db, responses)
+
+    def test_g2_g32_g22_read_empties_all_three_classes(self) -> None:
+        db = self._seeded_database()
+        outstation = Outstation(database=db)
+
+        g2 = build_all_objects_request(function=FunctionCode.READ, group=2, variation=0, seq=0)
+        g32 = build_all_objects_request(function=FunctionCode.READ, group=32, variation=0, seq=0)
+        g22 = build_all_objects_request(function=FunctionCode.READ, group=22, variation=0, seq=0)
+        combined = build_read_request(objects=tuple(g2.objects) + tuple(g32.objects) + tuple(g22.objects), seq=0)
+        responses = outstation.process_request(combined.to_bytes())
+
+        self._assert_all_three_present_and_emptied(db, responses)
