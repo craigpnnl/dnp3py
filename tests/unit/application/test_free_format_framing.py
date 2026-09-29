@@ -115,6 +115,36 @@ class TestG70BlockFramesAndStepsOver:
         assert truncation is None
 
 
+class TestFreeFormatObjectSizeUsesTheFullSizeField:
+    """A declared size that does not fit in one octet must be read from the
+    whole size field, not just its low byte (or, for 0x6B, its low 2 octets).
+    """
+
+    def test_0x5b_size_over_255(self) -> None:
+        payload = bytes([0xAB]) * 300  # 300 needs both octets of the 2-octet field
+        count = bytes([1])
+        obj = _sized_object(2, payload)
+        data = bytes([70, 1, 0x5B]) + count + obj + _G30V1_TAIL
+
+        blocks = parse_response_object_blocks(data)
+
+        assert [(b.header.group, b.header.variation) for b in blocks] == [(70, 1), (30, 1)]
+        assert blocks[0].data == count + obj
+        assert _decode_g30v1(blocks[1].data).value == _G30V1_VALUE
+
+    def test_0x6b_size_over_65535(self) -> None:
+        payload = bytes([0xCD]) * 65536  # needs all 4 octets, not just the low 2
+        count = bytes([1])
+        obj = _sized_object(4, payload)
+        data = bytes([70, 1, 0x6B]) + count + obj + _G30V1_TAIL
+
+        blocks = parse_response_object_blocks(data)
+
+        assert [(b.header.group, b.header.variation) for b in blocks] == [(70, 1), (30, 1)]
+        assert blocks[0].data == count + obj
+        assert _decode_g30v1(blocks[1].data).value == _G30V1_VALUE
+
+
 class TestFreeFormatTruncation:
     """A count, a size field, or a declared payload running past the end stops the
     block, and every block before it stays framed.
