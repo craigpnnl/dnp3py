@@ -76,13 +76,17 @@ class CommandHandler(Protocol):
     undefined Op Type. Return NOT_SUPPORTED for any combination the handler does
     not carry out, rather than SUCCESS without acting (IEEE 1815-2012 A.8.1.2.2).
 
-    A control method must return a ``CommandResult`` and must not raise. A
-    raise, or a return whose ``status`` is not a ``CommandStatus`` member, is
-    treated as UNDEFINED for that point and stops every later point in the
-    request from reaching a handler at all (IEEE 1815-2012 4.4.4.3 Rule 5).
-    That status is not proof the point did nothing: a handler that acts and
-    then raises is still reported to the master as not accepted, so an
-    exception after a successful actuation misreports that point.
+    A control method must return a ``CommandResult`` and must not raise. Its
+    ``status`` should be a ``CommandStatus``; a plain int equal to one of its
+    defined values is also accepted and converted to it, so a handler built
+    against ``dnp3.objects.binary_output.CommandStatus`` (numerically the same
+    codes, Table 4-2 and Table 11-7) still works. A raise, a bool, or any
+    other value that does not convert is treated as UNDEFINED for that point
+    and stops every later point in the request from reaching a handler at all
+    (IEEE 1815-2012 4.4.4.3 Rule 5). That status is not proof the point did
+    nothing: a handler that acts and then raises is still reported to the
+    master as not accepted, so an exception after a successful actuation
+    misreports that point.
     """
 
     def select_binary_output(

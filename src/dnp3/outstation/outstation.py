@@ -674,6 +674,24 @@ class _ControlStop:
         self.stopped = False
 
 
+def _coerce_command_status(value: object) -> CommandStatus | None:
+    """Accept a status value a handler may reasonably return, or None when it is invalid.
+
+    dnp3.objects.binary_output.CommandStatus mirrors this module's CommandStatus
+    numerically (Table 4-2 and Table 11-7 share the same codes) but is a
+    separate class, and it is a publicly exported name a handler author may
+    import instead of the core one. A plain int matching a defined value is
+    accepted the same way. A bool is never accepted: bool is an int subclass in
+    Python, and True/False are not status codes (#46).
+    """
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    try:
+        return CommandStatus(int(value))
+    except ValueError:
+        return None
+
+
 def _control_block_error(block: ObjectBlock) -> IIN | None:
     """Return the IIN error bit a control request answers for ``block``, or None when it decodes.
 
@@ -1737,13 +1755,13 @@ class Outstation:
     ) -> CommandStatus:
         """Call one control handler method for one point, guarding a raise or a bad return.
 
-        Returns the point's status. A raise, or a return that is not a
-        CommandResult with a CommandStatus member, gives the point UNDEFINED
-        (127, Table 11-7) and sets ``stop``, so no later handler call is made
-        in this request, across blocks (4.4.4.3 Rule 5; #46). The status is
-        not proof the point did nothing: a handler that acts and then raises
-        is still reported as not accepted (Rule 7; the CommandHandler
-        docstring states the contract).
+        Returns the point's status, coerced through ``_coerce_command_status``.
+        A raise, or a return whose status does not coerce, gives the point
+        UNDEFINED (127, Table 11-7) and sets ``stop``, so no later handler
+        call is made in this request, across blocks (4.4.4.3 Rule 5; #46).
+        The status is not proof the point did nothing: a handler that acts
+        and then raises is still reported as not accepted (Rule 7; the
+        CommandHandler docstring states the contract).
         """
         try:
             result = call()
@@ -1751,11 +1769,12 @@ class Outstation:
             _log.exception("Control handler raised for %s point %d", function.name, index)
             stop.stopped = True
             return CommandStatus.UNDEFINED
-        if not isinstance(result, CommandResult) or not isinstance(result.status, CommandStatus):
+        status = _coerce_command_status(result.status) if isinstance(result, CommandResult) else None
+        if status is None:
             _log.error("Control handler returned %r for %s point %d, not a CommandResult", result, function.name, index)
             stop.stopped = True
             return CommandStatus.UNDEFINED
-        return result.status
+        return status
 
     def _handle_operate(self, request: RequestFragment, *, peer: PeerId = UNSPECIFIED_PEER) -> ResponseFragment:
         """Handle OPERATE request."""
