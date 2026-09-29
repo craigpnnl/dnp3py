@@ -173,10 +173,10 @@ class TestDirectOperateHandlerRaises:
 class TestDirectOperateNoAckHandlerRaises:
     """IEEE 1815-2012 4.4.5 forbids any response to a no-ack function code.
 
-    "The DIRECT_OPERATE_NR function code is similar to the DIRECT_OPERATE
-    function code except that the outstation does not send a response
-    message" (4.4.5), unconditionally: the same silence applies whether the
-    request succeeds or a handler raises.
+    DIRECT_OPERATE_NO_ACK behaves like DIRECT_OPERATE except that the
+    outstation sends no response at all (4.4.5); that silence is
+    unconditional, so the same silence applies whether the request succeeds
+    or a handler raises.
     """
 
     def test_answers_nothing(self) -> None:

@@ -2000,8 +2000,8 @@ class Outstation:
         elapsed time to [C] (10.3.3.2 step e). Keyed by peer so one master's
         RECORD_CURRENT_TIME never shifts or is consumed by another's g50v3.
         A later RECORD_CURRENT_TIME from ``peer`` with no intervening WRITE
-        discards its earlier instant (step, "shall discard the original
-        recorded time"), matching this assignment's overwrite.
+        discards its earlier instant, per that step's requirement to discard
+        the prior recorded time, matching this assignment's overwrite.
         """
         self._record_current_time_instants[peer] = time.monotonic()
         return build_null_response(
