@@ -264,7 +264,7 @@ def _g120v1_challenge() -> bytes:
 
 def _g120v2_reply() -> bytes:
     """g120v2 (A.45.2.2.2): CSQ, USR, then a MAC value sized by the object prefix.
-    A.45.2.2.3 mandates qualifier 0x5B.
+    A.45.2.2.3 recommends qualifier 0x5B, one level short of the g120v1 mandate.
     """
     csq = (1).to_bytes(4, "little")
     usr = (0).to_bytes(2, "little")
