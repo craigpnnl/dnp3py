@@ -243,7 +243,7 @@ class TestTrackingFailureOnFivePoints:
 
 
 class TestErrorRecordContent:
-    """L1: one ERROR record names the function, the point index, and the peer, with a traceback."""
+    """One ERROR record names the function, the point index, and the peer, with a traceback."""
 
     def test_control_raise_names_function_index_peer_and_carries_a_traceback(
         self, fake_clock: _FakeClock, caplog: pytest.LogCaptureFixture

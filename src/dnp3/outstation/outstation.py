@@ -884,7 +884,7 @@ class Outstation:
         handler_failures: Count of every covered application-code failure
             (a control handler raise or invalid return, or a tracking
             failure after a successful analog output operate), logged or
-            not (#46 L3). Monotonic: never reset or decremented.
+            not (#46). Monotonic: never reset or decremented.
     """
 
     config: OutstationConfig = field(default_factory=OutstationConfig)
@@ -1925,13 +1925,12 @@ class Outstation:
         message: str,
         args: tuple[object, ...],
     ) -> None:
-        """Log one covered application-code failure, rate-limited per key (#46 L1-L3).
+        """Log one covered application-code failure, rate-limited per key (#46).
 
         Every covered failure increments ``handler_failures`` whether or
-        not it is logged (L3). At most one ERROR record per (function,
-        handler method, exception type) key is written per
-        ``WINDOW_SECONDS`` (L2); the record after a window reports how
-        many were suppressed during it.
+        not it is logged. At most one ERROR record per (function, handler
+        method, exception type) key is written per ``WINDOW_SECONDS``; the
+        record after a window reports how many were suppressed during it.
         """
         self.handler_failures += 1
         key: FailureKey = (function, handler_method, exception_type)
@@ -1963,7 +1962,7 @@ class Outstation:
         and then raises is still reported as not accepted (Rule 7; the
         CommandHandler docstring states the contract). Each failure is
         logged through ``_log_handler_failure``, rate-limited per
-        (function, handler method, exception type) (#46 L1-L3).
+        (function, handler method, exception type) (#46).
         """
         try:
             result = call()
@@ -2186,7 +2185,7 @@ class Outstation:
 
         ``peer`` carries no selection state on this path (DIRECT_OPERATE
         needs no prior SELECT); it is threaded through only so a failure
-        log names which master's request caused it (#46 L1).
+        log names which master's request caused it (#46).
         """
         refusal = self._refuse_undecodable(request)
         if refusal is not None:
@@ -2306,9 +2305,9 @@ class Outstation:
         itself, is caught, counted and rate-limited through
         ``_log_handler_failure`` like a control handler failure: the output
         already operated, so the point's control status stays SUCCESS even
-        though its tracked value could not be stored (#46 L1-L3). The
-        commanded value never appears in a log message: it comes from the
-        request and this module logs no master-supplied bytes.
+        though its tracked value could not be stored (#46). The commanded
+        value never appears in a log message: it comes from the request
+        and this module logs no master-supplied bytes.
         """
         try:
             point = self.database.get_analog_output(index)
