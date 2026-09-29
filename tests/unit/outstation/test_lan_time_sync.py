@@ -90,7 +90,7 @@ def _write(outstation: Outstation, *objects: ObjectBlock, seq: int = 0, peer: Pe
 
 
 class TestRecordCurrentTime:
-    """Item 1: RECORD_CURRENT_TIME answers null and records the receipt instant."""
+    """RECORD_CURRENT_TIME answers null and records the receipt instant."""
 
     def test_returns_null_response_at_request_seq(self) -> None:
         outstation = Outstation()
@@ -127,7 +127,7 @@ class TestRecordCurrentTime:
 
 
 class TestWriteG50v3Applies:
-    """Item 2: a WRITE of g50v3 delivers written time plus elapsed time, clears NEED_TIME."""
+    """A WRITE of g50v3 delivers written time plus elapsed time, clears NEED_TIME."""
 
     def test_delivers_written_time_plus_elapsed_and_clears_need_time(self, monkeypatch: pytest.MonkeyPatch) -> None:
         clock = _FakeClock(100.0)
@@ -160,7 +160,7 @@ class TestWriteG50v3Applies:
 
 
 class TestWriteG50v3Refused:
-    """Item 3: a wrong qualifier or count, or no recorded instant, answers IIN2.2."""
+    """A wrong qualifier or count, or no recorded instant, answers IIN2.2."""
 
     def test_wrong_qualifier_answers_parameter_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
         clock = _FakeClock(50.0)
