@@ -252,7 +252,8 @@ class TestFrameParserResyncMinLengthField:
     without a check, the resulting negative user_data_length reached
     `_calculate_frame_size` and produced a frame smaller than the 10-byte
     header itself. Built with raw bytes rather than `DataLinkHeader`,
-    since the header now refuses to represent a LENGTH this short."""
+    since `DataLinkHeader.from_bytes` now refuses to parse a LENGTH this
+    short."""
 
     @staticmethod
     def _header_bytes(length: int) -> bytes:
@@ -281,10 +282,87 @@ class TestFrameParserResyncMinLengthField:
 
     def test_length_below_minimum_alone_yields_no_frame(self) -> None:
         """A CRC-valid header with LENGTH=0 and nothing after it yields no
-        frame and raises nothing."""
+        frame and raises nothing. The single skipped byte plus the 9
+        remaining garbage bytes contain no further start-byte pair, so
+        the whole short header is consumed and nothing is buffered."""
         parser = FrameParser()
         frames = list(parser.feed(self._header_bytes(0)))
         assert frames == []
+        assert parser.bytes_buffered == 0
+
+    @staticmethod
+    def _overlapping_valid_frame(short_length: int) -> tuple[bytes, bytes]:
+        """A LENGTH-invalid header whose own CONTROL/DEST/SRC/CRC bytes
+        double as the start of a second, genuinely valid frame beginning
+        3 bytes in. Returns (buffer, expected_frame_bytes): resync that
+        skips exactly 1 byte finds and delivers the embedded frame byte
+        for byte; resync that skips the whole 10-byte header consumes
+        part of it and loses the frame."""
+        embedded_control = 0xC4
+        embedded_dest_lo = 0x01
+        embedded_length = 5  # zero user data: smallest legal embedded frame
+
+        # First 8 bytes of the short header: START, LENGTH (invalid),
+        # then the embedded frame's own START/LENGTH/CONTROL/DEST_lo
+        # occupying the short header's CONTROL..SRC_lo positions.
+        prefix = bytes([0x05, 0x64, short_length, 0x05, 0x64, embedded_length, embedded_control, embedded_dest_lo])
+        short_crc = compute_crc(prefix)
+        crc_lo = short_crc & 0xFF
+        crc_hi = (short_crc >> 8) & 0xFF
+
+        # The short header's own CRC bytes double as the embedded frame's
+        # DEST high byte and SRC low byte.
+        embedded_dest = (crc_lo << 8) | embedded_dest_lo
+        embedded_src_hi = 0x00
+        embedded_src = (embedded_src_hi << 8) | crc_hi
+
+        embedded_header_no_crc = (
+            bytes([0x05, 0x64, embedded_length, embedded_control])
+            + embedded_dest.to_bytes(2, "little")
+            + embedded_src.to_bytes(2, "little")
+        )
+        embedded_crc = compute_crc(embedded_header_no_crc)
+        expected_frame_bytes = embedded_header_no_crc + embedded_crc.to_bytes(2, "little")
+
+        buffer = (
+            prefix + short_crc.to_bytes(2, "little") + bytes([embedded_src_hi]) + embedded_crc.to_bytes(2, "little")
+        )
+        return buffer, expected_frame_bytes
+
+    @pytest.mark.parametrize("short_length", [0, 4])
+    def test_length_below_minimum_overlapping_valid_frame_is_delivered(self, short_length: int) -> None:
+        """A real, CRC-valid frame can start inside the bytes of a
+        rejected short header (offset 3 here). Resync must discard only
+        the 1 byte the CRC-failure path discards, not the whole 10-byte
+        header: deleting all 10 would consume the overlapping frame's
+        first 7 bytes along with the invalid header and lose it. Kills a
+        mutant that changes the LENGTH branch's `del self._buffer[0]` to
+        delete HEADER_SIZE bytes."""
+        buffer, expected_frame_bytes = self._overlapping_valid_frame(short_length)
+
+        parser = FrameParser()
+        frames = list(parser.feed(buffer))
+
+        assert len(frames) == 1
+        assert frames[0].to_bytes() == expected_frame_bytes
+        assert parser.bytes_buffered == 0
+
+    @pytest.mark.parametrize("length", [0, 4])
+    @pytest.mark.parametrize("cut", range(1, 10))
+    def test_length_below_minimum_split_across_feeds_yields_no_frame(self, cut: int, length: int) -> None:
+        """A short header arriving split across two feed() calls, at
+        every cut point from 1 to 9 bytes, yields no frame from either
+        call and raises nothing. No shipped test split this case before:
+        with the LENGTH guard removed, the second feed() call raises
+        `DataLinkHeader.from_bytes`'s ValueError instead of resyncing."""
+        header = self._header_bytes(length)
+
+        parser = FrameParser()
+        frames1 = list(parser.feed(header[:cut]))
+        frames2 = list(parser.feed(header[cut:]))
+
+        assert frames1 == []
+        assert frames2 == []
 
     def test_length_at_minimum_still_delivers_empty_payload_frame(self) -> None:
         """LENGTH=5, the smallest legal value, is unaffected: it still
