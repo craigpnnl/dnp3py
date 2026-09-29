@@ -397,14 +397,35 @@ def _build_static_blocks(
     return blocks
 
 
+def _clamp_int_range(value: float, min_value: int, max_value: int) -> tuple[int, bool]:
+    """Clamp a value into [min_value, max_value] per IEEE 1815-2012 11.6.1.1 rules 2 and 3.
+
+    The range check runs before int(), because a stored value may be
+    infinite and int(inf) raises OverflowError. NaN fails both
+    comparisons and falls to int(value), which raises ValueError: this is
+    deliberate (#159 leaves NaN as it was, since neither IEEE 1815-2012 nor
+    IEEE 1815.2-2025 states a reporting rule for it).
+
+    Args:
+        value: The measured value, finite, infinite, or NaN.
+        min_value: The variation's lower bound, inclusive.
+        max_value: The variation's upper bound, inclusive.
+
+    Returns:
+        (value_to_encode, over_range): over_range is True when value fell
+        outside the bound and value_to_encode is the nearer limit.
+    """
+    if value > max_value or value < min_value:
+        return (max_value if value > 0 else min_value), True
+    return int(value), False
+
+
 def _serialize_analog_output_status(point: Any, variation: int) -> bytes:
     """Serialize one analog output status point to its g40 variation's wire bytes.
 
     IEEE 1815-2012 11.6.1.1 rules 2 and 3: a value outside the
     variation's range is reported as the variation's limit value with
-    OVER_RANGE set in the flag octet, rather than raised or wrapped. For the
-    int variations (v1, v2) the range check runs before int(), because a
-    stored value may be infinite and int(inf) raises OverflowError.
+    OVER_RANGE set in the flag octet, rather than raised or wrapped.
 
     Args:
         point: An AnalogOutputPoint with `quality` and `value`.
@@ -418,11 +439,9 @@ def _serialize_analog_output_status(point: Any, variation: int) -> bytes:
 
     if variation in _AO_STATUS_INT_LIMITS:
         min_value, max_value = _AO_STATUS_INT_LIMITS[variation]
-        if value > max_value or value < min_value:
+        clamped, over_range = _clamp_int_range(value, min_value, max_value)
+        if over_range:
             quality = quality | AnalogQuality.OVER_RANGE
-            clamped = max_value if value > 0 else min_value
-        else:
-            clamped = int(value)
         return bytes([int(quality)]) + clamped.to_bytes(_AO_VALUE_SIZES[variation], "little", signed=True)
 
     if variation == AO_VAR_FLOAT32:
@@ -436,6 +455,45 @@ def _serialize_analog_output_status(point: Any, variation: int) -> bytes:
     # AO_VAR_FLOAT64: every double this point can hold, infinity included,
     # packs into binary64 without overflow.
     return bytes([int(quality)]) + struct.pack("<d", value)
+
+
+def _serialize_analog_input(point: Any) -> bytes:
+    """Serialize one g30v1 analog input point to its wire bytes (#159).
+
+    IEEE 1815-2012 11.6.1.1 rules 2 and 3: a value outside the 32-bit
+    range, infinity included, is reported as that limit with OVER_RANGE
+    set, rather than raised.
+
+    Args:
+        point: An AnalogInputPoint with `quality` and `value`.
+
+    Returns:
+        The 5-byte g30v1 wire encoding (flag octet then signed 32-bit value).
+    """
+    quality = point.quality
+    clamped, over_range = _clamp_int_range(point.value, AnalogInput32.MIN_VALUE, AnalogInput32.MAX_VALUE)
+    if over_range:
+        quality = quality | AnalogQuality.OVER_RANGE
+    return AnalogInput32(quality=quality, value=clamped).to_bytes()
+
+
+def _serialize_analog_input_event(event: Any) -> bytes:
+    """Serialize one g32v1 analog input event to its wire bytes (#159).
+
+    Same 11.6.1.1 rules 2/3 clamp as _serialize_analog_input; events share
+    the g30v1 range since both are 32-bit signed fields.
+
+    Args:
+        event: An AnalogEvent with `quality` and `value`.
+
+    Returns:
+        The 5-byte g32v1 wire encoding (flag octet then signed 32-bit value).
+    """
+    quality = event.quality
+    clamped, over_range = _clamp_int_range(event.value, AnalogInputEvent32.MIN_VALUE, AnalogInputEvent32.MAX_VALUE)
+    if over_range:
+        quality = quality | AnalogQuality.OVER_RANGE
+    return AnalogInputEvent32(quality=quality, value=clamped).to_bytes()
 
 
 def _crob_count_index_sizes(qualifier: int) -> tuple[int, int]:
@@ -1235,7 +1293,7 @@ class Outstation:
             group=GV_ANALOG_INPUT_32[0],
             variation=GV_ANALOG_INPUT_32[1],
             points=points,
-            serialize=lambda p: AnalogInput32(quality=p.quality, value=int(p.value)).to_bytes(),
+            serialize=_serialize_analog_input,
             max_points_per_block=_static_block_capacity(self.config.max_fragment_size, 5),
         )
 
@@ -1374,8 +1432,8 @@ class Outstation:
                 data.append(event.index & 0xFF)
             else:
                 data.extend(event.index.to_bytes(2, "little"))
-            # g32v1 format: 1 byte flags + 4 bytes signed value (delegated to AnalogInputEvent32.to_bytes())
-            data.extend(AnalogInputEvent32(quality=event.quality, value=int(event.value)).to_bytes())
+            # g32v1 format: 1 byte flags + 4 bytes signed value, clamped over 11.6.1.1 (#159).
+            data.extend(_serialize_analog_input_event(event))
 
         header = ObjectHeader(
             group=GV_ANALOG_INPUT_EVENT[0],
