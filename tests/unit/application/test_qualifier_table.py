@@ -100,7 +100,13 @@ def _expected_reason(qualifier: int) -> TruncationReason:
         return TruncationReason.RESERVED_QUALIFIER
     if prefix in {0x01, 0x02, 0x03} and range_code not in {0x07, 0x08, 0x09}:
         return TruncationReason.RESERVED_QUALIFIER
-    if range_code in {0x03, 0x04, 0x05, 0x0B}:
+    if range_code == 0x0B:
+        # Table 4-6 shades this cell for every prefix but a size prefix (4B, 5B,
+        # 6B, covered by _VALID_QUALIFIERS): it is not a defined combination.
+        return TruncationReason.RESERVED_QUALIFIER
+    if range_code in {0x03, 0x04, 0x05}:
+        # Table 4-6 shades these cells too; UNSUPPORTED_RANGE names this
+        # library's own gap, not a reason the table gives.
         return TruncationReason.UNSUPPORTED_RANGE
     # range in {0, 1, 2, 6, 7, 8, 9}: a size prefix (4 to 6) has no width for these.
     return TruncationReason.SIZE_PREFIX

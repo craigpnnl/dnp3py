@@ -659,7 +659,7 @@ class TestResponseFramingStops:
             ObjectBlock(header=ObjectHeader(30, 0, 0x00), data=bytes([0x05, 0x03]))
         ]
 
-    @pytest.mark.parametrize("qualifier", [0x03, 0x0B], ids=["virtual-address-1", "variable-format"])
+    @pytest.mark.parametrize("qualifier", [0x03], ids=["virtual-address-1"])
     def test_unsupported_range_code_stops(self, qualifier: int) -> None:
         fragment = self._parse(_B1 + bytes([0x1E, 0x01, qualifier, 0x00, 0x00, 0x01, 0x64, 0x00, 0x00, 0x00]) + _G7)
 
@@ -674,8 +674,15 @@ class TestResponseFramingStops:
 
     @pytest.mark.parametrize(
         "qualifier",
-        [0x0A, 0x0C, 0x0F, 0x70, 0x76],
-        ids=["range-code-A", "range-code-C", "range-code-F", "prefix-code-7", "prefix-code-7-all-objects"],
+        [0x0A, 0x0C, 0x0F, 0x70, 0x76, 0x0B],
+        ids=[
+            "range-code-A",
+            "range-code-C",
+            "range-code-F",
+            "prefix-code-7",
+            "prefix-code-7-all-objects",
+            "free-format-no-size-prefix",
+        ],
     )
     def test_reserved_qualifier_stops(self, qualifier: int) -> None:
         fragment = self._parse(_B1 + bytes([0x01, 0x02, qualifier, 0x00, 0x00]))

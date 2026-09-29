@@ -73,6 +73,13 @@ _INDEX_PREFIX_VALID_RANGES = frozenset(
     {RangeCode.UINT8_COUNT.value, RangeCode.UINT16_COUNT.value, RangeCode.UINT32_COUNT.value}
 )
 
+# Table 4-6: the free-format range (0xB) is defined only with a size prefix
+# (0x4B, 0x5B, 0x6B). Any other prefix paired with it is a shaded, undefined cell.
+_FREE_FORMAT_RANGE_CODE = RangeCode.FREE_FORMAT.value
+_SIZE_PREFIX_CODES_RAW = frozenset(
+    {PrefixCode.UINT8_SIZE.value, PrefixCode.UINT16_SIZE.value, PrefixCode.UINT32_SIZE.value}
+)
+
 
 # Request functions whose object headers carry no object data (IEEE 1815-2012 4.4): a
 # block is its header, its range field and any index list. Every other request is
@@ -402,10 +409,11 @@ def _has_reserved_code(qualifier: int) -> bool:
     """Whether the qualifier octet is not one IEEE 1815-2012 defines.
 
     Covers the reserved bit (4.2.2.7.3.1), prefix code 7 and range codes 0xA
-    and 0xC to 0xF (Tables 4-4, 4-5), and an index prefix paired with any
-    range but a count range (Table 4-6). A size prefix's Table 4-6 range
-    rule is instead a length-lookup result (`_unsupported_qualifier`), since a
-    size prefix can lack a usable width for other reasons too.
+    and 0xC to 0xF (Tables 4-4, 4-5); an index prefix paired with any range
+    but a count range; and the free-format range (0xB) paired with any
+    prefix but a size prefix (Table 4-6). A size prefix's own Table 4-6
+    range rule is instead a length-lookup result (`_unsupported_qualifier`),
+    since a size prefix can lack a usable width for other reasons too.
     """
     prefix = (qualifier >> 4) & 0x07
     range_code = qualifier & 0x0F
@@ -414,6 +422,7 @@ def _has_reserved_code(qualifier: int) -> bool:
         or prefix == _RESERVED_PREFIX_CODE
         or range_code in _RESERVED_RANGE_CODES
         or (prefix in _INDEX_PREFIX_CODES_RAW and range_code not in _INDEX_PREFIX_VALID_RANGES)
+        or (range_code == _FREE_FORMAT_RANGE_CODE and prefix not in _SIZE_PREFIX_CODES_RAW)
     )
 
 
