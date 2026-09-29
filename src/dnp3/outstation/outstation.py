@@ -46,8 +46,9 @@ from dnp3.outstation.state import (
     SelectState,
 )
 
-# #119 tracks adding logging throughout this module; this logger exists only
-# to warn when a commanded NaN analog output value cannot be stored (below).
+# #119 tracks adding logging throughout this module; today it warns when a
+# commanded NaN analog output value cannot be stored, and logs the traceback
+# of a handler exception caught in process_request (#46).
 _log = logging.getLogger(__name__)
 
 # Group/Variation constants for response building
@@ -765,8 +766,9 @@ class Outstation:
             ([F] to [G], 10.3.3.1 h). A g50v3 sum that would not fit the
             48-bit timestamp is refused (IIN2.2) before this handler is
             called. The handler must not raise or block: it runs
-            synchronously in process_request, so raising propagates
-            (leaving NEED_TIME set) and blocking stalls every connection.
+            synchronously in process_request, so raising leaves NEED_TIME
+            set and answers the WRITE with IIN2.2 instead of applying it
+            (#46), and blocking stalls every connection.
     """
 
     config: OutstationConfig = field(default_factory=OutstationConfig)
@@ -827,6 +829,24 @@ class Outstation:
             List of response fragments. Empty list if no response needed.
             For READ requests with large databases, may return multiple
             fragments respecting max_fragment_size.
+
+        A handler exception is answered the same way a parse failure already
+        is: a null response with IIN2.2, so a bug in one handler costs a
+        request rather than the connection (#46). IIN2.2 here is a reuse
+        beyond its two defined triggers (4.5.11: parse failure, or points
+        that do not exist); no other IIN bit fits a caught handler exception
+        on an otherwise well-formed request. Until a later fix for #46 adds a
+        per-point control guard, a multi-point control that fails partway
+        is answered as a whole: earlier points may already have run, but the
+        response carries no per-point status. A same-sequence DIRECT_OPERATE
+        retry calls the handler again for every point; a same-sequence
+        OPERATE retry does not, since the selection was already terminated
+        in the ``finally`` around ``_handle_operate``, so every point
+        (including one that already ran) answers NO_SELECT with zero
+        handler calls. A no-ack function (IEEE 1815-2012 4.4.5) gets none,
+        matching _refuse_unframed. Only Exception subclasses are caught: a
+        KeyboardInterrupt, SystemExit or asyncio.CancelledError still
+        propagates.
         """
         resolved_peer = peer if peer is not None else UNSPECIFIED_PEER
         try:
@@ -836,7 +856,13 @@ class Outstation:
             self._state.terminate(resolved_peer)
             return [build_null_response(iin=self.iin | IIN.PARAMETER_ERROR)]
 
-        return self._process_request_fragment(request, resolved_peer, data[2:])
+        try:
+            return self._process_request_fragment(request, resolved_peer, data[2:])
+        except Exception:
+            _log.exception("Unhandled exception dispatching function %s", request.header.function.name)
+            if request.header.function in _NO_ACK_FUNCTIONS:
+                return []
+            return [build_null_response(iin=self.iin | IIN.PARAMETER_ERROR, seq=request.header.control.seq)]
 
     def new_connection_id(self) -> int:
         """Return a connection id no transport on this outstation has used yet.
@@ -1513,9 +1539,9 @@ class Outstation:
         exactly the count byte and one 6-octet timestamp (A.23.1.2.3). Kept
         separate from clearing NEED_TIME so every handler call in a WRITE
         happens before _handle_write applies any IIN bit change: if the
-        handler raises, it propagates (as a raising control handler does
-        today, see _handle_select) and no bit in this WRITE has been
-        cleared yet, whatever order the blocks arrived in.
+        handler raises, process_request answers IIN2.2 (#46) and no bit in
+        this WRITE has been cleared yet, whatever order the blocks arrived
+        in.
 
         Args:
             block: g50v1 object block with qualifier 0x07, count 1.
@@ -1981,8 +2007,9 @@ class Outstation:
         elapsed time to [C] (10.3.3.2 step e). Keyed by peer so one master's
         RECORD_CURRENT_TIME never shifts or is consumed by another's g50v3.
         A later RECORD_CURRENT_TIME from ``peer`` with no intervening WRITE
-        discards its earlier instant (step, "shall discard the original
-        recorded time"), matching this assignment's overwrite.
+        discards its earlier instant, per 10.3.3.2's requirement to discard a
+        stale recorded time on a repeat, matching this assignment's
+        overwrite.
         """
         self._record_current_time_instants[peer] = time.monotonic()
         return build_null_response(
