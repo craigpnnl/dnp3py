@@ -222,6 +222,16 @@ class AnalogInputPoint:
     config: AnalogInputConfig = field(default_factory=AnalogInputConfig)
     last_event_value: float = 0.0
 
+    def __post_init__(self) -> None:
+        """Validate the initial value.
+
+        Raises:
+            ValueError: If value is NaN.
+        """
+        if math.isnan(self.value):
+            msg = "Analog input value must not be NaN"
+            raise ValueError(msg)
+
     def update(
         self,
         value: float,
@@ -237,7 +247,15 @@ class AnalogInputPoint:
 
         Returns:
             True if change exceeds deadband and event should be generated.
+
+        Raises:
+            ValueError: If value is NaN. The point keeps its prior value,
+                quality, timestamp and event state; no event is queued.
         """
+        if math.isnan(value):
+            msg = "Analog input value must not be NaN"
+            raise ValueError(msg)
+
         if quality is None:
             quality = AnalogQuality.ONLINE
 
