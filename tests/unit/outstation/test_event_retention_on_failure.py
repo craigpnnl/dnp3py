@@ -50,6 +50,20 @@ def _find_block(responses: Sequence[ResponseFragment], group: int, variation: in
     return None
 
 
+def _find_object_blocks(responses: Sequence[ResponseFragment], group: int, variation: int) -> list[ObjectBlock]:
+    """Return every matching ObjectBlock across all fragments, in order.
+
+    Unlike _find_block, keeps the header (qualifier included), needed when
+    events may be split across more than one block or fragment.
+    """
+    return [
+        obj
+        for frag in responses
+        for obj in frag.objects
+        if obj.header.group == group and obj.header.variation == variation
+    ]
+
+
 def _decode_analog_events(block_data: bytes) -> list[tuple[int, int]]:
     """Decode a g32v1 (qualifier 0x17, 1-byte index) event block into (index, value) pairs.
 
@@ -68,10 +82,22 @@ def _decode_analog_events(block_data: bytes) -> list[tuple[int, int]]:
     return events
 
 
-def _decode_binary_events(block_data: bytes) -> list[int]:
-    """Decode a g2v1 (qualifier 0x17, 1-byte index) event block into a list of indexes."""
-    count = block_data[0]
-    return [block_data[1 + i * 2] for i in range(count)]
+def _decode_binary_events(block_data: bytes, *, qualifier: int = 0x17) -> list[int]:
+    """Decode a g2v1 event block into a list of indexes.
+
+    qualifier 0x17 is a 1-byte count and 1-byte index (every index < 256);
+    qualifier 0x28 is 2-byte count and 2-byte index, used once an index in
+    the block reaches 256 (IEEE 1815-2012 4.2.2.5, Table 4-11).
+    """
+    index_size = 1 if qualifier == 0x17 else 2
+    count = int.from_bytes(block_data[:index_size], "little")
+    record_size = index_size + 1  # index, then 1 fixed flags byte
+    offset = index_size
+    indexes = []
+    for _ in range(count):
+        indexes.append(int.from_bytes(block_data[offset : offset + index_size], "little"))
+        offset += record_size
+    return indexes
 
 
 def _decode_counter_events(block_data: bytes) -> list[tuple[int, int]]:
@@ -185,6 +211,26 @@ class TestUnsolicitedEventsSurviveAFailedBuild:
         assert outstation.database.event_buffer.class2.count == 0
         assert IIN.CLASS_2_EVENTS not in response.header.iin
 
+    def test_two_enabled_classes_both_reach_zero(self) -> None:
+        """The single-class success test above cannot catch a mutant that
+        keeps only the last enabled class's keys for removal (overwriting
+        seen_keys instead of updating it): with one class enabled, last is
+        the only one. Two enabled classes, both with events, distinguish
+        them.
+        """
+        outstation = _one_class2_analog_event(value=9.0)
+        db = outstation.database
+        db.add_binary_input(0, BinaryInputConfig(event_class=EventClass.CLASS_1))
+        db.update_binary_input(0, value=True)
+        outstation._state.unsolicited.class_1_enabled = True
+        outstation._state.unsolicited.class_2_enabled = True
+
+        response = outstation.generate_unsolicited()
+
+        assert response is not None
+        assert db.event_buffer.class1.count == 0
+        assert db.event_buffer.class2.count == 0
+
 
 class TestEventAddedDuringBuildSurvives:
     """Removal is by serial, so an event added mid-build is not swept up with it."""
@@ -259,6 +305,33 @@ class TestOneEventIsNotEncodedTwice:
         assert _decode_binary_events(bytes(matching_blocks[0].data)) == [0]
         assert db.event_buffer.class1.count == 0
 
+    def test_g60v2_plus_g2v0_encodes_the_class_once(self) -> None:
+        """The reverse block order from test_g2v0_plus_g60v2_encodes_the_class_once.
+
+        A mutant where the g2/g32/g22 readers ignore seen_keys (always
+        reading unfiltered) passes with g2v0 first, since nothing has been
+        read yet to ignore. Reading g60v2 first populates seen_keys, and a
+        g2v0 reader that then ignores it re-reads and re-encodes the same
+        event, which this order catches and the other does not.
+        """
+        db = Database()
+        db.add_binary_input(0, BinaryInputConfig(event_class=EventClass.CLASS_1))
+        db.update_binary_input(0, value=True)
+        outstation = Outstation(database=db)
+
+        class1_poll = build_class_poll(class_1=True, class_2=False, class_3=False, seq=0)
+        g2_all = build_all_objects_request(function=FunctionCode.READ, group=2, variation=0, seq=0)
+        combined = RequestFragment(
+            header=class1_poll.header,
+            objects=tuple(class1_poll.objects) + tuple(g2_all.objects),
+        )
+        responses = outstation.process_request(combined.to_bytes())
+
+        matching_blocks = [o for f in responses for o in f.objects if o.header.group == 2]
+        assert len(matching_blocks) == 1
+        assert _decode_binary_events(bytes(matching_blocks[0].data)) == [0]
+        assert db.event_buffer.class1.count == 0
+
     def test_300_event_repeated_class_poll_fits_in_one_fragment_as_at_base(self) -> None:
         db = Database(config=DatabaseConfig(max_binary_inputs=310))
         for i in range(300):
@@ -271,6 +344,19 @@ class TestOneEventIsNotEncodedTwice:
         doubled = dataclasses.replace(request, objects=tuple(request.objects) * 2)
         responses = outstation.process_request(doubled.to_bytes())
 
+        # 600 events (the duplicate) still fits one fragment at the default
+        # max_fragment_size, so the fragment count alone cannot prove no
+        # duplication happened; count the decoded events themselves. Indexes
+        # reach 300, past the 1-byte qualifier's 256 ceiling, so the block's
+        # own qualifier decides how _decode_binary_events reads it.
+        matching_blocks = _find_object_blocks(responses, group=2, variation=1)
+        decoded_indexes = [
+            index
+            for block in matching_blocks
+            for index in _decode_binary_events(bytes(block.data), qualifier=block.header.qualifier)
+        ]
+        assert len(decoded_indexes) == 300
+        assert sorted(decoded_indexes) == list(range(300))
         assert len(responses) == 1  # as at base: 300 events, encoded once, fit one fragment
         assert db.event_buffer.class1.count == 0
 
