@@ -221,7 +221,7 @@ class TestNoAckFailureStillLogsOncePerWindow:
 
 
 class TestTrackingFailureOnFivePoints:
-    """Item 4: the tracking failure used to log per point; the limiter gives one record for the key."""
+    """The tracking failure used to log per point; the limiter gives one record for the key."""
 
     def test_five_points_fail_tracking_after_a_successful_operate_give_one_record(
         self, fake_clock: _FakeClock, caplog: pytest.LogCaptureFixture
