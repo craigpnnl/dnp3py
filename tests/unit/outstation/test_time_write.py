@@ -281,9 +281,9 @@ class TestRuleWBothValid:
 
 
 class TestWriteTimeHandlerRaises:
-    """Item 10: a raising time_handler propagates, and NEED_TIME stays set."""
+    """Item 10: a raising time_handler answers IIN2.2 (#46), and NEED_TIME stays set."""
 
-    def test_raising_handler_propagates_and_leaves_need_time_set(self) -> None:
+    def test_raising_handler_answers_parameter_error_and_leaves_need_time_set(self) -> None:
         def raiser(_timestamp: DNP3Timestamp) -> None:
             msg = "handler refuses the time"
             raise ValueError(msg)
@@ -291,16 +291,18 @@ class TestWriteTimeHandlerRaises:
         outstation = Outstation(time_handler=raiser)
         request = build_write_request(objects=(_g50v1_write(),), seq=12)
 
-        with pytest.raises(ValueError, match="handler refuses the time"):
-            outstation.process_request(request.to_bytes())
+        responses = outstation.process_request(request.to_bytes())
 
+        assert len(responses) == 1
+        assert IIN.PARAMETER_ERROR in responses[0].header.iin
+        assert responses[0].header.control.seq == 12
         assert IIN.NEED_TIME in outstation.iin
 
 
 class TestWriteTimeHandlerRaisesAmongOtherBlocks:
     """Every time_handler call happens before any IIN bit is cleared, so a
     raising handler leaves both NEED_TIME and DEVICE_RESTART unchanged,
-    whichever order the blocks arrived in.
+    whichever order the blocks arrived in; process_request answers IIN2.2 (#46).
     """
 
     def test_raising_handler_after_g80v1_leaves_both_bits_unchanged(self) -> None:
@@ -314,9 +316,10 @@ class TestWriteTimeHandlerRaisesAmongOtherBlocks:
             seq=13,
         )
 
-        with pytest.raises(ValueError, match="handler refuses the time"):
-            outstation.process_request(request.to_bytes())
+        responses = outstation.process_request(request.to_bytes())
 
+        assert len(responses) == 1
+        assert IIN.PARAMETER_ERROR in responses[0].header.iin
         assert IIN.NEED_TIME in outstation.iin
         assert IIN.DEVICE_RESTART in outstation.iin
 
@@ -331,9 +334,10 @@ class TestWriteTimeHandlerRaisesAmongOtherBlocks:
             seq=14,
         )
 
-        with pytest.raises(ValueError, match="handler refuses the time"):
-            outstation.process_request(request.to_bytes())
+        responses = outstation.process_request(request.to_bytes())
 
+        assert len(responses) == 1
+        assert IIN.PARAMETER_ERROR in responses[0].header.iin
         assert IIN.NEED_TIME in outstation.iin
         assert IIN.DEVICE_RESTART in outstation.iin
 

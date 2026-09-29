@@ -26,6 +26,7 @@ from dnp3.application.fragment import ObjectBlock, RequestFragment, ResponseFrag
 from dnp3.application.header import RequestHeader
 from dnp3.application.qualifiers import ObjectHeader
 from dnp3.core.enums import CommandStatus, ControlCode, FunctionCode
+from dnp3.core.flags import IIN
 from dnp3.outstation import Outstation, OutstationConfig
 from dnp3.outstation.handler import CommandResult, DefaultCommandHandler
 from dnp3.outstation.peer import UNSPECIFIED_PEER, PeerId
@@ -348,13 +349,21 @@ class TestOtherRequestsBetweenSelectAndOperate:
 
 
 class TestHandlerRaises:
-    """A handler that raises leaves no selection behind to retry or to operate."""
+    """A handler that raises leaves no selection behind to retry or to operate.
+
+    process_request now answers the raise with a null response carrying
+    IIN2.2 (craigpnnl/dnp3py#46) instead of letting it reach this test's
+    caller; the state guarantees below are unchanged by that.
+    """
 
     def test_raise_during_select_leaves_no_record_to_retry(self) -> None:
         outstation, handler = _outstation()
         handler.raise_on_select.add(5)
-        with pytest.raises(_HandlerFault):
-            _select(outstation, MASTER_A, 4, POINT_5)
+
+        failed = _select(outstation, MASTER_A, 4, POINT_5)
+        assert len(failed) == 1
+        assert IIN.PARAMETER_ERROR in failed[0].header.iin
+        assert failed[0].header.control.seq == 4
 
         assert _statuses(_select(outstation, MASTER_A, 4, POINT_5)) == [(5, SUCCESS)]
         assert handler.selects == [(5, 1000)]
@@ -363,8 +372,10 @@ class TestHandlerRaises:
         outstation, handler = _outstation()
         handler.raise_on_select.add(6)
         both = _crob_block((5, 1000), (6, 6000))
-        with pytest.raises(_HandlerFault):
-            _select(outstation, MASTER_A, 4, both)
+
+        failed = _select(outstation, MASTER_A, 4, both)
+        assert len(failed) == 1
+        assert IIN.PARAMETER_ERROR in failed[0].header.iin
         assert handler.selects == [(5, 1000)]
 
         assert _statuses(_operate(outstation, MASTER_A, 5, both)) == [(5, NO_SELECT), (6, NO_SELECT)]
@@ -375,8 +386,10 @@ class TestHandlerRaises:
         three = _crob_block((5, 1000), (6, 6000), (7, 7000))
         assert _statuses(_select(outstation, MASTER_A, 2, three)) == [(5, SUCCESS), (6, SUCCESS), (7, SUCCESS)]
         handler.raise_on_operate.add(6)
-        with pytest.raises(_HandlerFault):
-            _operate(outstation, MASTER_A, 3, three)
+
+        failed = _operate(outstation, MASTER_A, 3, three)
+        assert len(failed) == 1
+        assert IIN.PARAMETER_ERROR in failed[0].header.iin
         assert handler.operates == [(5, 1000, 2)]
 
         assert _statuses(_operate(outstation, MASTER_A, 3, three)) == [(5, NO_SELECT), (6, NO_SELECT), (7, NO_SELECT)]

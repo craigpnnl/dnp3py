@@ -244,8 +244,9 @@ class TestWriteG50v3Refused:
         clock.value = 5.125
 
         request = build_write_request(objects=(_g50v3_write(),), seq=2)
-        with pytest.raises(ValueError, match="handler refuses the time"):
-            outstation.process_request(request.to_bytes())
+        responses = outstation.process_request(request.to_bytes())
+        assert len(responses) == 1
+        assert IIN.PARAMETER_ERROR in responses[0].header.iin
         assert IIN.NEED_TIME in outstation.iin
 
         clock.value = 5.25
