@@ -8,14 +8,11 @@ value outside the 32-bit signed range and for infinity, failing the whole
 response (issue #159).
 
 Neither IEEE 1815-2012 nor IEEE 1815.2-2025 states a reporting rule for
-NaN (searched: 0 hits for "OVER_RANGE" or "NaN" in the 1815.2-2025 text).
-TestNaNBehaviorAtBase pins the current (unchanged) behavior rather than
-choosing one.
+NaN. TestNaNBehaviorAtBase pins the current behavior rather than choosing
+one.
 """
 
 import math
-
-import pytest
 
 from dnp3.application.builder import build_class_poll, build_integrity_poll
 from dnp3.application.fragment import ResponseFragment
@@ -224,14 +221,14 @@ class TestClassZeroPollWithOverRangePoints:
 
 
 class TestNaNBehaviorAtBase:
-    """NaN is not settled by either standard (searched both texts): behavior is left as at base.
+    """NaN reporting is not settled by either standard: behavior is left as at base.
 
     Base behavior: int(nan) raises ValueError inside the point serializer,
     process_request's handler-exception catch (outstation.py) turns that
     into a null response with IIN.PARAMETER_ERROR, exactly as it did before
-    #159 for every out-of-range analog value. This pins that base behavior
-    is unchanged for NaN specifically, while items 1/2 change it for every
-    finite and infinite out-of-range value.
+    #159 for every out-of-range analog value. TestStaticOverRange and
+    TestEventOverRange cover the finite and infinite out-of-range cases,
+    which this fix does change.
     """
 
     def test_static_nan_raises_and_is_answered_as_parameter_error(self) -> None:
@@ -266,8 +263,3 @@ class TestNaNBehaviorAtBase:
         assert len(responses) == 1
         assert responses[0].objects == (), "no event was queued, so none can be reported"
         assert IIN.PARAMETER_ERROR not in responses[0].header.iin
-
-    def test_int_of_nan_raises_valueerror(self) -> None:
-        """Documents the mechanism: NaN fails both range comparisons and reaches int()."""
-        with pytest.raises(ValueError, match="NaN"):
-            int(math.nan)
