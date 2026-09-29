@@ -92,9 +92,44 @@ class TestStaticOverRange:
         """An in-range value's bytes are untouched by the clamp path (invariant)."""
         assert _static_ai(42.0) == bytes([int(ONLINE)]) + (42).to_bytes(4, "little", signed=True)
 
+    def test_fractional_in_range_truncates_not_rounds(self) -> None:
+        """int() truncation, not round(): 42.7 encodes as 42, never 43."""
+        expected = bytes([int(ONLINE)]) + (42).to_bytes(4, "little", signed=True)
+        assert _static_ai(42.7) == expected
+
+    def test_negative_fractional_in_range_truncates_not_rounds(self) -> None:
+        """Truncation toward zero, not round: -42.7 encodes as -42, never -43."""
+        expected = bytes([int(ONLINE)]) + (-42).to_bytes(4, "little", signed=True)
+        assert _static_ai(-42.7) == expected
+
+    def test_half_above_int32_max_sets_over_range(self) -> None:
+        """IEEE 1815-2012 11.6.1.1 rule 3 compares the true value, not a truncated one.
+
+        2147483647.5 truncates to INT32_MAX, which is in range on its own,
+        but the true value exceeds it: OVER_RANGE must still be set.
+        """
+        expected = bytes([int(ONLINE | AnalogQuality.OVER_RANGE)]) + INT32_MAX.to_bytes(4, "little", signed=True)
+        assert _static_ai(2147483647.5) == expected
+
+    def test_int32_max_plus_one_clamps_over_range(self) -> None:
+        expected = bytes([int(ONLINE | AnalogQuality.OVER_RANGE)]) + INT32_MAX.to_bytes(4, "little", signed=True)
+        assert _static_ai(float(INT32_MAX) + 1.0) == expected
+
+    def test_int32_min_minus_one_clamps_over_range(self) -> None:
+        expected = bytes([int(ONLINE | AnalogQuality.OVER_RANGE)]) + INT32_MIN.to_bytes(4, "little", signed=True)
+        assert _static_ai(float(INT32_MIN) - 1.0) == expected
+
 
 class TestEventOverRange:
     """g32v1 clamp and OVER_RANGE, mirroring the static case."""
+
+    def test_int32_max_is_in_range(self) -> None:
+        expected = bytes([int(ONLINE)]) + INT32_MAX.to_bytes(4, "little", signed=True)
+        assert _event_ai(float(INT32_MAX)) == expected
+
+    def test_int32_min_is_in_range(self) -> None:
+        expected = bytes([int(ONLINE)]) + INT32_MIN.to_bytes(4, "little", signed=True)
+        assert _event_ai(float(INT32_MIN)) == expected
 
     def test_above_int32_max_clamps_over_range(self) -> None:
         expected = AnalogInputEvent32(quality=ONLINE | AnalogQuality.OVER_RANGE, value=INT32_MAX).to_bytes()
@@ -114,6 +149,22 @@ class TestEventOverRange:
 
     def test_in_range_value_byte_identical_to_base(self) -> None:
         assert _event_ai(-54321.0) == bytes([int(ONLINE)]) + (-54321).to_bytes(4, "little", signed=True)
+
+    def test_fractional_in_range_truncates_not_rounds(self) -> None:
+        expected = bytes([int(ONLINE)]) + (42).to_bytes(4, "little", signed=True)
+        assert _event_ai(42.7) == expected
+
+    def test_negative_fractional_in_range_truncates_not_rounds(self) -> None:
+        expected = bytes([int(ONLINE)]) + (-42).to_bytes(4, "little", signed=True)
+        assert _event_ai(-42.7) == expected
+
+    def test_int32_max_plus_one_clamps_over_range(self) -> None:
+        expected = bytes([int(ONLINE | AnalogQuality.OVER_RANGE)]) + INT32_MAX.to_bytes(4, "little", signed=True)
+        assert _event_ai(float(INT32_MAX) + 1.0) == expected
+
+    def test_int32_min_minus_one_clamps_over_range(self) -> None:
+        expected = bytes([int(ONLINE | AnalogQuality.OVER_RANGE)]) + INT32_MIN.to_bytes(4, "little", signed=True)
+        assert _event_ai(float(INT32_MIN) - 1.0) == expected
 
 
 class TestClassZeroPollWithOverRangePoints:

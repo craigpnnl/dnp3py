@@ -225,6 +225,22 @@ class TestClampAndOverRangeV1:
         assert blocks[0].data[2] == OVER_RANGE_FLAG
         assert blocks[0].data[3:7] == struct.pack("<i", self.INT32_MAX)
 
+    def test_fractional_in_range_truncates_not_rounds(self) -> None:
+        """int() truncation, not round(): 42.7 encodes as 42, never 43 (#159 fix round)."""
+        outstation = Outstation()
+        outstation.database.add_analog_output(0, value=42.7, quality=ONLINE)
+        blocks = _g40_blocks(_read_group40(outstation, variation=1))
+        assert blocks[0].data[2] == int(ONLINE)
+        assert blocks[0].data[3:7] == struct.pack("<i", 42)
+
+    def test_negative_fractional_in_range_truncates_not_rounds(self) -> None:
+        """Truncation toward zero: -42.7 encodes as -42, never -43."""
+        outstation = Outstation()
+        outstation.database.add_analog_output(0, value=-42.7, quality=ONLINE)
+        blocks = _g40_blocks(_read_group40(outstation, variation=1))
+        assert blocks[0].data[2] == int(ONLINE)
+        assert blocks[0].data[3:7] == struct.pack("<i", -42)
+
 
 class TestClampFloatVariations:
     """v3 (float32) clamps a too-large finite value; infinity packs as-is."""
