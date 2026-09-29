@@ -120,6 +120,18 @@ class TestStaticOverRange:
         assert _static_ai(float(INT32_MIN) - 1.0) == expected
 
 
+class TestOverRangeBitPreservedInRange:
+    """An OVER_RANGE bit already set on the point is kept for an in-range value.
+
+    _clamp_int_range only ORs OVER_RANGE in; it never clears a bit the
+    caller already set. Today's behavior is "kept", pinned here.
+    """
+
+    def test_preexisting_over_range_bit_survives_in_range_value(self) -> None:
+        expected = bytes([int(ONLINE | AnalogQuality.OVER_RANGE)]) + (42).to_bytes(4, "little", signed=True)
+        assert _static_ai(42.0, quality=ONLINE | AnalogQuality.OVER_RANGE) == expected
+
+
 class TestEventOverRange:
     """g32v1 clamp and OVER_RANGE, mirroring the static case."""
 
