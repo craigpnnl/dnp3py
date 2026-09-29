@@ -1437,18 +1437,24 @@ class Outstation:
         ``peer``'s RECORD_CURRENT_TIME instant, then clear NEED_TIME and
         consume that peer's instant, 10.3.3.2) and g80v1 (clear
         DEVICE_RESTART or NEED_TIME).
+
+        A g50v3 block's delivered time is computed once, in the check pass,
+        and reused for the handler call below: a second clock read there
+        could push a sum the check just accepted past the 48-bit width.
         """
         seq = request.header.control.seq
+        delivered_times: list[DNP3Timestamp | None] = []
         for block in request.objects:
-            error = self._write_block_check(block, peer=peer)
+            error, delivered = self._write_block_check(block, peer=peer)
             if error is not None:
                 return build_null_response(iin=self.iin | error, seq=seq)
+            delivered_times.append(delivered)
 
-        for block in request.objects:
+        for block, delivered in zip(request.objects, delivered_times, strict=True):
             if block.header.group == GROUP_TIME_AND_DATE and block.header.variation == 1:
                 self._call_time_handler(block)
             elif block.header.group == GROUP_TIME_AND_DATE and block.header.variation == _VARIATION_TIME_LAN_WRITE:
-                self._call_time_handler_g50v3(block, peer=peer)
+                self._call_time_handler_g50v3(delivered)
 
         for block in request.objects:
             if block.header.group == GROUP_TIME_AND_DATE and block.header.variation == 1:
@@ -1464,8 +1470,10 @@ class Outstation:
             seq=seq,
         )
 
-    def _write_block_check(self, block: ObjectBlock, *, peer: PeerId = UNSPECIFIED_PEER) -> IIN | None:
-        """Return the IIN error bit a WRITE answers for ``block``, or None when it applies.
+    def _write_block_check(
+        self, block: ObjectBlock, *, peer: PeerId = UNSPECIFIED_PEER
+    ) -> tuple[IIN | None, DNP3Timestamp | None]:
+        """Return the IIN error bit a WRITE answers for ``block``, or the g50v3 delivered time.
 
         Delegates the block-only checks (qualifier, count) to
         ``_write_block_error``. Adds the checks that depend on outstation
@@ -1475,21 +1483,28 @@ class Outstation:
         since that instant must fit the 48-bit timestamp width, or there is
         nothing a conforming DNP3Timestamp can deliver. Both answer IIN2.2
         the same as a bad qualifier.
+
+        For a g50v3 block that passes, the second element is the delivered
+        time computed from this single clock read, so the handler call
+        later in ``_handle_write`` delivers exactly the value this check
+        accepted rather than reading the clock again. For every other
+        block, and for any failing block, the second element is None.
         """
         error = _write_block_error(block)
         if error is not None:
-            return error
+            return error, None
         is_g50v3 = block.header.group == GROUP_TIME_AND_DATE and block.header.variation == _VARIATION_TIME_LAN_WRITE
         if not is_g50v3:
-            return None
+            return None, None
         recorded = self._record_current_time_instants.get(peer)
         if recorded is None:
-            return IIN.PARAMETER_ERROR
+            return IIN.PARAMETER_ERROR, None
         written = DNP3Timestamp.from_bytes(block.data[1:])
         elapsed_ms = round((time.monotonic() - recorded) * 1000)
-        if written.milliseconds + elapsed_ms > _MAX_TIMESTAMP_MS:
-            return IIN.PARAMETER_ERROR
-        return None
+        delivered_ms = written.milliseconds + elapsed_ms
+        if delivered_ms > _MAX_TIMESTAMP_MS:
+            return IIN.PARAMETER_ERROR, None
+        return None, DNP3Timestamp(delivered_ms)
 
     def _call_time_handler(self, block: ObjectBlock) -> None:
         """Decode g50v1's timestamp and call time_handler. Clears no state.
@@ -1510,33 +1525,30 @@ class Outstation:
         timestamp = DNP3Timestamp.from_bytes(block.data[1:])
         self.time_handler(timestamp)
 
-    def _call_time_handler_g50v3(self, block: ObjectBlock, *, peer: PeerId = UNSPECIFIED_PEER) -> None:
-        """Decode g50v3's written time, add elapsed time since ``peer``'s
-        recorded RECORD_CURRENT_TIME instant, and call time_handler. Clears
-        no state and does not consume the instant (see _handle_write).
+    def _call_time_handler_g50v3(self, delivered: DNP3Timestamp | None) -> None:
+        """Call time_handler with ``delivered``, g50v3's already-checked time.
 
-        IEEE 1815-2012 10.3.3.2 step e: the outstation's time is the time in
-        the write request plus the milliseconds from [B] (the recorded
-        instant) to [C] (now, the instant the clock is set). The block has
-        already passed _write_block_check, so ``peer`` has a recorded
-        instant, the sum fits 48 bits, and the data is exactly the count
-        byte and one 6-octet timestamp (A.23.3). Kept separate from clearing
-        NEED_TIME and consuming the instant so, as with g50v1, a raising
-        handler leaves both unchanged.
+        Clears no state and does not consume the instant (see
+        _handle_write). ``delivered`` is the value ``_write_block_check``
+        computed from IEEE 1815-2012 10.3.3.2 step e (the written time plus
+        the milliseconds from [B], the recorded instant, to [C], the instant
+        the clock was read): calling this with anything but that value
+        would let a WRITE deliver a time the 48-bit check never accepted.
+        Kept separate from clearing NEED_TIME and consuming the instant so,
+        as with g50v1, a raising handler leaves both unchanged.
 
         Args:
-            block: g50v3 object block with qualifier 0x07, count 1.
+            delivered: The time ``_write_block_check`` computed for this
+                block, or None if reached without one.
         """
         if self.time_handler is None:
             return
-        recorded = self._record_current_time_instants.get(peer)
-        if recorded is None:
-            # _write_block_check already refused any peer with no instant.
-            msg = "_call_time_handler_g50v3 reached with no recorded instant for peer"
+        if delivered is None:
+            # _write_block_check already refused any block reaching here
+            # with no computed delivered time.
+            msg = "_call_time_handler_g50v3 reached with no delivered time"
             raise RuntimeError(msg)
-        written = DNP3Timestamp.from_bytes(block.data[1:])
-        elapsed_ms = round((time.monotonic() - recorded) * 1000)
-        self.time_handler(DNP3Timestamp(written.milliseconds + elapsed_ms))
+        self.time_handler(delivered)
 
     def _handle_write_iin(self, block: ObjectBlock) -> None:
         """Apply a WRITE of g80v1 (Internal Indications): clear a bit written 0.

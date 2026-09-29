@@ -33,6 +33,29 @@ class _FakeClock:
         return self.value
 
 
+class _SteppingClock:
+    """A time.monotonic stand-in that returns one value per call from a fixed
+    sequence, and raises if called more times than the sequence provides.
+
+    Proves how many times the code under test reads the clock: giving it
+    exactly the values a correct single read needs, with no spare, turns an
+    unwanted extra read into a loud failure instead of a silently wrong
+    delivered time.
+    """
+
+    def __init__(self, *values: float) -> None:
+        self._values = list(values)
+        self._calls = 0
+
+    def __call__(self) -> float:
+        if self._calls >= len(self._values):
+            msg = f"clock called {self._calls + 1} times; only {len(self._values)} values given"
+            raise AssertionError(msg)
+        value = self._values[self._calls]
+        self._calls += 1
+        return value
+
+
 _PEER_A = PeerId(source=1, connection=1)
 _PEER_B = PeerId(source=2, connection=2)
 
@@ -343,21 +366,43 @@ class TestWriteG50v3Bounded:
         assert not response.header.iin & IIN.PARAMETER_ERROR
 
 
-class TestCallTimeHandlerG50v3FailsClosed:
-    """The 'cannot happen' guard in _call_time_handler_g50v3 fails closed
-    (#142). _write_block_check refuses any peer with no recorded instant
-    before this method is ever called, so reaching it with none is a bug in
-    that guarantee; it must raise rather than silently deliver nothing
-    while the caller still clears NEED_TIME.
-    """
+class TestWriteG50v3OneClockReadPerBlock:
+    """A g50v3 WRITE reads the clock once per block and uses that one value
+    for both the 48-bit check and the delivered time (#142 delta review): a
+    second, later read could push a written time that passed the check over
+    the 48-bit width before time_handler ever sees it."""
 
-    def test_raises_when_reached_with_no_recorded_instant(self) -> None:
+    def test_moving_clock_never_delivers_above_the_48_bit_maximum(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        clock = _SteppingClock(0.0, 0.0004, 0.0008)
+        monkeypatch.setattr("dnp3.outstation.outstation.time.monotonic", clock)
         delivered: list[DNP3Timestamp] = []
         outstation = Outstation(time_handler=delivered.append)
-        block = _g50v3_write()
+        _record_current_time(outstation, seq=1)
 
-        with pytest.raises(RuntimeError, match="no recorded instant"):
-            outstation._call_time_handler_g50v3(block)
+        octets = DNP3Timestamp(_MAX_TIMESTAMP_MS).to_bytes()
+        response = _write(outstation, _g50v3(0x07, bytes([1]) + octets), seq=2)
+
+        if delivered:
+            assert delivered == [DNP3Timestamp(_MAX_TIMESTAMP_MS)]
+            assert not response.header.iin & IIN.PARAMETER_ERROR
+        else:
+            assert IIN.PARAMETER_ERROR in response.header.iin
+
+
+class TestCallTimeHandlerG50v3FailsClosed:
+    """The 'cannot happen' guard in _call_time_handler_g50v3 fails closed
+    (#142). _write_block_check computes a delivered time for every g50v3
+    block it passes, so reaching this method with none is a bug in that
+    guarantee; it must raise rather than silently deliver nothing while the
+    caller still clears NEED_TIME.
+    """
+
+    def test_raises_when_reached_with_no_delivered_time(self) -> None:
+        delivered: list[DNP3Timestamp] = []
+        outstation = Outstation(time_handler=delivered.append)
+
+        with pytest.raises(RuntimeError, match="no delivered time"):
+            outstation._call_time_handler_g50v3(None)
 
         assert delivered == []
 
