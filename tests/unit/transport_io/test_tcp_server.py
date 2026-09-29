@@ -610,6 +610,49 @@ class TestServerChannelCloseIsBounded:
             await reader_task
             await server.stop()
 
+    @pytest.mark.asyncio
+    async def test_concurrent_close_counts_once_and_waits_for_closed(self) -> None:
+        """A second close() started while the first is still CLOSING waits until CLOSED and counts one disconnect."""
+        config = TcpServerConfig(host="127.0.0.1", port=0, close_timeout=0.3)
+        server = TcpServer(config=config)
+        await server.start()
+        addr = server.local_address
+        assert addr is not None
+
+        _client_reader, client_writer = await asyncio.open_connection(addr[0], addr[1])
+        channel = await asyncio.wait_for(server.accept(), timeout=2.0)
+
+        try:
+            async def stuff_until_stalled() -> None:
+                while True:
+                    await channel.write_all(self.STUFFING)
+
+            with pytest.raises(TimeoutError):
+                await asyncio.wait_for(stuff_until_stalled(), timeout=0.3)
+
+            observed_states_on_return: list[ChannelState] = []
+
+            async def call_close() -> None:
+                await channel.close()
+                observed_states_on_return.append(channel.state)
+
+            first = asyncio.create_task(call_close())
+            await asyncio.sleep(0.05)
+            assert channel.state == ChannelState.CLOSING
+
+            second = asyncio.create_task(call_close())
+            await asyncio.sleep(0.05)
+            assert not second.done(), "second close() must wait for the channel to finish closing"
+
+            await asyncio.wait_for(asyncio.gather(first, second), timeout=5.0)
+
+            assert observed_states_on_return == [ChannelState.CLOSED, ChannelState.CLOSED]
+            assert channel.state == ChannelState.CLOSED
+            assert channel.statistics.disconnect_count == 1
+        finally:
+            client_writer.transport.abort()
+            await server.stop()
+
 
 class TestServerChannelCloseTimeoutPropagation:
     """The server's configured close_timeout must reach each accepted connection."""

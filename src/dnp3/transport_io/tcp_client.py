@@ -35,6 +35,7 @@ class TcpClientChannel:
     _statistics: ChannelStatistics = field(default_factory=ChannelStatistics, init=False)
     _reader: asyncio.StreamReader | None = field(default=None, init=False)
     _writer: asyncio.StreamWriter | None = field(default=None, init=False)
+    _close_lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False)
 
     @property
     def state(self) -> ChannelState:
@@ -152,34 +153,35 @@ class TcpClientChannel:
         Waits at most `config.close_timeout` for unsent bytes to drain, then
         aborts.
         """
-        if self._state == ChannelState.CLOSED:
-            return
+        async with self._close_lock:
+            if self._state == ChannelState.CLOSED:
+                return
 
-        self._state = ChannelState.CLOSING
+            self._state = ChannelState.CLOSING
 
-        try:
-            if self._writer is not None:
-                try:
-                    self._writer.close()
-                    await asyncio.wait_for(self._writer.wait_closed(), timeout=self.config.close_timeout)
-                except TimeoutError:
-                    # A peer that stopped reading never drains the send buffer, so a
-                    # graceful close would wait forever.
-                    self._writer.transport.abort()
-                except asyncio.CancelledError:
-                    # Cancelled while waiting for the drain: abort so the transport
-                    # is not left half-closed, then let the cancellation propagate.
-                    self._writer.transport.abort()
-                    raise
-                except (OSError, ConnectionError):
-                    pass  # Ignore errors during close
-        finally:
-            # Runs on every path, including a re-raised cancellation, so the
-            # channel never stays stuck in CLOSING.
-            self._writer = None
-            self._reader = None
-            self._state = ChannelState.CLOSED
-            self._statistics.disconnect_count += 1
+            try:
+                if self._writer is not None:
+                    try:
+                        self._writer.close()
+                        await asyncio.wait_for(self._writer.wait_closed(), timeout=self.config.close_timeout)
+                    except TimeoutError:
+                        # A peer that stopped reading never drains the send buffer, so a
+                        # graceful close would wait forever.
+                        self._writer.transport.abort()
+                    except asyncio.CancelledError:
+                        # Cancelled while waiting for the drain: abort so the transport
+                        # is not left half-closed, then let the cancellation propagate.
+                        self._writer.transport.abort()
+                        raise
+                    except (OSError, ConnectionError):
+                        pass  # Ignore errors during close
+            finally:
+                # Runs on every path, including a re-raised cancellation, so the
+                # channel never stays stuck in CLOSING.
+                self._writer = None
+                self._reader = None
+                self._state = ChannelState.CLOSED
+                self._statistics.disconnect_count += 1
 
     async def read(self, max_bytes: int) -> bytes:
         """Read up to max_bytes from the channel.

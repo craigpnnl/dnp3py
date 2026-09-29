@@ -668,3 +668,39 @@ class TestCloseIsBounded:
         finally:
             server.close()
             await server.wait_closed()
+
+    async def test_concurrent_close_counts_once_and_waits_for_closed(self) -> None:
+        """A second close() started while the first is still CLOSING waits until CLOSED and counts one disconnect."""
+        server, port, writers = await self._peer_that_never_reads()
+        try:
+            channel = TcpClientChannel(config=TcpConfig(host="127.0.0.1", port=port, close_timeout=0.3))
+            await channel.open()
+
+            async def stuff_until_stalled() -> None:
+                while True:
+                    await channel.write_all(self.STUFFING)
+
+            with pytest.raises(TimeoutError):
+                await asyncio.wait_for(stuff_until_stalled(), timeout=0.3)
+
+            observed_states_on_return: list[ChannelState] = []
+
+            async def call_close() -> None:
+                await channel.close()
+                observed_states_on_return.append(channel.state)
+
+            first = asyncio.create_task(call_close())
+            await asyncio.sleep(0.05)
+            assert channel.state == ChannelState.CLOSING
+
+            second = asyncio.create_task(call_close())
+            await asyncio.sleep(0.05)
+            assert not second.done(), "second close() must wait for the channel to finish closing"
+
+            await asyncio.wait_for(asyncio.gather(first, second), timeout=5.0)
+
+            assert observed_states_on_return == [ChannelState.CLOSED, ChannelState.CLOSED]
+            assert channel.state == ChannelState.CLOSED
+            assert channel.statistics.disconnect_count == 1
+        finally:
+            await self._stop(server, writers)
