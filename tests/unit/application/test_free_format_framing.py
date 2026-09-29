@@ -321,3 +321,51 @@ class TestFreeFormatRequestPath:
         assert truncation is None
         assert [(b.header.group, b.header.variation) for b in blocks] == [(70, 1), (80, 1)]
         assert blocks[0].data == count + obj
+
+
+class TestHeaderOnlyFreeFormatIsNotWalked:
+    """#175: a header-only request carries no object data, so a free-format
+    qualifier must frame as its header and range field alone, not walk a
+    size field that is really the next object's header.
+    """
+
+    def test_read_of_g70_then_g1v0_all_objects_frames_two_header_only_blocks(self) -> None:
+        # g70v1 qualifier 0x5B (UINT16_SIZE prefix, free-format range), count=1,
+        # with no object data (READ carries headers only). Immediately followed
+        # by a second header: g1v0, qualifier 0x06 (ALL_OBJECTS).
+        count = bytes([1])
+        read_header = bytes([70, 1, 0x5B]) + count
+        all_objects_header = bytes([1, 0, 0x06])
+        data = read_header + all_objects_header
+
+        blocks, truncation = frame_request_object_blocks(FunctionCode.READ, data)
+
+        assert truncation is None
+        assert [(b.header.group, b.header.variation) for b in blocks] == [(70, 1), (1, 0)]
+        assert blocks[0].data == count
+        assert blocks[1].data == b""
+
+    def test_read_of_g70_with_0x4b_count_zero_frames_header_alone(self) -> None:
+        count = bytes([0])
+        data = bytes([70, 1, 0x4B]) + count
+
+        blocks, truncation = frame_request_object_blocks(FunctionCode.READ, data)
+
+        assert truncation is None
+        assert [(b.header.group, b.header.variation) for b in blocks] == [(70, 1)]
+        assert blocks[0].data == count
+
+    def test_write_of_g70_via_0x5b_is_unaffected(self) -> None:
+        """The gate does not touch the data-carrying path: proves the fix is
+        additive, not a rewrite of the WRITE/response walk.
+        """
+        payload = bytes([0xAA, 0xBB, 0xCC])
+        count = bytes([1])
+        obj = _sized_object(2, payload)
+        data = bytes([70, 1, 0x5B]) + count + obj + _G80V1
+
+        blocks, truncation = frame_request_object_blocks(FunctionCode.WRITE, data)
+
+        assert truncation is None
+        assert [(b.header.group, b.header.variation) for b in blocks] == [(70, 1), (80, 1)]
+        assert blocks[0].data == count + obj

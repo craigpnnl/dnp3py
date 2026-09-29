@@ -215,6 +215,12 @@ def _index_list_length(count: int, prefix_width: int) -> int:
     return prefix_width * max(count, 0)
 
 
+def _no_object_data_length(_count: int, _prefix_width: int) -> int:
+    # A header-only block names objects by its range field alone; a size
+    # prefix describes an object's width in the response or WRITE it has none of.
+    return 0
+
+
 def _fixed_width_length(width: int, count: int, prefix_width: int) -> int:
     # The octet-aligned case of dnp3.objects.layout.data_length, for registry-only objects.
     if width < 0 or count < 0 or prefix_width < 0:
@@ -424,6 +430,11 @@ def _unsupported_qualifier(header: ObjectHeader) -> TruncationReason | None:
 
 def _lookup_index_list_length(header: ObjectHeader) -> _DataLength | TruncationReason:
     """Length function for a block with no object data: one index prefix per object."""
+    if header.range_code == RangeCode.FREE_FORMAT and header.prefix_code.value in _SIZE_PREFIX_CODES_RAW:
+        # Table 4-6's free-format pairing sizes each object's data; a
+        # header-only block carries no object data to size, so it frames as
+        # its header and range field alone (#175).
+        return _no_object_data_length
     return _unsupported_qualifier(header) or _index_list_length
 
 
@@ -547,9 +558,16 @@ def _frame_object_blocks(
         if _has_reserved_code(header.qualifier):
             return blocks, _stopped_at(TruncationReason.RESERVED_QUALIFIER, offset, header)
 
-        if header.range_code == RangeCode.FREE_FORMAT and header.prefix_code.value in _SIZE_PREFIX_CODES_RAW:
-            # Table 4-6's one valid free-format pairing: each object sizes
-            # itself, ahead of both length-lookup functions below.
+        if (
+            header.range_code == RangeCode.FREE_FORMAT
+            and header.prefix_code.value in _SIZE_PREFIX_CODES_RAW
+            and lookup is _lookup_data_length
+        ):
+            # Table 4-6's one valid free-format pairing, ahead of both
+            # length-lookup functions below: each object sizes itself, but
+            # only where the block carries object data (response or WRITE).
+            # A header-only request has no data to walk (#175); it falls
+            # through to lookup(header), which frames it by range alone.
             try:
                 block, block_consumed = _walk_free_format_block(remaining, header)
             except ParseError:
