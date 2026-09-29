@@ -100,6 +100,20 @@ class TestG70BlockFramesAndStepsOver:
         assert blocks[0].data == count
         assert _decode_g30v1(blocks[1].data).value == _G30V1_VALUE
 
+    def test_zero_length_object_as_the_last_block(self) -> None:
+        """A zero-length object whose size field exactly exhausts the data must
+        still frame: the bounds check must not fire on an exact fit.
+        """
+        count = bytes([1])
+        obj = _sized_object(1, b"")
+        data = bytes([70, 1, 0x4B]) + count + obj
+
+        blocks, truncation = frame_response_object_blocks(data)
+
+        assert [(b.header.group, b.header.variation) for b in blocks] == [(70, 1)]
+        assert blocks[0].data == count + obj
+        assert truncation is None
+
 
 class TestFreeFormatTruncation:
     """A count, a size field, or a declared payload running past the end stops the
