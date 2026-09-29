@@ -223,13 +223,19 @@ class AnalogInputPoint:
     last_event_value: float = 0.0
 
     def __post_init__(self) -> None:
-        """Validate the initial value.
+        """Validate the initial value and last_event_value.
 
         Raises:
-            ValueError: If value is NaN.
+            ValueError: If value or last_event_value is NaN. A NaN
+                last_event_value would make every later deadband
+                comparison (abs(value - last_event_value) >= deadband)
+                False, silently stopping events forever.
         """
         if math.isnan(self.value):
             msg = "Analog input value must not be NaN"
+            raise ValueError(msg)
+        if math.isnan(self.last_event_value):
+            msg = "Analog input last_event_value must not be NaN"
             raise ValueError(msg)
 
     def update(
@@ -239,6 +245,11 @@ class AnalogInputPoint:
         timestamp: DNP3Timestamp | None = None,
     ) -> bool:
         """Update point value.
+
+        This is the validated path: last_event_value is only ever set here,
+        after value has already passed the NaN guard below. A direct
+        attribute write (``point.last_event_value = x``) bypasses that
+        guard and is not validated.
 
         Args:
             value: New analog value.
