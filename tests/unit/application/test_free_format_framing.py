@@ -19,6 +19,7 @@ from dnp3.application.fragment import Truncation, TruncationReason
 from dnp3.application.parser import (
     frame_request_object_blocks,
     frame_response_object_blocks,
+    parse_request,
     parse_response_object_blocks,
 )
 from dnp3.core.enums import FunctionCode
@@ -321,3 +322,38 @@ class TestFreeFormatRequestPath:
         assert truncation is None
         assert [(b.header.group, b.header.variation) for b in blocks] == [(70, 1), (80, 1)]
         assert blocks[0].data == count + obj
+
+
+class TestReadOfG70V5FramesAsOneBlockNoTruncation:
+    """5.3.3 EX 5-2: a READ request carrying g70v5 (file transport). A.27.5.1.1
+    says a File Transport object appears in requests with function codes 1
+    (READ) and 2 (WRITE): unlike most requests, this object is not
+    header-only, so it must be walked for its data on the READ path too.
+
+    The free-format branch above already runs unconditionally on any path
+    (`_frame_object_blocks` never checks the lookup before it), so this
+    already holds at this SHA. These tests pin it against a regression that
+    adds a header-only gate for READ: IEEE 1815-2012 grants no such
+    exemption to g70v5.
+    """
+
+    # AC (seq 3, FIR+FIN)/FC(READ), g70v5, qualifier 0x5B, count 1, size 8,
+    # file handle 0x99887766, block number 2 with the last bit clear.
+    _EX_5_2_REQUEST = bytes([0xC3, 0x01, 70, 5, 0x5B, 0x01, 0x08, 0x00, 0x66, 0x77, 0x88, 0x99, 0x02, 0x00, 0x00, 0x00])
+
+    def test_ex_5_2_alone(self) -> None:
+        fragment = parse_request(self._EX_5_2_REQUEST)
+
+        assert fragment.truncation is None
+        assert [(b.header.group, b.header.variation) for b in fragment.objects] == [(70, 5)]
+        assert fragment.objects[0].data == bytes([0x01, 0x08, 0x00, 0x66, 0x77, 0x88, 0x99, 0x02, 0x00, 0x00, 0x00])
+
+    def test_ex_5_2_then_g60v4_header_is_reached(self) -> None:
+        g60v4 = bytes([60, 4, 0x06])  # class 3 poll, ALL_OBJECTS, header-only
+        data = self._EX_5_2_REQUEST + g60v4
+
+        fragment = parse_request(data)
+
+        assert fragment.truncation is None
+        assert [(b.header.group, b.header.variation) for b in fragment.objects] == [(70, 5), (60, 4)]
+        assert fragment.objects[1].data == b""
