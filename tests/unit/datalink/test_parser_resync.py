@@ -247,8 +247,8 @@ class TestFrameParserResyncAcrossChunks:
 
 
 class TestFrameParserResyncMinLengthField:
-    """A LENGTH field below 5 is malformed (IEEE 1815-2012 9.2.4.1.2: the
-    minimum value is 5, indicating only the header is present). Issue #65:
+    """A LENGTH field below 5 is malformed: LENGTH counts the header's
+    own 5 octets at least (IEEE 1815-2012 9.2.4.1.2). Issue #65:
     without a check, the resulting negative user_data_length reached
     `_calculate_frame_size` and produced a frame smaller than the 10-byte
     header itself. Built with raw bytes rather than `DataLinkHeader`,

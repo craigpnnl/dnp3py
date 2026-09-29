@@ -1,10 +1,10 @@
 """Tests for the LENGTH field lower bound in DataLinkHeader.from_bytes
-(issue #65). IEEE 1815-2012 9.2.4.1.2: the LENGTH field's minimum value is
-5, indicating only the header is present. FrameParser's resync loop skips
-a short header before it ever reaches `DataLinkHeader.from_bytes`, but
-`DataLinkFrame.from_bytes` calls that classmethod directly, so the header
-itself must refuse to represent a shorter frame rather than compute a
-negative `user_data_length`.
+(issue #65). LENGTH counts the header's 5 octets at least (IEEE 1815-2012
+9.2.4.1.2); a smaller value leaves no room for a full header.
+FrameParser's resync loop skips a short header before it ever reaches
+`DataLinkHeader.from_bytes`, but `DataLinkFrame.from_bytes` calls that
+classmethod directly, so the header itself must refuse to represent a
+shorter frame rather than compute a negative `user_data_length`.
 """
 
 import pytest
