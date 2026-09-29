@@ -378,10 +378,16 @@ def _walk_group0_block(data: bytes, header: ObjectHeader) -> tuple[ObjectBlock, 
     Raises:
         ParseError: If the range field, an object's type/length window, or its
             declared value runs past the end of the data.
+        _RangeNamesNoObject: If a start-stop range's stop index is below its
+            start index: this path never frames a header-only block, so a
+            stop below start names no object here (4.2.2.7.3.3).
     """
     consumed = OBJECT_HEADER_SIZE
     parsed_range = _parse_range(data[consumed:], header.range_code)
     consumed += parsed_range.bytes_consumed
+    if header.range_code in _START_STOP_CODES and parsed_range.count < 1:
+        msg = f"Start-stop range {parsed_range.start}..{parsed_range.stop} names no object"
+        raise _RangeNamesNoObject(msg)
     prefix_size = get_prefix_size(header.prefix_code)
 
     for _ in range(parsed_range.count):
@@ -631,13 +637,19 @@ def _frame_object_blocks(
             and lookup is _lookup_data_length
         ):
             # Table 12-1: READ carries no group 0 attribute data (function
-            # code 1, qualifier 00/06 only); WRITE (function 2) and RESPONSE
-            # (129) do. `lookup is _lookup_data_length` is exactly that split:
-            # the header-only request path (READ) never reaches here.
+            # code 1, qualifier 00/06 only). Every request `_HEADER_ONLY_FUNCTIONS`
+            # does not name (WRITE, SELECT, OPERATE, and the rest) and every
+            # RESPONSE (129) do. `lookup is _lookup_data_length` is exactly
+            # that split: a header-only request never reaches here.
+            unsupported = _unsupported_qualifier(header)
+            if unsupported is not None:
+                return blocks, _stopped_at(unsupported, offset, header)
             try:
                 block, block_consumed = _walk_group0_block(remaining, header)
             except ParseError:
                 return blocks, _stopped_at(TruncationReason.DATA_SHORTER_THAN_DECLARED, offset, header)
+            except _RangeNamesNoObject:
+                return blocks, _stopped_at(TruncationReason.RANGE_NAMES_NO_OBJECT, offset, header)
             blocks.append(block)
             offset += block_consumed
             continue

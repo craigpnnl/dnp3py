@@ -172,6 +172,45 @@ class TestGroup0Truncation:
         assert truncation == Truncation(TruncationReason.DATA_SHORTER_THAN_DECLARED, 0, 0, 217, 0x00)
 
 
+class TestGroup0QualifierChecks:
+    """A malformed qualifier is refused before the group 0 walk starts, the
+    same as every other group gets (`_unsupported_qualifier`), and a
+    start-stop range whose stop is below its start names no object here
+    either (4.2.2.7.3.3): this path never frames a header-only block.
+    """
+
+    def test_reserved_range_code_refused(self) -> None:
+        # range code 3: reserved (Table 4-5), no defined range size.
+        data = bytes([0, 217, 0x03])
+
+        blocks, truncation = frame_response_object_blocks(data)
+
+        assert blocks == []
+        assert truncation == Truncation(TruncationReason.UNSUPPORTED_RANGE, 0, 0, 217, 0x03)
+
+    def test_start_stop_below_start_refused(self) -> None:
+        header = bytes([0, 217, 0x00])
+        obj_range = bytes([0x05, 0x02])  # start=5, stop=2: names no object
+        data = header + obj_range
+
+        blocks, truncation = frame_response_object_blocks(data)
+
+        assert blocks == []
+        assert truncation == Truncation(TruncationReason.RANGE_NAMES_NO_OBJECT, 0, 0, 217, 0x00)
+
+    def test_size_prefix_qualifier_refused(self) -> None:
+        # qualifier 0x47: prefix 4 (UINT8_SIZE) with range 7 (UINT8_COUNT), a
+        # Table 4-6 shaded cell for every group, group 0 included.
+        header = bytes([0, 217, 0x47])
+        count = bytes([1])
+        data = header + count + bytes([0x99, 0x02, 0x01, 0xAA])  # would misparse if not caught
+
+        blocks, truncation = frame_response_object_blocks(data)
+
+        assert blocks == []
+        assert truncation == Truncation(TruncationReason.SIZE_PREFIX, 0, 0, 217, 0x47)
+
+
 class TestGroup0NoObjectVariationsUnchanged:
     """Variations 0 and 254 have no object body (4.2.2.7.2.1; A.1.43.2) and
     stay refused as UNKNOWN_WIDTH, the pre-existing behavior for an unmapped
@@ -201,7 +240,10 @@ class TestGroup0NoObjectVariationsUnchanged:
 
 
 class TestGroup0RequestPath:
-    """Table 12-1: READ carries no group 0 attribute data; WRITE does."""
+    """Table 12-1: READ carries no group 0 attribute data; every request
+    `_HEADER_ONLY_FUNCTIONS` does not name (WRITE, SELECT, OPERATE, and the
+    rest) does, since it shares the response path's `_lookup_data_length`.
+    """
 
     def test_read_request_unchanged(self) -> None:
         # 5.5.6.2 EX 5-11's own request: READ of g0v255 from index 0, header-only.
@@ -212,6 +254,20 @@ class TestGroup0RequestPath:
         assert fragment.truncation is None
         assert [(b.header.group, b.header.variation) for b in fragment.objects] == [(0, 255)]
         assert fragment.objects[0].data == bytes([0x00, 0x00])  # range only, no TLV walked
+
+    def test_select_carries_data_then_g80v1(self) -> None:
+        # SELECT is not in _HEADER_ONLY_FUNCTIONS, so it walks group 0 data
+        # the same as WRITE: the gate is not a READ/WRITE split.
+        header = bytes([0, 240, 0x00])
+        obj_range = bytes([0x00, 0x00])
+        tlv = bytes([0x02, 0x02, 0x00, 0x08])
+        data = header + obj_range + tlv + _G80V1
+
+        blocks, truncation = frame_request_object_blocks(FunctionCode.SELECT, data)
+
+        assert truncation is None
+        assert [(b.header.group, b.header.variation) for b in blocks] == [(0, 240), (80, 1)]
+        assert blocks[0].data == obj_range + tlv
 
     def test_write_carries_data_then_g80v1(self) -> None:
         # g0v240 (Maximum Transmit Fragment Size): Table 12-1 lists it writable.
