@@ -86,6 +86,10 @@ _SIZE_PREFIX_CODES_RAW = frozenset(
 # layout or registry row and stops at UNKNOWN_WIDTH.
 _GROUP_0_NO_OBJECT_VARIATIONS = frozenset({0, 254})
 
+# A.1.1.2.2 (and every other A.1 variation): attribute data type code (1
+# octet) plus length (1 octet), ahead of each object's value.
+_ATTRIBUTE_TYPE_LENGTH_SIZE = 2
+
 
 # Request functions whose object headers carry no object data (IEEE 1815-2012 4.4): a
 # block is its header, its range field and any index list. Every other request is
@@ -380,11 +384,11 @@ def _walk_group0_block(data: bytes, header: ObjectHeader) -> tuple[ObjectBlock, 
             raise ParseError(msg)
         consumed += prefix_size
         remaining = data[consumed:]
-        if len(remaining) < 2:
-            msg = f"Attribute type/length window requires 2 bytes, got {len(remaining)}"
+        if len(remaining) < _ATTRIBUTE_TYPE_LENGTH_SIZE:
+            msg = f"Attribute type/length window requires {_ATTRIBUTE_TYPE_LENGTH_SIZE} bytes, got {len(remaining)}"
             raise ParseError(msg)
         value_length = remaining[1]
-        consumed += 2
+        consumed += _ATTRIBUTE_TYPE_LENGTH_SIZE
         remaining = data[consumed:]
         if len(remaining) < value_length:
             msg = f"Attribute value requires {value_length} bytes, got {len(remaining)}"
