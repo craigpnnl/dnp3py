@@ -329,6 +329,29 @@ class TestRecordCurrentTimePerPeer:
         assert IIN.PARAMETER_ERROR in response.header.iin
 
 
+class TestWriteG50v3ConsumesOnlyItsOwnPeer:
+    """A successful WRITE consumes only the writing peer's instant (#142);
+    another peer's own instant is still usable afterward."""
+
+    def test_a_second_peers_instant_stays_usable_after_this_peers_write(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        clock = _FakeClock(100.0)
+        monkeypatch.setattr("dnp3.outstation.outstation.time.monotonic", clock)
+        delivered: list[DNP3Timestamp] = []
+        outstation = Outstation(time_handler=delivered.append)
+
+        _record_current_time(outstation, seq=1, peer=_PEER_A)
+        _record_current_time(outstation, seq=2, peer=_PEER_B)
+        clock.value = 100.25
+        _write(outstation, _g50v3_write(), seq=3, peer=_PEER_A)
+
+        delivered.clear()
+        clock.value = 100.5
+        response = _write(outstation, _g50v3_write(), seq=4, peer=_PEER_B)
+
+        assert delivered == [DNP3Timestamp(_TIME_MS + 500)]
+        assert not response.header.iin & IIN.PARAMETER_ERROR
+
+
 class TestWriteG50v3Bounded:
     """A written time plus elapsed time that would not fit the 48-bit
     timestamp is refused in the check pass (#142), before any handler call
