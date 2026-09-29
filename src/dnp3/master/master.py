@@ -19,7 +19,7 @@ from dnp3.application.builder import (
 )
 from dnp3.application.fragment import ObjectBlock, RequestFragment, ResponseFragment
 from dnp3.application.header import RequestHeader
-from dnp3.application.parser import parse_response
+from dnp3.application.parser import ParseError, parse_response
 from dnp3.core.enums import FunctionCode
 from dnp3.master.commands import (
     CommandBuilder,
@@ -743,11 +743,17 @@ class Master:
             data: Raw response bytes.
 
         Returns:
-            Response info, or None if parse failed.
+            Response info, or None if the parser's own ParseError signaled
+            a malformed fragment.
+
+        Raises:
+            Exception: Anything the parser raises besides ParseError
+                propagates to the caller.
         """
         try:
             response = parse_response(data)
-        except Exception:
+        except ParseError as exc:
+            logger.warning("Failed to parse response (%d bytes): %s", len(data), exc)
             return None
 
         return self._process_response_fragment(response)
