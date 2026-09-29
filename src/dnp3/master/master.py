@@ -743,7 +743,12 @@ class Master:
             data: Raw response bytes.
 
         Returns:
-            Response info, or None if parse failed.
+            Response info, or None if the parser's own ParseError signaled
+            a malformed fragment.
+
+        Raises:
+            Exception: Anything the parser raises besides ParseError
+                propagates to the caller.
         """
         try:
             response = parse_response(data)
