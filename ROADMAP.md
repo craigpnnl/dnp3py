@@ -28,7 +28,7 @@ current work items.
    (epic: #189)
 7. Alarms. Alarm groups and alarm ranges, per clause 6.2.3. (epic: #190)
 8. DER functions. Curve rules, function timing and a hook for function
-   behavior, per clauses 6.1.2 to 6.5. (epic: #191)
+   behavior, per clauses 6.1.2 to 6.1.4 and 6.3 to 6.5. (epic: #191)
 9. Conformance evidence. A device profile document and an interoperability
    loop against an independent controlling station. (epic: #192)
 
