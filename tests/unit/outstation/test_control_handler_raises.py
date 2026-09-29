@@ -22,6 +22,8 @@ from dnp3.core.enums import CommandStatus, ControlCode, FunctionCode
 from dnp3.core.flags import IIN, AnalogQuality
 from dnp3.core.timestamp import DNP3Timestamp
 from dnp3.database import Database
+from dnp3.database.point import AnalogOutputPoint
+from dnp3.objects.binary_output import CommandStatus as ObjectsCommandStatus
 from dnp3.outstation.config import OutstationConfig
 from dnp3.outstation.handler import CommandHandler, CommandResult, DefaultCommandHandler
 from dnp3.outstation.outstation import Outstation
@@ -42,12 +44,25 @@ def _outstation(handler: CommandHandler, *, database: Database | None = None) ->
     return Outstation(config=config, handler=handler, database=database or Database())
 
 
+_CROB_BODY_BAD_OP_TYPE = bytes.fromhex("0F 01 00000000 00000000 00")  # op type 0x0F is undefined (5-15).
+
+
 def _crob_block(*indices: int) -> ObjectBlock:
     """A well-formed g12v1 block, qualifier 0x17, one object per index, in wire order."""
     header = ObjectHeader(group=12, variation=1, qualifier=0x17)
     data = bytes([len(indices)])
     for index in indices:
         data += bytes([index]) + _CROB_BODY
+    return ObjectBlock(header=header, data=data)
+
+
+def _crob_block_with_malformed_last(*good_indices: int, malformed_index: int) -> ObjectBlock:
+    """A g12v1 block whose good points parse, followed by one with an undefined Op Type."""
+    header = ObjectHeader(group=12, variation=1, qualifier=0x17)
+    data = bytes([len(good_indices) + 1])
+    for index in good_indices:
+        data += bytes([index]) + _CROB_BODY
+    data += bytes([malformed_index]) + _CROB_BODY_BAD_OP_TYPE
     return ObjectBlock(header=header, data=data)
 
 
@@ -191,6 +206,23 @@ class TestDirectOperateStopsAfterRaise:
         assert ("direct_operate_analog_output", 5) not in handler.calls
         assert responses[0].to_bytes() == _expected_echo(request, [[_UNDEFINED], [_UNDEFINED]])
 
+    def test_a_later_malformed_object_still_echoes_undefined_after_a_stop(self) -> None:
+        """The stop check must run before the per-object parse rejection (rule C3).
+
+        Point 2 has an undefined Op Type, which _parse_crob_block rejects with
+        its own FORMAT_ERROR (3) regardless of ``stop``; once point 1 has
+        already stopped the request, point 2 must echo UNDEFINED (127), not
+        its own parse status.
+        """
+        handler = _CallTrackingHandler(raise_on={"direct_operate_binary_output": {1}})
+        outstation = _outstation(handler)
+
+        request = _request(FunctionCode.DIRECT_OPERATE, _crob_block_with_malformed_last(1, malformed_index=2), seq=1)
+        responses = outstation.process_request(request.to_bytes())
+
+        assert handler.calls == [("direct_operate_binary_output", 1)]
+        assert responses[0].to_bytes() == _expected_echo(request, [[_UNDEFINED, _UNDEFINED]])
+
 
 class TestSelectStopsAfterRaise:
     """SELECT: a raise cancels the whole selection (Rule 3), including points that already armed."""
@@ -240,6 +272,38 @@ class TestSelectStopsAfterRaise:
 
         assert _statuses(responses[0], count=2) == [CommandStatus.SUCCESS, CommandStatus.SUCCESS]
 
+    def test_three_points_raise_on_second_stops_the_third(self) -> None:
+        handler = _CallTrackingHandler(raise_on={"select_binary_output": {2}})
+        outstation = _outstation(handler)
+
+        request = _request(FunctionCode.SELECT, _crob_block(1, 2, 3), seq=4)
+        responses = outstation.process_request(request.to_bytes(), peer=MASTER_A)
+
+        assert handler.calls == [("select_binary_output", 1), ("select_binary_output", 2)]
+        assert responses[0].to_bytes() == _expected_echo(request, [[0, _UNDEFINED, _UNDEFINED]])
+
+    def test_raise_in_g12_block_stops_the_g41_select_block_entirely(self) -> None:
+        handler = _CallTrackingHandler(raise_on={"select_binary_output": {1}})
+        outstation = _outstation(handler)
+        outstation.database.add_analog_output(5)
+
+        request = _request(FunctionCode.SELECT, _crob_block(1), _ao_block((5, 10)), seq=4)
+        responses = outstation.process_request(request.to_bytes(), peer=MASTER_A)
+
+        assert handler.calls == [("select_binary_output", 1)]
+        assert ("select_analog_output", 5) not in handler.calls
+        assert responses[0].to_bytes() == _expected_echo(request, [[_UNDEFINED], [_UNDEFINED]])
+
+    def test_select_handler_returning_none_gives_undefined_and_stops(self) -> None:
+        handler = _FixedReturnHandler(select={1: None})
+        outstation = _outstation(handler)
+
+        request = _request(FunctionCode.SELECT, _crob_block(1, 2), seq=4)
+        responses = outstation.process_request(request.to_bytes(), peer=MASTER_A)
+
+        assert handler.calls == [("select_binary_output", 1)]
+        assert responses[0].to_bytes() == _expected_echo(request, [[_UNDEFINED, _UNDEFINED]])
+
 
 class TestOperateStopsAfterRaise:
     """OPERATE: a raise stops later points; the selection still ends (existing finally)."""
@@ -256,6 +320,45 @@ class TestOperateStopsAfterRaise:
         assert ("operate_binary_output", 2) not in handler.calls
         assert responses[0].to_bytes() == _expected_echo(request, [[_UNDEFINED, _UNDEFINED]])
         assert outstation._state.selection_of(MASTER_A) is None
+
+    def test_raise_in_g12_block_stops_the_g41_operate_block_entirely(self) -> None:
+        handler = _CallTrackingHandler(raise_on={"operate_binary_output": {1}})
+        outstation = _outstation(handler)
+        outstation.database.add_analog_output(5)
+
+        select_request = _request(FunctionCode.SELECT, _crob_block(1), _ao_block((5, 10)), seq=4)
+        outstation.process_request(select_request.to_bytes(), peer=MASTER_A)
+
+        request = _request(FunctionCode.OPERATE, _crob_block(1), _ao_block((5, 10)), seq=5)
+        responses = outstation.process_request(request.to_bytes(), peer=MASTER_A)
+
+        assert handler.calls == [
+            ("select_binary_output", 1),
+            ("select_analog_output", 5),
+            ("operate_binary_output", 1),
+        ]
+        assert ("operate_analog_output", 5) not in handler.calls
+        assert responses[0].to_bytes() == _expected_echo(request, [[_UNDEFINED], [_UNDEFINED]])
+
+    def test_two_point_g41_operate_raise_on_first_stops_the_second(self) -> None:
+        handler = _CallTrackingHandler(raise_on={"operate_analog_output": {5}})
+        outstation = _outstation(handler)
+        outstation.database.add_analog_output(5)
+        outstation.database.add_analog_output(6)
+
+        select_request = _request(FunctionCode.SELECT, _ao_block((5, 10), (6, 20)), seq=4)
+        outstation.process_request(select_request.to_bytes(), peer=MASTER_A)
+
+        request = _request(FunctionCode.OPERATE, _ao_block((5, 10), (6, 20)), seq=5)
+        responses = outstation.process_request(request.to_bytes(), peer=MASTER_A)
+
+        assert handler.calls == [
+            ("select_analog_output", 5),
+            ("select_analog_output", 6),
+            ("operate_analog_output", 5),
+        ]
+        assert ("operate_analog_output", 6) not in handler.calls
+        assert responses[0].to_bytes() == _expected_echo(request, [[_UNDEFINED, _UNDEFINED]])
 
 
 class TestAnalogOutputDirectOperateRaises:
@@ -290,6 +393,14 @@ class _RaisingUpdateDatabase(Database):
         raise RuntimeError(msg)
 
 
+class _RaisingLookupDatabase(Database):
+    """get_analog_output always raises, standing for a broken lookup."""
+
+    def get_analog_output(self, index: int) -> AnalogOutputPoint | None:
+        msg = f"boom: get_analog_output {index}"
+        raise RuntimeError(msg)
+
+
 class TestTrackAoCommandWidenedCatch:
     """_track_ao_command catches any exception, not only ValueError (#46)."""
 
@@ -312,21 +423,60 @@ class TestTrackAoCommandWidenedCatch:
         assert records[0].exc_info is not None
         assert records[0].exc_info[0] is RuntimeError
 
+    def test_lookup_raise_after_success_keeps_status_success_and_logs_once(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The Database lookup itself is inside the guard, not only the update call (#46)."""
+        db = _RaisingLookupDatabase()
+        handler = _CallTrackingHandler()
+        outstation = _outstation(handler, database=db)
 
-class _BadReturnHandler(DefaultCommandHandler):
-    """direct_operate_binary_output(1) returns something that is not a valid CommandResult."""
+        request = _request(FunctionCode.DIRECT_OPERATE, _ao_block((5, 42)), seq=1)
+        with caplog.at_level(logging.ERROR, logger="dnp3.outstation.outstation"):
+            responses = outstation.process_request(request.to_bytes())
 
-    def __init__(self, bad_return: object) -> None:
+        assert len(responses) == 1
+        assert responses[0].to_bytes() == _expected_echo(request, [[int(CommandStatus.SUCCESS)]])
+        assert IIN.PARAMETER_ERROR not in responses[0].header.iin
+        records = [r for r in caplog.records if r.name == "dnp3.outstation.outstation"]
+        assert len(records) == 1
+        assert records[0].levelno == logging.ERROR
+        assert records[0].exc_info is not None
+        assert records[0].exc_info[0] is RuntimeError
+
+
+class _FixedReturnHandler(DefaultCommandHandler):
+    """A configured method returns a fixed value at index 1; every other call succeeds.
+
+    ``direct_operate`` and ``select`` each map index 1's return for that
+    method; a missing key means the ordinary DefaultCommandHandler success.
+    """
+
+    def __init__(
+        self,
+        *,
+        direct_operate: dict[int, object] | None = None,
+        select: dict[int, object] | None = None,
+    ) -> None:
         super().__init__()
-        self.bad_return = bad_return
-        self.calls: list[int] = []
+        self.direct_operate = direct_operate or {}
+        self.select = select or {}
+        self.calls: list[tuple[str, int]] = []
 
     def direct_operate_binary_output(
         self, index: int, code: ControlCode, count: int, on_time: int, off_time: int
     ) -> CommandResult:
-        self.calls.append(index)
-        if index == 1:
-            return self.bad_return  # type: ignore[return-value]
+        self.calls.append(("direct_operate_binary_output", index))
+        if index in self.direct_operate:
+            return self.direct_operate[index]  # type: ignore[return-value]
+        return CommandResult.success()
+
+    def select_binary_output(
+        self, index: int, code: ControlCode, count: int, on_time: int, off_time: int
+    ) -> CommandResult:
+        self.calls.append(("select_binary_output", index))
+        if index in self.select:
+            return self.select[index]  # type: ignore[return-value]
         return CommandResult.success()
 
 
@@ -338,17 +488,53 @@ class TestInvalidHandlerReturnStops:
         [
             pytest.param(None, id="none"),
             pytest.param(CommandResult(status=200), id="status-outside-commandstatus"),  # type: ignore[arg-type]
+            pytest.param(CommandResult(status=True), id="status-is-a-bool"),  # type: ignore[arg-type]
         ],
     )
-    def test_bad_return_gives_undefined_and_stops_the_second_point(self, bad_return: object) -> None:
-        handler = _BadReturnHandler(bad_return)
+    def test_bad_return_gives_undefined_stops_the_second_point_and_logs_once(
+        self, bad_return: object, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        handler = _FixedReturnHandler(direct_operate={1: bad_return})
+        outstation = _outstation(handler)
+
+        request = _request(FunctionCode.DIRECT_OPERATE, _crob_block(1, 2), seq=1)
+        with caplog.at_level(logging.ERROR, logger="dnp3.outstation.outstation"):
+            responses = outstation.process_request(request.to_bytes())
+
+        assert handler.calls == [("direct_operate_binary_output", 1)]
+        assert responses[0].to_bytes() == _expected_echo(request, [[_UNDEFINED, _UNDEFINED]])
+        records = [r for r in caplog.records if r.name == "dnp3.outstation.outstation"]
+        assert len(records) == 1
+        assert records[0].levelno == logging.ERROR
+
+
+class TestAcceptedStatusForms:
+    """A status from either CommandStatus enum, or a matching plain int, is accepted and does not stop (#46)."""
+
+    @pytest.mark.parametrize(
+        ("returned_status", "expected_status"),
+        [
+            pytest.param(ObjectsCommandStatus.SUCCESS, CommandStatus.SUCCESS, id="objects-enum-success"),
+            pytest.param(
+                ObjectsCommandStatus.NOT_SUPPORTED, CommandStatus.NOT_SUPPORTED, id="objects-enum-not-supported"
+            ),
+            pytest.param(0, CommandStatus.SUCCESS, id="plain-int-success"),
+            pytest.param(4, CommandStatus.NOT_SUPPORTED, id="plain-int-not-supported"),
+        ],
+    )
+    def test_accepted_form_echoes_the_core_enum_value_and_does_not_stop(
+        self, returned_status: object, expected_status: CommandStatus
+    ) -> None:
+        handler = _FixedReturnHandler(direct_operate={1: CommandResult(status=returned_status)})  # type: ignore[arg-type]
         outstation = _outstation(handler)
 
         request = _request(FunctionCode.DIRECT_OPERATE, _crob_block(1, 2), seq=1)
         responses = outstation.process_request(request.to_bytes())
 
-        assert handler.calls == [1]
-        assert responses[0].to_bytes() == _expected_echo(request, [[_UNDEFINED, _UNDEFINED]])
+        assert handler.calls == [("direct_operate_binary_output", 1), ("direct_operate_binary_output", 2)]
+        statuses = _statuses(responses[0], count=2)
+        assert statuses == [expected_status, CommandStatus.SUCCESS]
+        assert type(statuses[0]) is CommandStatus
 
 
 class TestNoAckStopsAfterRaise:
