@@ -16,7 +16,7 @@ MESA IEEE 1815.2 DER outstation simulator introduced in v0.2.0.
 - **Pure Python** - No C/C++ dependencies, works anywhere Python runs
 - **Level 2 object model** - targets the IEEE 1815-2012 clause 14.4 (Table 14-3)
   subset for RTU-class SCADA use; see [Protocol Conformance](#protocol-conformance)
-  for the one known gap
+  for the request rows not yet implemented
 - **Async I/O** - Built on asyncio for efficient network communication
 - **Type Safe** - Full type annotations with strict mypy compliance
 - **Well Tested** - see the CI and codecov badges above for current numbers
@@ -98,10 +98,13 @@ The `dnp3.mesa` module is a DER-oriented outstation built on mesa-tool's
 PicsProfile format (the companion Rust conformance control station); see
 [docs/mesa-outstation.md](docs/mesa-outstation.md) for the format and the
 adoption rationale. It supports meters, DERs (distributed energy resources),
-inverters, and batteries, plus counters, curves, and schedules. You describe
-the device by loading a PicsProfile JSON file; the module builds the DNP3
-database and command handler automatically, scaling analog values from
-engineering units to DNP3 transmission integers on load.
+inverters, and batteries, including point configuration for counters,
+curves, and schedules; it does not implement the periodic counter
+self-freeze (#188), curve edit rules, or schedule execution (#191) that
+IEEE 1815.2-2025 describes for those point types. You describe the device
+by loading a PicsProfile JSON file; the module builds the DNP3 database and
+command handler automatically, scaling analog values from engineering units
+to DNP3 transmission integers on load.
 
 Four bundled profiles ship inside the package
 (`full`, `mandatory_1815`, `mandatory_1547`, `minimal_1547`); `full` is the
@@ -158,10 +161,15 @@ handling, see [docs/mesa-outstation.md](docs/mesa-outstation.md).
 ### Function Codes
 
 `CONFIRM`, `READ`, `WRITE`, `SELECT`, `OPERATE`, `DIRECT_OPERATE`,
-`DIRECT_OPERATE_NO_ACK`, `COLD_RESTART`, `WARM_RESTART`, `DELAY_MEASURE`,
+`DIRECT_OPERATE_NO_ACK`, `COLD_RESTART`\*, `WARM_RESTART`\*, `DELAY_MEASURE`,
 `RECORD_CURRENT_TIME`, `ENABLE_UNSOLICITED`, `DISABLE_UNSOLICITED`,
-`IMMEDIATE_FREEZE`, `IMMEDIATE_FREEZE_NO_ACK`, `FREEZE_CLEAR`,
-`FREEZE_CLEAR_NO_ACK` (IEEE 1815-2012 Clause 4). Control commands are covered
+`IMMEDIATE_FREEZE`\*, `IMMEDIATE_FREEZE_NO_ACK`\*, `FREEZE_CLEAR`\*,
+`FREEZE_CLEAR_NO_ACK`\* (IEEE 1815-2012 Clause 4). `*` marks a handler hook
+the default handler and the `dnp3.mesa` outstation leave unimplemented:
+`COLD_RESTART`/`WARM_RESTART` and a g20 `IMMEDIATE_FREEZE`/`FREEZE_CLEAR`
+request answer IIN2.1 (NO_FUNC_CODE_SUPPORT) unless an application
+implements the hook, and `IMMEDIATE_FREEZE_NO_ACK`/`FREEZE_CLEAR_NO_ACK`
+get no response at all (see Level 2 below). Control commands are covered
 in detail, with wire-level request/response encoding, in
 [docs/control-commands.md](docs/control-commands.md).
 
@@ -172,7 +180,7 @@ in detail, with wire-level request/response encoding, in
 | 1, 2 | Binary Input (static, event) |
 | 10 | Binary Output (static) |
 | 12 | Control Relay Output Block (select, operate, direct operate) |
-| 20, 21, 22 | Counter (static, frozen, event) |
+| 20, 21, 22 | Counter (static, frozen, event); freezing is a handler hook the default and `dnp3.mesa` handlers refuse, so a master's freeze request freezes nothing (`Database.freeze_counter` still freezes locally) (#199) |
 | 30, 32 | Analog Input (static, event) |
 | 40, 41 | Analog Output (status, command: select, operate, direct operate) |
 | 50 | Time and Date (WRITE g50v1 sets time; WRITE g50v3 sets time from RECORD_CURRENT_TIME, LAN sync) |
@@ -197,10 +205,28 @@ LAN (10.3.3.2, required of a TCP/IP outstation that sets NEED_TIME per
 4.4.16.1 Rule 2): RECORD_CURRENT_TIME (function code 24) records the
 receipt instant, and a following WRITE of g50v3 delivers the written time
 plus the elapsed time since that instant, and clears NEED_TIME the same way.
-A WRITE of g80v1 index 4 also clears NEED_TIME directly (4.5.5). Every other
-Table 14-3 request row is implemented; g51 (Time and Date Common Time of
-Occurrence) appears only in the response column of Table 14-3 and this
-outstation reports no relative-time events that would need it.
+A WRITE of g80v1 index 4 also clears NEED_TIME directly (4.5.5).
+
+Event reads against Table 14-3 are incomplete: a g2, g22 or g32 event read
+returns all Class 1, 3 or 2 events of any type rather than only events of
+that group, so a group's events assigned to a different class are never
+returned (#194);
+only g2v1 is served, not g2v2 or g2v3 (#195); and limited-quantity
+qualifiers 07/08 are ignored (#196). FC 13 COLD_RESTART (#201) and
+WARM_RESTART, and the ACK forms of the freeze function codes,
+IMMEDIATE_FREEZE (FC 7) and FREEZE_CLEAR (FC 9) (#199), are handler hooks
+(see Function Codes above); the default handler and the `dnp3.mesa`
+outstation answer COLD_RESTART and WARM_RESTART with IIN2.1
+(NO_FUNC_CODE_SUPPORT) unless an application implements the hook, and
+answer a g20 freeze request the same way (a request carrying only a g21
+header gets no IIN2.1 and freezes nothing, since the hook fires only for a
+g20 block). Their NO_ACK forms, IMMEDIATE_FREEZE_NO_ACK
+(FC 8) and FREEZE_CLEAR_NO_ACK (FC 10), get no response at all rather than
+IIN2.1 (#199). g51 (Time and Date Common Time of Occurrence) appears only in the
+response column of Table 14-3 and this outstation reports no relative-time
+events that would need it.
+
+See [ROADMAP.md](ROADMAP.md) for the path to full IEEE 1815.2-2025 conformance.
 
 ## Development
 
