@@ -298,12 +298,27 @@ class TestOctetStringLayout:
 
     @pytest.mark.parametrize("group", [110, 111], ids=["g110", "g111"])
     def test_variation_zero_is_request_only(self, group: int) -> None:
-        # Table 12-30: response column is "--" for g110v0 and g111v0.
+        # Table 12-30: g110v0 is request-only (response column "--"); g111
+        # has no variation 0 row at all.
         assert layout_for(group, 0) is None
 
     def test_not_a_table_row(self) -> None:
         assert (110, 1) not in LAYOUTS
         assert (111, 1) not in LAYOUTS
+
+    @pytest.mark.parametrize("group", [110, 111], ids=["g110", "g111"])
+    @pytest.mark.parametrize("variation", [-1, 256])
+    def test_out_of_range_variation_answers_none(self, group: int, variation: int) -> None:
+        # A.41.1.2.2: a variation's length "may not exceed 255"; the wire
+        # field itself never carries a negative or over-255 value, but the
+        # function must still answer None rather than raise or fabricate a
+        # layout, the same as every other group answers for a pair it has
+        # no row for.
+        assert layout_for(group, variation) is None
+
+    @pytest.mark.parametrize("group", [109, 112], ids=["g109", "g112"])
+    def test_neighbouring_groups_have_no_layout(self, group: int) -> None:
+        assert layout_for(group, 1) is None
 
 
 class TestLayoutValidation:

@@ -330,8 +330,11 @@ LAYOUTS: Mapping[tuple[int, int], WireLayout] = MappingProxyType(_TABLE)
 
 # Groups whose width is the variation number itself (OSTRn), not a table row:
 # g110 octet strings (A.41.1) and g111 octet string events (A.42.1). Variation
-# 0 is request-only in both (Table 12-30) and is excluded here.
+# 0 is excluded: Table 12-30 lists it as request-only for g110 and does not
+# list it at all for g111. A.41.1.2.2 caps a variation's length at 255.
 _OCTET_STRING_GROUPS = frozenset({110, 111})
+_MIN_OCTET_STRING_VARIATION = 1
+_MAX_OCTET_STRING_VARIATION = 255
 
 
 def _octet_string_layout(variation: int) -> WireLayout:
@@ -341,7 +344,7 @@ def _octet_string_layout(variation: int) -> WireLayout:
 
 def layout_for(group: int, variation: int) -> WireLayout | None:
     """Return the layout of a group and variation, or None if it has none."""
-    if group in _OCTET_STRING_GROUPS and variation != 0:
+    if group in _OCTET_STRING_GROUPS and _MIN_OCTET_STRING_VARIATION <= variation <= _MAX_OCTET_STRING_VARIATION:
         return _octet_string_layout(variation)
     return LAYOUTS.get((group, variation))
 
