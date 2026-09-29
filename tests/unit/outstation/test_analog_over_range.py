@@ -166,6 +166,17 @@ class TestEventOverRange:
         expected = bytes([int(ONLINE | AnalogQuality.OVER_RANGE)]) + INT32_MIN.to_bytes(4, "little", signed=True)
         assert _event_ai(float(INT32_MIN) - 1.0) == expected
 
+    def test_comm_lost_quality_and_over_range_both_carried(self) -> None:
+        """The event's own quality is carried through, not hardcoded to ONLINE.
+
+        COMM_LOST (no ONLINE) plus an over-range value: the output must
+        show both COMM_LOST and OVER_RANGE, proving the quality byte comes
+        from the event rather than a fixed constant.
+        """
+        expected = bytes([int(AnalogQuality.COMM_LOST | AnalogQuality.OVER_RANGE)])
+        expected += INT32_MAX.to_bytes(4, "little", signed=True)
+        assert _event_ai(1e12, quality=AnalogQuality.COMM_LOST) == expected
+
 
 class TestClassZeroPollWithOverRangePoints:
     """A Class 0 poll with over-range points among in-range ones answers every point (#159)."""
