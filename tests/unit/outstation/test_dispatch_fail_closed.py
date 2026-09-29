@@ -1,12 +1,17 @@
-"""Fix #46: a handler exception during request dispatch answers a null response.
+"""Fix #46: a handler exception during request dispatch is answered, not propagated.
 
 ``process_request`` already turns a parse failure into a null response with
 IIN2.2 (4.5.11). Before this fix, an exception raised by a handler reached
 during dispatch (SELECT, OPERATE, DIRECT_OPERATE, a WRITE's time_handler, a
 READ's database call, and so on) was not caught anywhere in the outstation
-and propagated to the caller. This file proves the same answer now covers
-that case, except for a no-ack function code, which IEEE 1815-2012 4.4.5
-says never gets a response, win or lose.
+and propagated to the caller.
+
+A control request (SELECT, OPERATE, DIRECT_OPERATE) now answers a raising
+point with the normal per-object echo, its status UNDEFINED (127), rather
+than a null response for the whole request: the master learns exactly which
+points ran (4.4.4.3 Rule 5 and Rule 7). Every other request path keeps the
+null-response answer this file originally proved. A no-ack function code
+gets no response either way, win or lose (IEEE 1815-2012 4.4.5).
 """
 
 from __future__ import annotations
@@ -76,6 +81,24 @@ def _null_response(seq: int, iin2: int) -> bytes:
     return bytes([0xC0 | seq, 0x81, _IIN1_RESTART, iin2])
 
 
+_UNDEFINED_STATUS = 0x7F  # CommandStatus.UNDEFINED (127), Table 11-7.
+_CROB_RECORD_SIZE = 12  # 0x17 qualifier: 1-byte index + 11-byte body (control_code..status).
+
+
+def _echo_response(request: RequestFragment, statuses: list[int], *, iin2: int = 0) -> bytes:
+    """Expected echo bytes: the request's object octets with each object's status set.
+
+    Assumes a single g12v1 (0x17) block with one status octet per object, in
+    wire order (IEEE 1815-2012 4.4.4.3 Rule 7 and Rule 8).
+    """
+    seq = request.header.control.seq
+    object_octets = bytearray(request.to_bytes()[2:])  # after control + function
+    for position, status in enumerate(statuses):
+        offset = 3 + 1 + position * _CROB_RECORD_SIZE + (_CROB_RECORD_SIZE - 1)  # header(3) + count(1) + record
+        object_octets[offset] = status
+    return bytes([0xC0 | seq, 0x81, _IIN1_RESTART, iin2]) + bytes(object_octets)
+
+
 class _RaisingHandler(DefaultCommandHandler):
     """Every control method succeeds except the one named ``raises``, which raises ``exc``."""
 
@@ -125,23 +148,24 @@ def _outstation(handler: DefaultCommandHandler | None = None) -> Outstation:
 
 
 class TestSelectHandlerRaises:
-    """A SELECT handler that raises answers a null response, not a propagated exception."""
+    """A SELECT handler that raises echoes UNDEFINED for that point, not a propagated exception."""
 
-    def test_answers_null_response_with_seq_and_parameter_error(self) -> None:
+    def test_echoes_undefined_for_the_raising_point(self) -> None:
         outstation = _outstation(_RaisingHandler("select"))
 
         request = build_select_request(objects=(_crob(1),), seq=5)
         responses = outstation.process_request(request.to_bytes(), peer=MASTER_A)
 
         assert len(responses) == 1
-        assert responses[0].to_bytes() == _null_response(5, _IIN2_PARAMETER_ERROR)
+        assert responses[0].to_bytes() == _echo_response(request, [_UNDEFINED_STATUS])
+        assert IIN.PARAMETER_ERROR not in responses[0].header.iin
 
     def test_leaves_no_selection_armed(self) -> None:
         outstation = _outstation(_RaisingHandler("select"))
 
         outstation.process_request(build_select_request(objects=(_crob(1),), seq=5).to_bytes(), peer=MASTER_A)
 
-        assert outstation._state.selection_of(MASTER_A) is None
+        assert outstation._state.get_select(1, peer=MASTER_A) is None
 
     def test_well_formed_select_is_unaffected(self) -> None:
         """Control: a non-raising handler still gets the ordinary SELECT echo, not IIN2.2."""
@@ -151,14 +175,14 @@ class TestSelectHandlerRaises:
         responses = outstation.process_request(request.to_bytes(), peer=MASTER_A)
 
         assert len(responses) == 1
-        assert responses[0].to_bytes() != _null_response(5, _IIN2_PARAMETER_ERROR)
+        assert responses[0].to_bytes() != _echo_response(request, [_UNDEFINED_STATUS])
         assert IIN.PARAMETER_ERROR not in responses[0].header.iin
 
 
 class TestOperateHandlerRaises:
-    """An OPERATE handler that raises answers a null response after a successful SELECT."""
+    """An OPERATE handler that raises echoes UNDEFINED for that point after a successful SELECT."""
 
-    def test_answers_null_response_and_terminates_the_selection(self) -> None:
+    def test_echoes_undefined_and_terminates_the_selection(self) -> None:
         outstation = _outstation(_RaisingHandler("operate"))
         outstation.process_request(build_select_request(objects=(_crob(1),), seq=2).to_bytes(), peer=MASTER_A)
 
@@ -166,21 +190,23 @@ class TestOperateHandlerRaises:
         responses = outstation.process_request(request.to_bytes(), peer=MASTER_A)
 
         assert len(responses) == 1
-        assert responses[0].to_bytes() == _null_response(3, _IIN2_PARAMETER_ERROR)
+        assert responses[0].to_bytes() == _echo_response(request, [_UNDEFINED_STATUS])
+        assert IIN.PARAMETER_ERROR not in responses[0].header.iin
         assert outstation._state.selection_of(MASTER_A) is None
 
 
 class TestDirectOperateHandlerRaises:
-    """A DIRECT_OPERATE handler that raises answers a null response."""
+    """A DIRECT_OPERATE handler that raises echoes UNDEFINED for that point."""
 
-    def test_answers_null_response_with_seq_and_parameter_error(self) -> None:
+    def test_echoes_undefined_for_the_raising_point(self) -> None:
         outstation = _outstation(_RaisingHandler("direct_operate"))
 
         request = build_direct_operate_request(objects=(_crob(1),), seq=7)
         responses = outstation.process_request(request.to_bytes(), peer=MASTER_A)
 
         assert len(responses) == 1
-        assert responses[0].to_bytes() == _null_response(7, _IIN2_PARAMETER_ERROR)
+        assert responses[0].to_bytes() == _echo_response(request, [_UNDEFINED_STATUS])
+        assert IIN.PARAMETER_ERROR not in responses[0].header.iin
 
 
 class TestNoAckHandlerRaises:
@@ -296,7 +322,7 @@ class TestOnlyExceptionSubclassesAreCaught:
 
 
 class TestHandlerExceptionIsLogged:
-    """The exception is logged with its traceback, not swallowed silently."""
+    """The exception is logged with its traceback and the point index, not swallowed silently."""
 
     def test_logs_the_traceback_at_error_level(self, caplog: pytest.LogCaptureFixture) -> None:
         outstation = _outstation(_RaisingHandler("direct_operate"))
@@ -309,6 +335,6 @@ class TestHandlerExceptionIsLogged:
         assert len(records) == 1
         record = records[0]
         assert record.levelno == logging.ERROR
-        assert record.args == (FunctionCode.DIRECT_OPERATE.name,)
+        assert record.args == (FunctionCode.DIRECT_OPERATE.name, 1)
         assert record.exc_info is not None
         assert record.exc_info[0] is ValueError
