@@ -9,6 +9,9 @@ still delivers every valid frame.
 
 import threading
 
+import pytest
+
+from dnp3.core.crc import compute_crc
 from dnp3.datalink.control import ControlByte
 from dnp3.datalink.frame import DataLinkFrame
 from dnp3.datalink.parser import FrameParser
@@ -241,3 +244,56 @@ class TestFrameParserResyncAcrossChunks:
         assert frames1 == []
         assert len(frames2) == 1
         assert frames2[0].to_bytes() == frame.to_bytes()
+
+
+class TestFrameParserResyncMinLengthField:
+    """A LENGTH field below 5 is malformed (IEEE 1815-2012 9.2.4.1.2: the
+    minimum value is 5, indicating only the header is present). Issue #65:
+    without a check, the resulting negative user_data_length reached
+    `_calculate_frame_size` and produced a frame smaller than the 10-byte
+    header itself. Built with raw bytes rather than `DataLinkHeader`,
+    since the header now refuses to represent a LENGTH this short."""
+
+    @staticmethod
+    def _header_bytes(length: int) -> bytes:
+        """A 10-byte header with a valid CRC and the given LENGTH."""
+        body = bytes([0x05, 0x64, length, 0xC4, 0x04, 0x00, 0x01, 0x00])
+        return body + compute_crc(body).to_bytes(2, "little")
+
+    @pytest.mark.parametrize("length", [0, 1, 2, 3, 4])
+    def test_length_below_minimum_then_valid_frame_in_one_feed(self, length: int) -> None:
+        """A CRC-valid header with LENGTH 0-4, directly followed by a
+        valid frame in the same feed() call, yields only the valid frame,
+        byte for byte: the short header is skipped one byte at a time
+        like a header CRC failure, never delivered."""
+        good_frame = DataLinkFrame.build(
+            destination=1,
+            source=2,
+            control=ControlByte.from_int(0xC4),
+            user_data=b"after short length",
+        )
+
+        parser = FrameParser()
+        frames = list(parser.feed(self._header_bytes(length) + good_frame.to_bytes()))
+
+        assert len(frames) == 1
+        assert frames[0].to_bytes() == good_frame.to_bytes()
+
+    def test_length_below_minimum_alone_yields_no_frame(self) -> None:
+        """A CRC-valid header with LENGTH=0 and nothing after it yields no
+        frame and raises nothing."""
+        parser = FrameParser()
+        frames = list(parser.feed(self._header_bytes(0)))
+        assert frames == []
+
+    def test_length_at_minimum_still_delivers_empty_payload_frame(self) -> None:
+        """LENGTH=5, the smallest legal value, is unaffected: it still
+        parses to a frame with zero-length user data. Guards against a
+        fix that rejects the boundary value along with the invalid ones."""
+        parser = FrameParser()
+        frames = list(parser.feed(self._header_bytes(5)))
+
+        assert len(frames) == 1
+        assert frames[0].header.length == 5
+        assert frames[0].header.user_data_length == 0
+        assert frames[0].user_data == b""
