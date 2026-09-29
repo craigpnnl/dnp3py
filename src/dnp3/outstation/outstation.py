@@ -7,6 +7,7 @@ processes them according to the DNP3 protocol, and generates responses.
 import logging
 import math
 import struct
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from functools import partial
@@ -111,6 +112,9 @@ MIN_IIN_WRITE_DATA = 2  # start + stop bytes
 # A.23.1.2.3 fixes the WRITE qualifier for g50v1 to 0x07 (1-byte count) and
 # the count to 1; any other qualifier or count is not the time-set object.
 _WRITE_TIME_QUALIFIER = 0x07
+
+# A.23.3 fixes g50v3 (the LAN-synchronized time write, #142) to this variation.
+_VARIATION_TIME_LAN_WRITE = 3
 
 # Analog output value sizes in bytes, keyed by variation number
 # (parallel to _CROB_BODY_BYTES for CROB).
@@ -708,15 +712,20 @@ def _echo_control_block(block: ObjectBlock, results: list[tuple[int, CommandStat
 def _write_block_error(block: ObjectBlock) -> IIN | None:
     """Return the IIN error bit a WRITE request answers for ``block``, or None when it applies.
 
-    Only g50v1 (time) and g80v1 (internal indications) are objects this
-    outstation writes; any other object it does not act on is unknown
-    (IIN2.1, IEEE 1815-2012 Table 4-14). A qualifier or count its own source
-    does not fix is malformed (IIN2.2, 4.5.11): A.23.1.2.3 fixes g50v1 to
-    qualifier 0x07 and count 1; the Level 1-3 profile tables (Tables 14-2
+    Only g50v1 (time), g50v3 (LAN-synchronized time, #142) and g80v1
+    (internal indications) are objects this outstation writes; any other
+    object it does not act on is unknown (IIN2.1, IEEE 1815-2012 Table 4-14).
+    A qualifier or count its own source does not fix is malformed (IIN2.2,
+    4.5.11): A.23.1.2.3 fixes g50v1 to qualifier 0x07 and count 1; A.23.3
+    fixes g50v3 the same way; the Level 1-3 profile tables (Tables 14-2
     through 14-4, WRITE row "00 (start-stop)") fix g80v1 to qualifier 0x00.
+
+    g50v3 additionally requires a RECORD_CURRENT_TIME instant to be applied
+    (10.3.3.2 steps a-e); that check depends on outstation state, so it is
+    made by ``Outstation._write_block_check``, not here.
     """
     header = block.header
-    if (header.group, header.variation) == (GROUP_TIME_AND_DATE, 1):
+    if (header.group, header.variation) in ((GROUP_TIME_AND_DATE, 1), (GROUP_TIME_AND_DATE, _VARIATION_TIME_LAN_WRITE)):
         if header.qualifier != _WRITE_TIME_QUALIFIER:
             return IIN.PARAMETER_ERROR
         if len(block.data) != 1 + TIMESTAMP_SIZE or block.data[0] != 1:
@@ -758,6 +767,10 @@ class Outstation:
     time_handler: Callable[[DNP3Timestamp], None] | None = None
     _state: OutstationStateManager = field(default_factory=OutstationStateManager, init=False)
     _connections_opened: int = field(default=0, init=False, repr=False)
+    # RECORD_CURRENT_TIME's receipt instant (monotonic seconds), for the LAN
+    # time-sync procedure (10.3.3.2). None until FC 24 is received, and again
+    # after a g50v3 WRITE consumes it or another RECORD_CURRENT_TIME replaces it.
+    _record_current_time_instant: float | None = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
         """Initialize outstation state."""
@@ -945,6 +958,7 @@ class Outstation:
             FunctionCode.COLD_RESTART: _answered(self._handle_cold_restart),
             FunctionCode.WARM_RESTART: _answered(self._handle_warm_restart),
             FunctionCode.DELAY_MEASURE: _answered(self._handle_delay_measure),
+            FunctionCode.RECORD_CURRENT_TIME: _answered(self._handle_record_current_time),
             FunctionCode.ENABLE_UNSOLICITED: _answered(self._handle_enable_unsolicited),
             FunctionCode.DISABLE_UNSOLICITED: _answered(self._handle_disable_unsolicited),
             FunctionCode.IMMEDIATE_FREEZE: _answered(partial(self._handle_freeze, clear=False)),
@@ -1400,21 +1414,28 @@ class Outstation:
         exactly as they were.
 
         Supports g50v1 (deliver the time to time_handler, then clear
-        NEED_TIME) and g80v1 (clear DEVICE_RESTART or NEED_TIME).
+        NEED_TIME), g50v3 (deliver the written time plus elapsed time since
+        the RECORD_CURRENT_TIME instant, then clear NEED_TIME and consume
+        the instant, 10.3.3.2) and g80v1 (clear DEVICE_RESTART or NEED_TIME).
         """
         seq = request.header.control.seq
         for block in request.objects:
-            error = _write_block_error(block)
+            error = self._write_block_check(block)
             if error is not None:
                 return build_null_response(iin=self.iin | error, seq=seq)
 
         for block in request.objects:
             if block.header.group == GROUP_TIME_AND_DATE and block.header.variation == 1:
                 self._call_time_handler(block)
+            elif block.header.group == GROUP_TIME_AND_DATE and block.header.variation == _VARIATION_TIME_LAN_WRITE:
+                self._call_time_handler_g50v3(block)
 
         for block in request.objects:
             if block.header.group == GROUP_TIME_AND_DATE and block.header.variation == 1:
                 self._state.clear_need_time()
+            elif block.header.group == GROUP_TIME_AND_DATE and block.header.variation == _VARIATION_TIME_LAN_WRITE:
+                self._state.clear_need_time()
+                self._record_current_time_instant = None
             elif block.header.group == GROUP_IIN and block.header.variation == 1:
                 self._handle_write_iin(block)
 
@@ -1422,6 +1443,23 @@ class Outstation:
             iin=self.iin,
             seq=seq,
         )
+
+    def _write_block_check(self, block: ObjectBlock) -> IIN | None:
+        """Return the IIN error bit a WRITE answers for ``block``, or None when it applies.
+
+        Delegates the block-only checks (qualifier, count) to
+        ``_write_block_error``. Adds the one check that depends on
+        outstation state: a g50v3 block needs a RECORD_CURRENT_TIME instant
+        recorded, or it has nothing to compute the delivered time from
+        (10.3.3.2 step e) and answers IIN2.2 the same as a bad qualifier.
+        """
+        error = _write_block_error(block)
+        if error is not None:
+            return error
+        is_g50v3 = block.header.group == GROUP_TIME_AND_DATE and block.header.variation == _VARIATION_TIME_LAN_WRITE
+        if is_g50v3 and self._record_current_time_instant is None:
+            return IIN.PARAMETER_ERROR
+        return None
 
     def _call_time_handler(self, block: ObjectBlock) -> None:
         """Decode g50v1's timestamp and call time_handler. Clears no state.
@@ -1441,6 +1479,31 @@ class Outstation:
             return
         timestamp = DNP3Timestamp.from_bytes(block.data[1:])
         self.time_handler(timestamp)
+
+    def _call_time_handler_g50v3(self, block: ObjectBlock) -> None:
+        """Decode g50v3's written time, add elapsed time since the recorded
+        RECORD_CURRENT_TIME instant, and call time_handler. Clears no state
+        and does not consume the instant (see _handle_write).
+
+        IEEE 1815-2012 10.3.3.2 step e: the outstation's time is the time in
+        the write request plus the milliseconds from [B] (the recorded
+        instant) to [C] (now, the instant the clock is set). The block has
+        already passed _write_block_check, so a recorded instant is present
+        and the data is exactly the count byte and one 6-octet timestamp
+        (A.23.3). Kept separate from clearing NEED_TIME and consuming the
+        instant so, as with g50v1, a raising handler leaves both unchanged.
+
+        Args:
+            block: g50v3 object block with qualifier 0x07, count 1.
+        """
+        if self.time_handler is None:
+            return
+        recorded = self._record_current_time_instant
+        if recorded is None:  # pragma: no cover - _write_block_check guarantees this
+            return
+        written = DNP3Timestamp.from_bytes(block.data[1:])
+        elapsed_ms = round((time.monotonic() - recorded) * 1000)
+        self.time_handler(DNP3Timestamp(written.milliseconds + elapsed_ms))
 
     def _handle_write_iin(self, block: ObjectBlock) -> None:
         """Apply a WRITE of g80v1 (Internal Indications): clear a bit written 0.
@@ -1858,6 +1921,22 @@ class Outstation:
 
         return build_response(
             objects=(block,),
+            iin=self.iin,
+            seq=request.header.control.seq,
+        )
+
+    def _handle_record_current_time(self, request: RequestFragment) -> ResponseFragment:
+        """Handle RECORD_CURRENT_TIME (FC 24) for LAN time sync (IEEE 1815-2012
+        10.3.3.2, 4.4.16.1 Rule 2 for a TCP/IP outstation that sets NEED_TIME).
+
+        Records this instant [B] on a monotonic clock, so the g50v3 WRITE
+        that should follow can compute the elapsed time to [C] (10.3.3.2
+        step e). A later RECORD_CURRENT_TIME with no intervening WRITE
+        discards the earlier instant (step, "shall discard the original
+        recorded time"), matching this assignment's overwrite.
+        """
+        self._record_current_time_instant = time.monotonic()
+        return build_null_response(
             iin=self.iin,
             seq=request.header.control.seq,
         )
