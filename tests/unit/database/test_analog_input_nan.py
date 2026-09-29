@@ -59,20 +59,34 @@ class TestAnalogInputConstructionRefusesNaN:
         point = db.add_analog_input(0, value=float("inf"))
         assert point.value == float("inf")
 
+    def test_construct_with_nan_last_event_value_raises(self) -> None:
+        """A NaN last_event_value would make every later deadband comparison
+        (abs(value - last_event_value) >= deadband) False, silently
+        stopping events forever; update() never assigns it this way, so
+        only a direct construction can reach it."""
+        with pytest.raises(ValueError, match="NaN"):
+            AnalogInputPoint(index=0, value=1.0, last_event_value=float("nan"))
+
 
 class TestAnalogInputUpdateRefusesNaN:
     def test_update_nan_raises_and_prior_state_unchanged(self) -> None:
+        # The prior quality is deliberately NOT ONLINE, which is what a NaN
+        # update's own `quality is None` default resolves to (point.py's
+        # update()): a mutant that assigns quality before the guard would
+        # otherwise still leave quality == ONLINE by coincidence, and this
+        # test would not notice.
         db = Database()
-        point = db.add_analog_input(0, value=100.0, quality=ONLINE)
+        prior_quality = AnalogQuality.COMM_LOST
+        point = db.add_analog_input(0, value=100.0, quality=prior_quality)
         timestamp = DNP3Timestamp(1000)
-        db.update_analog_input(0, value=100.0, quality=ONLINE, timestamp=timestamp)
+        db.update_analog_input(0, value=100.0, quality=prior_quality, timestamp=timestamp)
         prior_last_event_value = point.last_event_value
 
         with pytest.raises(ValueError, match="NaN"):
             db.update_analog_input(0, value=float("nan"))
 
         assert point.value == 100.0
-        assert point.quality == ONLINE
+        assert point.quality == prior_quality
         assert point.timestamp == timestamp
         assert point.last_event_value == prior_last_event_value
 
@@ -91,6 +105,19 @@ class TestAnalogInputUpdateRefusesNaN:
         db.add_analog_input(0, value=1.0)
         with pytest.raises(ValueError, match="NaN"):
             db.update_analog_input(0, value=-float("nan"))
+        point = db.get_analog_input(0)
+        assert point is not None
+        assert point.value == 1.0
+
+    def test_update_non_default_payload_nan_raises(self) -> None:
+        """A guard that only catches the default quiet NaN (e.g. an identity
+        or literal-equality check) would let this payload through."""
+        payload_nan = struct.unpack("<d", struct.pack("<Q", 0x7FF8000000000001))[0]
+        assert math.isnan(payload_nan)
+        db = Database()
+        db.add_analog_input(0, value=1.0)
+        with pytest.raises(ValueError, match="NaN"):
+            db.update_analog_input(0, value=payload_nan)
         point = db.get_analog_input(0)
         assert point is not None
         assert point.value == 1.0
