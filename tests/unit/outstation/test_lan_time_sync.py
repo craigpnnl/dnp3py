@@ -14,8 +14,9 @@ from dnp3.application.header import RequestHeader
 from dnp3.application.qualifiers import ObjectHeader
 from dnp3.core.enums import FunctionCode
 from dnp3.core.flags import IIN
-from dnp3.core.timestamp import DNP3Timestamp
+from dnp3.core.timestamp import TIMESTAMP_SIZE, DNP3Timestamp
 from dnp3.outstation.outstation import Outstation
+from dnp3.outstation.peer import PeerId
 
 # 10.3.2 worked example: 2008-01-01T00:00:00.000 UTC, wire octets 00 C4 A5 32 17 01.
 _TIME_MS = 1199145600000
@@ -32,12 +33,19 @@ class _FakeClock:
         return self.value
 
 
+_PEER_A = PeerId(source=1, connection=1)
+_PEER_B = PeerId(source=2, connection=2)
+
+# Largest value a 48-bit DNP3Timestamp can hold without overflowing to_bytes.
+_MAX_TIMESTAMP_MS = (1 << (TIMESTAMP_SIZE * 8)) - 1
+
+
 def _record_current_time_request(seq: int = 0) -> RequestFragment:
     return RequestFragment(header=RequestHeader.build(function=FunctionCode.RECORD_CURRENT_TIME, seq=seq))
 
 
-def _record_current_time(outstation: Outstation, seq: int = 0) -> ResponseFragment:
-    responses = outstation.process_request(_record_current_time_request(seq).to_bytes())
+def _record_current_time(outstation: Outstation, seq: int = 0, *, peer: PeerId | None = None) -> ResponseFragment:
+    responses = outstation.process_request(_record_current_time_request(seq).to_bytes(), peer=peer)
     assert len(responses) == 1
     return responses[0]
 
@@ -51,9 +59,9 @@ def _g50v3_write(qualifier: int = 0x07, count: int = 1, octets: bytes = _TIME_OC
     return _g50v3(qualifier, bytes([count]) + octets)
 
 
-def _write(outstation: Outstation, *objects: ObjectBlock, seq: int = 0) -> ResponseFragment:
+def _write(outstation: Outstation, *objects: ObjectBlock, seq: int = 0, peer: PeerId | None = None) -> ResponseFragment:
     request = build_write_request(objects=objects, seq=seq)
-    responses = outstation.process_request(request.to_bytes())
+    responses = outstation.process_request(request.to_bytes(), peer=peer)
     assert len(responses) == 1
     return responses[0]
 
@@ -239,3 +247,113 @@ class TestWriteG50v3MalformedFrame:
         assert IIN.PARAMETER_ERROR in response.header.iin
         assert IIN.OBJECT_UNKNOWN not in response.header.iin
         assert IIN.NEED_TIME in outstation.iin
+
+
+class TestRecordCurrentTimePerPeer:
+    """Item 1 (review round 1, #142): the recorded instant is kept per peer,
+    so one master's RECORD_CURRENT_TIME never shifts or is consumed by
+    another master's g50v3, and it does not outlive the peer's connection.
+    """
+
+    def test_another_peers_g50v3_cannot_consume_this_peers_instant(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        clock = _FakeClock(100.0)
+        monkeypatch.setattr("dnp3.outstation.outstation.time.monotonic", clock)
+        delivered: list[DNP3Timestamp] = []
+        outstation = Outstation(time_handler=delivered.append)
+
+        _record_current_time(outstation, seq=1, peer=_PEER_A)
+        clock.value = 100.5
+
+        response = _write(outstation, _g50v3_write(), seq=2, peer=_PEER_B)
+
+        assert delivered == []
+        assert IIN.PARAMETER_ERROR in response.header.iin
+        assert IIN.NEED_TIME in outstation.iin
+
+    def test_a_second_peers_record_does_not_shift_the_first_peers_write(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        clock = _FakeClock(100.0)
+        monkeypatch.setattr("dnp3.outstation.outstation.time.monotonic", clock)
+        delivered: list[DNP3Timestamp] = []
+        outstation = Outstation(time_handler=delivered.append)
+
+        _record_current_time(outstation, seq=1, peer=_PEER_A)
+        clock.value = 100.5
+        _record_current_time(outstation, seq=2, peer=_PEER_B)
+        clock.value = 100.625
+
+        _write(outstation, _g50v3_write(), seq=3, peer=_PEER_A)
+
+        # 625 ms after peer A's own instant at 100.0; peer B's later instant
+        # at 100.5 must not shift peer A's elapsed time.
+        assert delivered == [DNP3Timestamp(_TIME_MS + 625)]
+
+    def test_release_connection_drops_that_peers_instant(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        clock = _FakeClock(50.0)
+        monkeypatch.setattr("dnp3.outstation.outstation.time.monotonic", clock)
+        delivered: list[DNP3Timestamp] = []
+        outstation = Outstation(time_handler=delivered.append)
+
+        _record_current_time(outstation, seq=1, peer=_PEER_A)
+        outstation.release_connection(1)  # _PEER_A.connection
+        clock.value = 50.5
+
+        response = _write(outstation, _g50v3_write(), seq=2, peer=_PEER_A)
+
+        assert delivered == []
+        assert IIN.PARAMETER_ERROR in response.header.iin
+
+
+class TestWriteG50v3Bounded:
+    """Item 4 (review round 1, #142): a written time plus elapsed time that
+    would not fit the 48-bit timestamp is refused in the check pass, before
+    any handler call and before the sum is ever constructed."""
+
+    def test_sum_over_48_bits_answers_parameter_error_and_delivers_nothing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        clock = _FakeClock(0.0)
+        monkeypatch.setattr("dnp3.outstation.outstation.time.monotonic", clock)
+        delivered: list[DNP3Timestamp] = []
+        outstation = Outstation(time_handler=delivered.append)
+        _record_current_time(outstation, seq=1)
+        clock.value = 0.001  # 1 ms elapsed: pushes the sum 1 ms past the 48-bit width
+
+        octets = DNP3Timestamp(_MAX_TIMESTAMP_MS).to_bytes()
+        response = _write(outstation, _g50v3(0x07, bytes([1]) + octets), seq=2)
+
+        assert delivered == []
+        assert IIN.PARAMETER_ERROR in response.header.iin
+        assert IIN.NEED_TIME in outstation.iin
+
+    def test_sum_at_the_48_bit_boundary_is_accepted(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        clock = _FakeClock(0.0)
+        monkeypatch.setattr("dnp3.outstation.outstation.time.monotonic", clock)
+        delivered: list[DNP3Timestamp] = []
+        outstation = Outstation(time_handler=delivered.append)
+        _record_current_time(outstation, seq=1)
+        # clock.value stays 0.0: 0 ms elapsed, so the sum lands exactly on the boundary.
+
+        octets = DNP3Timestamp(_MAX_TIMESTAMP_MS).to_bytes()
+        response = _write(outstation, _g50v3(0x07, bytes([1]) + octets), seq=2)
+
+        assert delivered == [DNP3Timestamp(_MAX_TIMESTAMP_MS)]
+        assert not response.header.iin & IIN.PARAMETER_ERROR
+
+
+class TestCallTimeHandlerG50v3FailsClosed:
+    """Item 4 (review round 1, #142): the 'cannot happen' guard in
+    _call_time_handler_g50v3 fails closed. _write_block_check refuses any
+    peer with no recorded instant before this method is ever called, so
+    reaching it with none is a bug in that guarantee; it must raise rather
+    than silently deliver nothing while the caller still clears NEED_TIME.
+    """
+
+    def test_raises_when_reached_with_no_recorded_instant(self) -> None:
+        delivered: list[DNP3Timestamp] = []
+        outstation = Outstation(time_handler=delivered.append)
+        block = _g50v3_write()
+
+        with pytest.raises(RuntimeError, match="no recorded instant"):
+            outstation._call_time_handler_g50v3(block)
+
+        assert delivered == []
