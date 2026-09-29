@@ -832,14 +832,17 @@ class Outstation:
 
         A handler exception is answered the same way a parse failure already
         is: a null response with IIN2.2, so a bug in one handler costs a
-        request rather than the connection (#46). Every state change the
-        failing dispatch made has already happened by the time the exception
-        reaches here, since each path clears or terminates state before, not
-        after, calling a handler; catching here only decides the response. A
-        no-ack function (IEEE 1815-2012 4.4.5) gets none, matching
-        _refuse_unframed. Only Exception subclasses are caught: a
-        KeyboardInterrupt, SystemExit or asyncio.CancelledError still
-        propagates.
+        request rather than the connection (#46). IIN2.2 here is a reuse
+        beyond its two defined triggers (4.5.11: parse failure, or points
+        that do not exist); no other IIN bit fits a caught handler exception
+        on an otherwise well-formed request. Until the per-point control
+        guard (#46 slice 2) lands, a multi-point control that fails partway
+        is answered as a whole: earlier points may already have run, but the
+        response carries no per-point status and a same-sequence retry calls
+        the handler again for every point. A no-ack function (IEEE 1815-2012
+        4.4.5) gets none, matching _refuse_unframed. Only Exception
+        subclasses are caught: a KeyboardInterrupt, SystemExit or
+        asyncio.CancelledError still propagates.
         """
         resolved_peer = peer if peer is not None else UNSPECIFIED_PEER
         try:
@@ -852,7 +855,7 @@ class Outstation:
         try:
             return self._process_request_fragment(request, resolved_peer, data[2:])
         except Exception:
-            _log.exception("Unhandled exception dispatching function %s", request.header.function)
+            _log.exception("Unhandled exception dispatching function %s", request.header.function.name)
             if request.header.function in _NO_ACK_FUNCTIONS:
                 return []
             return [build_null_response(iin=self.iin | IIN.PARAMETER_ERROR, seq=request.header.control.seq)]
