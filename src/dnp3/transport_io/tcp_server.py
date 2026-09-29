@@ -40,6 +40,7 @@ class TcpServerChannel:
 
     _state: ChannelState = field(default=ChannelState.OPEN, init=False)
     _statistics: ChannelStatistics = field(default_factory=ChannelStatistics, init=False)
+    _close_lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False)
 
     def __post_init__(self) -> None:
         """Initialize channel state."""
@@ -92,31 +93,32 @@ class TcpServerChannel:
         Waits at most `config.close_timeout` for unsent bytes to drain, then
         aborts the transport.
         """
-        if self._state == ChannelState.CLOSED:
-            return
+        async with self._close_lock:
+            if self._state == ChannelState.CLOSED:
+                return
 
-        self._state = ChannelState.CLOSING
+            self._state = ChannelState.CLOSING
 
-        try:
-            self.writer.close()
-            await asyncio.wait_for(self.writer.wait_closed(), timeout=self.config.close_timeout)
-        except TimeoutError:
-            # A peer that stopped reading never drains the send buffer, so a
-            # graceful close would wait forever.
-            self.writer.transport.abort()
-        except asyncio.CancelledError:
-            # Cancelled while waiting for the drain: abort so the transport
-            # is not left half-closed, then let the cancellation propagate.
-            self.writer.transport.abort()
-            raise
-        except (OSError, ConnectionError):
-            # The peer may already be gone; the channel is closing regardless.
-            pass
-        finally:
-            # Runs on every path, including a re-raised cancellation, so the
-            # channel always ends CLOSED with the disconnect counted once.
-            self._state = ChannelState.CLOSED
-            self._statistics.disconnect_count += 1
+            try:
+                self.writer.close()
+                await asyncio.wait_for(self.writer.wait_closed(), timeout=self.config.close_timeout)
+            except TimeoutError:
+                # A peer that stopped reading never drains the send buffer, so a
+                # graceful close would wait forever.
+                self.writer.transport.abort()
+            except asyncio.CancelledError:
+                # Cancelled while waiting for the drain: abort so the transport
+                # is not left half-closed, then let the cancellation propagate.
+                self.writer.transport.abort()
+                raise
+            except (OSError, ConnectionError):
+                # The peer may already be gone; the channel is closing regardless.
+                pass
+            finally:
+                # Runs on every path, including a re-raised cancellation, so the
+                # channel always ends CLOSED with the disconnect counted once.
+                self._state = ChannelState.CLOSED
+                self._statistics.disconnect_count += 1
 
     async def read(self, max_bytes: int) -> bytes:
         """Read up to max_bytes from the channel.
