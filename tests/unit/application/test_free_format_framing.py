@@ -87,6 +87,19 @@ class TestG70BlockFramesAndStepsOver:
         assert blocks[0].data == count + first + second
         assert _decode_g30v1(blocks[1].data).value == _G30V1_VALUE
 
+    def test_count_zero_frames_an_empty_block(self) -> None:
+        """Count 0 is a valid free-format block with no objects: the loop must
+        run zero times, not be floored to one.
+        """
+        count = bytes([0])
+        data = bytes([70, 1, 0x4B]) + count + _G30V1_TAIL
+
+        blocks = parse_response_object_blocks(data)
+
+        assert [(b.header.group, b.header.variation) for b in blocks] == [(70, 1), (30, 1)]
+        assert blocks[0].data == count
+        assert _decode_g30v1(blocks[1].data).value == _G30V1_VALUE
+
 
 class TestFreeFormatTruncation:
     """A count, a size field, or a declared payload running past the end stops the
