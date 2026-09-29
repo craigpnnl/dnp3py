@@ -59,7 +59,7 @@ class TruncationReason(Enum):
 
     # Gaps in this library: the frame may be valid, but this library cannot size it.
     UNKNOWN_WIDTH = "unknown_width"  # no layout row and no usable registered size
-    # Range codes 3 to 5 (virtual addresses) and 0xB (variable format, valid as 0x4B, 0x5B and 0x6B).
+    # Range codes 3 to 5 (virtual addresses): this library's own gap.
     UNSUPPORTED_RANGE = "unsupported_range"
 
     # Invalid frames (IEEE 1815-2012 Tables 4-4 to 4-6).
