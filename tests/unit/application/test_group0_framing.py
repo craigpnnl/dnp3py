@@ -211,6 +211,26 @@ class TestGroup0QualifierChecks:
         assert truncation == Truncation(TruncationReason.SIZE_PREFIX, 0, 0, 217, 0x47)
 
 
+class TestGroup0MultipleObjects:
+    """A block naming more than one object walks every one of them, not
+    just the first.
+    """
+
+    def test_two_index_prefixed_objects_then_g30v1(self) -> None:
+        header = bytes([0, 217, 0x17])  # index prefix, count range
+        count = bytes([2])
+        first = bytes([0x00]) + bytes([0x02, 0x02, 0xDC, 0x05])  # index 0, UINT(2) len 2 value 0x05DC
+        second = bytes([0x01]) + bytes([0x02, 0x02, 0x11, 0x22])  # index 1, UINT(2) len 2 value 0x2211
+        data = header + count + first + second + _G30V1_TAIL
+
+        blocks, truncation = frame_response_object_blocks(data)
+
+        assert truncation is None
+        assert [(b.header.group, b.header.variation) for b in blocks] == [(0, 217), (30, 1)]
+        assert blocks[0].data == count + first + second
+        assert _decode_g30v1(blocks[1].data) == _G30V1_VALUE
+
+
 class TestGroup0NoObjectVariationsUnchanged:
     """Variations 0 and 254 have no object body (4.2.2.7.2.1; A.1.43.2) and
     stay refused as UNKNOWN_WIDTH, the pre-existing behavior for an unmapped
