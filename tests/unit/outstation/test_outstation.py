@@ -2167,6 +2167,10 @@ class TestEventChunking:
         for i in range(num_events):
             assert recovered[i] is True, f"Event index {i}: STATE bit not set (value=True expected)"
 
+        # A multi-fragment response still removes every event it carried,
+        # across all its fragments, not only the last one's.
+        assert outstation.database.event_buffer.class1.count == 0
+
 
 # ---------------------------------------------------------------------------
 # DNP-024: single-source-of-truth invariant for counter wire encoding

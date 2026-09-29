@@ -8,7 +8,7 @@ import logging
 import math
 import struct
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from dataclasses import dataclass, field
 from functools import partial
 from typing import Any
@@ -110,6 +110,12 @@ IIN_BIT_NEED_TIME = 4  # Bit 4 of IIN byte 1 (IEEE 1815-2012 4.5.5)
 
 # Minimum data sizes
 MIN_IIN_WRITE_DATA = 2  # start + stop bytes
+
+# Identifies one buffered event for dedup and removal across a response
+# (#46). A bare serial is not enough: ClassBuffer.add falls back to its own
+# per-class counter when called with no explicit serial (event_buffer.py),
+# so two events in different classes can carry the same serial number.
+_EventKey = tuple[EventClass, int]
 
 # A.23.1.2.3 fixes the WRITE qualifier for g50v1 to 0x07 (1-byte count) and
 # the count to 1; any other qualifier or count is not the time-set object.
@@ -1128,63 +1134,31 @@ class Outstation:
         ]
 
     def _handle_read(self, request: RequestFragment) -> list[ResponseFragment]:
-        """Handle READ request, splitting into multiple fragments if needed."""
+        """Handle READ request, splitting into multiple fragments if needed.
+
+        Event blocks are read without removing them from the buffer (IEEE
+        1815-2012 4.1.6, #46): a raise anywhere later in this loop, including
+        while encoding a later block, must not cost an event already encoded
+        for an earlier one. The keys collected below are removed only once
+        every block in the request has built without raising, and before
+        `self.iin` is read for the response, so a successful response's IIN
+        bits reflect the events it carries as removed, matching a plain pop.
+        """
         objects: list[ObjectBlock] = []
+        seen_keys: set[_EventKey] = set()
         error_iin = IIN(0)
 
         for block in request.objects:
-            group = block.header.group
-            variation = block.header.variation
+            block_objects, block_keys, block_error = self._read_request_block(block, seen_keys)
+            objects.extend(block_objects)
+            seen_keys.update(block_keys)
+            error_iin |= block_error
 
-            # Handle class data requests (Group 60)
-            if group == GROUP_CLASS_DATA:
-                class_objects, class_error = self._read_class_data(variation)
-                objects.extend(class_objects)
-                error_iin |= class_error
-            # Binary Inputs (Group 1)
-            elif group == GROUP_BINARY_INPUT:
-                bi_objects, bi_error = self._read_binary_inputs(block)
-                objects.extend(bi_objects)
-                error_iin |= bi_error
-            # Binary Input Events (Group 2)
-            elif group == GROUP_BINARY_INPUT_EVENT:
-                event_objects = self._read_binary_input_events()
-                objects.extend(event_objects)
-            # Binary Outputs (Group 10)
-            elif group == GROUP_BINARY_OUTPUT:
-                bo_objects, bo_error = self._read_binary_outputs(block)
-                objects.extend(bo_objects)
-                error_iin |= bo_error
-            # Analog Inputs (Group 30)
-            elif group == GROUP_ANALOG_INPUT:
-                ai_objects, ai_error = self._read_analog_inputs(block)
-                objects.extend(ai_objects)
-                error_iin |= ai_error
-            # Analog Input Events (Group 32)
-            elif group == GROUP_ANALOG_INPUT_EVENT:
-                event_objects = self._read_analog_input_events()
-                objects.extend(event_objects)
-            # Analog Output Status (Group 40)
-            elif group == GROUP_ANALOG_OUTPUT_STATUS:
-                ao_objects, ao_error = self._read_analog_outputs(block)
-                objects.extend(ao_objects)
-                error_iin |= ao_error
-            # Counters (Group 20)
-            elif group == GROUP_COUNTER:
-                ctr_objects, ctr_error = self._read_counters(block)
-                objects.extend(ctr_objects)
-                error_iin |= ctr_error
-            # Counter Events (Group 22)
-            elif group == GROUP_COUNTER_EVENT:
-                event_objects = self._read_counter_events()
-                objects.extend(event_objects)
-            # Frozen Counters (Group 21)
-            elif group == GROUP_FROZEN_COUNTER:
-                fc_objects, fc_error = self._read_frozen_counters(block)
-                objects.extend(fc_objects)
-                error_iin |= fc_error
-            else:
-                error_iin |= IIN.OBJECT_UNKNOWN
+        if seen_keys:
+            # _split_response_objects only packs already-built ObjectBlocks into
+            # fragments; it never touches the event buffer, so removing here
+            # already covers every fragment the response will be split into.
+            self._remove_events_by_key(seen_keys)
 
         return _split_response_objects(
             objects=objects,
@@ -1193,29 +1167,92 @@ class Outstation:
             max_fragment_size=self.config.max_fragment_size,
         )
 
-    def _read_class_data(self, variation: int) -> tuple[list[ObjectBlock], IIN]:
+    def _read_request_block(
+        self, block: ObjectBlock, seen_keys: Collection[_EventKey]
+    ) -> tuple[list[ObjectBlock], list[_EventKey], IIN]:
+        """Read one object block of a READ request.
+
+        Args:
+            block: The object block to read.
+            seen_keys: Event keys already read earlier in this same request
+                (by an earlier block), so a request naming one class through
+                two groups (g60v2 and g2v0 both name Class 1) does not encode
+                the same event twice.
+
+        Returns:
+            Tuple of (object blocks, event keys read but not yet removed,
+            error IIN). Non-event groups always return an empty key list.
+        """
+        group = block.header.group
+        variation = block.header.variation
+
+        if group == GROUP_CLASS_DATA:
+            return self._read_class_data(variation, seen_keys)
+        if group == GROUP_BINARY_INPUT:
+            objects, error = self._read_binary_inputs(block)
+            return objects, [], error
+        if group == GROUP_BINARY_INPUT_EVENT:
+            objects, keys = self._read_binary_input_events(seen_keys)
+            return objects, keys, IIN(0)
+        if group == GROUP_BINARY_OUTPUT:
+            objects, error = self._read_binary_outputs(block)
+            return objects, [], error
+        if group == GROUP_ANALOG_INPUT:
+            objects, error = self._read_analog_inputs(block)
+            return objects, [], error
+        if group == GROUP_ANALOG_INPUT_EVENT:
+            objects, keys = self._read_analog_input_events(seen_keys)
+            return objects, keys, IIN(0)
+        if group == GROUP_ANALOG_OUTPUT_STATUS:
+            objects, error = self._read_analog_outputs(block)
+            return objects, [], error
+        if group == GROUP_COUNTER:
+            objects, error = self._read_counters(block)
+            return objects, [], error
+        if group == GROUP_COUNTER_EVENT:
+            objects, keys = self._read_counter_events(seen_keys)
+            return objects, keys, IIN(0)
+        if group == GROUP_FROZEN_COUNTER:
+            objects, error = self._read_frozen_counters(block)
+            return objects, [], error
+        return [], [], IIN.OBJECT_UNKNOWN
+
+    def _read_class_data(
+        self, variation: int, seen_keys: Collection[_EventKey] = ()
+    ) -> tuple[list[ObjectBlock], list[_EventKey], IIN]:
         """Read class data (Group 60).
 
         Args:
             variation: Class variation (1=Class 0, 2=Class 1, 3=Class 2, 4=Class 3).
+            seen_keys: Event keys already read earlier in this request (see
+                _read_request_block); excluded so they are not encoded a
+                second time.
 
         Returns:
-            Tuple of (object blocks, error IIN).
+            Tuple of (object blocks, event keys read but not yet removed,
+            error IIN).
         """
         objects: list[ObjectBlock] = []
+        keys: list[_EventKey] = []
 
         if variation == VAR_CLASS_0:  # Class 0 - all static data
             objects.extend(self._read_all_static_data())
         elif variation == VAR_CLASS_1:  # Class 1 events
-            objects.extend(self._read_class_events(EventClass.CLASS_1))
+            class_objects, class_keys = self._read_class_events(EventClass.CLASS_1, seen_keys)
+            objects.extend(class_objects)
+            keys.extend(class_keys)
         elif variation == VAR_CLASS_2:  # Class 2 events
-            objects.extend(self._read_class_events(EventClass.CLASS_2))
+            class_objects, class_keys = self._read_class_events(EventClass.CLASS_2, seen_keys)
+            objects.extend(class_objects)
+            keys.extend(class_keys)
         elif variation == VAR_CLASS_3:  # Class 3 events
-            objects.extend(self._read_class_events(EventClass.CLASS_3))
+            class_objects, class_keys = self._read_class_events(EventClass.CLASS_3, seen_keys)
+            objects.extend(class_objects)
+            keys.extend(class_keys)
         else:
-            return [], IIN.OBJECT_UNKNOWN
+            return [], [], IIN.OBJECT_UNKNOWN
 
-        return objects, IIN(0)
+        return objects, keys, IIN(0)
 
     def _read_all_static_data(self) -> list[ObjectBlock]:
         """Read all static data (Class 0)."""
@@ -1343,8 +1380,27 @@ class Outstation:
             max_points_per_block=_static_block_capacity(self.config.max_fragment_size, 5),
         )
 
-    def _read_class_events(self, event_class: EventClass) -> list[ObjectBlock]:
-        """Read and clear events for a class.
+    def _read_class_events(
+        self, event_class: EventClass, seen_keys: Collection[_EventKey] = ()
+    ) -> tuple[list[ObjectBlock], list[_EventKey]]:
+        """Read events for a class without removing them (IEEE 1815-2012 4.1.6, #46).
+
+        A caller must remove the returned keys itself, and only once it
+        knows the whole response carrying them was built without raising:
+        this method's own encoding (a poison value) or a later block in the
+        same request are both raise points a removed-on-read event cannot
+        survive.
+
+        Args:
+            event_class: Which class's buffer to read.
+            seen_keys: (class, serial) keys already read earlier in the same
+                response (a request can name one class through two groups,
+                e.g. g60v2 and g2v0 both name Class 1); excluded so an event
+                already encoded once is not encoded again. Keyed by class as
+                well as serial: ClassBuffer.add falls back to its own
+                per-class counter when called with no explicit serial
+                (event_buffer.py), so a serial alone cannot tell two events
+                in different classes apart.
 
         Events are chunked so no single ObjectBlock exceeds max_fragment_size.
         Per-event wire sizes (1-byte index prefix, 0x17 qualifier assumed):
@@ -1353,7 +1409,13 @@ class Outstation:
           g22v5 counter: 1 index + 1 flags + 4 value + 6 time   = 12 bytes
         """
         objects: list[ObjectBlock] = []
-        events = self.database.event_buffer.pop_class_events(event_class)
+        serials_and_events = self.database.event_buffer.read_class_events_with_serials(event_class)
+        if seen_keys:
+            serials_and_events = [
+                (serial, event) for serial, event in serials_and_events if (event_class, serial) not in seen_keys
+            ]
+        keys = [(event_class, serial) for serial, _event in serials_and_events]
+        events = [event for _serial, event in serials_and_events]
 
         # Use concrete event types for discrimination; bool is a subclass of int
         # so value-type checks are not sufficient to separate binary from counter events.
@@ -1373,7 +1435,31 @@ class Outstation:
         for chunk in _chunk_run(counter_events, ctr_cap):
             objects.extend(self._build_counter_event_blocks(chunk))
 
-        return objects
+        return objects, keys
+
+    def _remove_events_by_key(self, keys: Collection[_EventKey]) -> None:
+        """Remove buffered events by (class, serial), one class's buffer at a time.
+
+        EventBuffer.remove_events_by_serials matches a bare serial against
+        every class's buffer, which is correct only when a serial is unique
+        across the whole buffer. That is true of a serial the EventBuffer
+        itself assigned, but not of one a ClassBuffer assigned on its own
+        (event_buffer.py): two events in different classes can then share a
+        serial, and removing by serial alone would remove both, even though
+        only one was ever read into a response. Removing through each key's
+        own ClassBuffer keeps the two apart.
+        """
+        buffer = self.database.event_buffer
+        by_class: dict[EventClass, set[int]] = {}
+        for event_class, serial in keys:
+            by_class.setdefault(event_class, set()).add(serial)
+        for event_class, serials in by_class.items():
+            if event_class == EventClass.CLASS_1:
+                buffer.class1.remove_by_serials(serials)
+            elif event_class == EventClass.CLASS_2:
+                buffer.class2.remove_by_serials(serials)
+            elif event_class == EventClass.CLASS_3:
+                buffer.class3.remove_by_serials(serials)
 
     @staticmethod
     def _event_framing(events: list[Any]) -> tuple[int, bytes, int]:
@@ -1482,9 +1568,11 @@ class Outstation:
             return [], IIN(0)
         return self._build_binary_input_blocks(points), IIN(0)
 
-    def _read_binary_input_events(self) -> list[ObjectBlock]:
-        """Read all binary input events."""
-        return self._read_class_events(EventClass.CLASS_1)
+    def _read_binary_input_events(
+        self, seen_keys: Collection[_EventKey] = ()
+    ) -> tuple[list[ObjectBlock], list[_EventKey]]:
+        """Read all binary input events, without removing them (see _read_class_events)."""
+        return self._read_class_events(EventClass.CLASS_1, seen_keys)
 
     def _read_binary_outputs(self, block: ObjectBlock) -> tuple[list[ObjectBlock], IIN]:
         """Read binary outputs for a request block."""
@@ -1500,9 +1588,11 @@ class Outstation:
             return [], IIN(0)
         return self._build_analog_input_blocks(points), IIN(0)
 
-    def _read_analog_input_events(self) -> list[ObjectBlock]:
-        """Read all analog input events."""
-        return self._read_class_events(EventClass.CLASS_2)
+    def _read_analog_input_events(
+        self, seen_keys: Collection[_EventKey] = ()
+    ) -> tuple[list[ObjectBlock], list[_EventKey]]:
+        """Read all analog input events, without removing them (see _read_class_events)."""
+        return self._read_class_events(EventClass.CLASS_2, seen_keys)
 
     def _read_analog_outputs(self, block: ObjectBlock) -> tuple[list[ObjectBlock], IIN]:
         """Read analog output status (group 40) for a request block.
@@ -1529,9 +1619,9 @@ class Outstation:
             return [], IIN(0)
         return self._build_counter_blocks(points), IIN(0)
 
-    def _read_counter_events(self) -> list[ObjectBlock]:
-        """Read all counter events."""
-        return self._read_class_events(EventClass.CLASS_3)
+    def _read_counter_events(self, seen_keys: Collection[_EventKey] = ()) -> tuple[list[ObjectBlock], list[_EventKey]]:
+        """Read all counter events, without removing them (see _read_class_events)."""
+        return self._read_class_events(EventClass.CLASS_3, seen_keys)
 
     def _read_frozen_counters(self, block: ObjectBlock) -> tuple[list[ObjectBlock], IIN]:
         """Read frozen counters for a request block."""
@@ -2351,6 +2441,14 @@ class Outstation:
 
         Call this periodically to check for and send unsolicited responses.
 
+        Events are read without removing them (IEEE 1815-2012 4.6.6, #46): a
+        raise while encoding a later class must not cost an event already
+        encoded for an earlier one. There is no request here to answer, so a
+        raise still propagates to the caller, unlike a READ (#155); the keys below
+        are removed only once every class has been read and encoded without
+        raising, and before `self.iin` is read for the response, matching a
+        plain pop.
+
         Returns:
             Unsolicited response fragment, or None if no events pending.
         """
@@ -2366,16 +2464,25 @@ class Outstation:
         # Check for events
         buffer = self.database.event_buffer
         objects: list[ObjectBlock] = []
+        seen_keys: set[_EventKey] = set()
 
         if unsolicited.class_1_enabled and buffer.class1.count > 0:
-            objects.extend(self._read_class_events(EventClass.CLASS_1))
+            class_objects, class_keys = self._read_class_events(EventClass.CLASS_1, seen_keys)
+            objects.extend(class_objects)
+            seen_keys.update(class_keys)
         if unsolicited.class_2_enabled and buffer.class2.count > 0:
-            objects.extend(self._read_class_events(EventClass.CLASS_2))
+            class_objects, class_keys = self._read_class_events(EventClass.CLASS_2, seen_keys)
+            objects.extend(class_objects)
+            seen_keys.update(class_keys)
         if unsolicited.class_3_enabled and buffer.class3.count > 0:
-            objects.extend(self._read_class_events(EventClass.CLASS_3))
+            class_objects, class_keys = self._read_class_events(EventClass.CLASS_3, seen_keys)
+            objects.extend(class_objects)
+            seen_keys.update(class_keys)
 
         if not objects:
             return None
+
+        self._remove_events_by_key(seen_keys)
 
         # Generate unsolicited response
         seq = self._state.sequences.next_unsolicited_seq()
