@@ -137,6 +137,23 @@ class TestFreeFormatTruncation:
         assert blocks == []
         assert truncation == Truncation(TruncationReason.DATA_SHORTER_THAN_DECLARED, 0, 70, 1, 0x5B)
 
+    def test_truncated_size_field_whose_present_octets_are_zero(self) -> None:
+        """The bounds check must run before the octets are read: a truncated
+        size field must stop the block even when its present bytes are zero,
+        which would otherwise read as a (wrong) zero-length object.
+        """
+        count = bytes([1])
+        data_5b = bytes([70, 1, 0x5B]) + count + bytes([0x00])  # needs 2 octets, gives 1
+        data_6b = bytes([70, 1, 0x6B]) + count + bytes([0x00, 0x00, 0x00])  # needs 4 octets, gives 3
+
+        blocks_5b, truncation_5b = frame_response_object_blocks(data_5b)
+        blocks_6b, truncation_6b = frame_response_object_blocks(data_6b)
+
+        assert blocks_5b == []
+        assert truncation_5b == Truncation(TruncationReason.DATA_SHORTER_THAN_DECLARED, 0, 70, 1, 0x5B)
+        assert blocks_6b == []
+        assert truncation_6b == Truncation(TruncationReason.DATA_SHORTER_THAN_DECLARED, 0, 70, 1, 0x6B)
+
     def test_oversized_declared_size(self) -> None:
         count = bytes([1])
         obj = (10).to_bytes(1, "little") + bytes([0xAA, 0xBB])  # declares 10 octets, only 2 remain
