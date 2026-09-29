@@ -2060,14 +2060,15 @@ class Outstation:
         the point opts out with config.track_commands = False. A NaN value
         (g41v3/v4) is refused rather than synthesized: the point keeps its
         prior value and the refusal is logged once. Any other exception the
-        Database raises is caught and logged too: the output already
-        operated, so the point's control status stays SUCCESS even though its
-        tracked value could not be stored (#46).
+        Database raises, including from the lookup itself, is caught and
+        logged too: the output already operated, so the point's control
+        status stays SUCCESS even though its tracked value could not be
+        stored (#46).
         """
-        point = self.database.get_analog_output(index)
-        if point is None or not point.config.track_commands:
-            return
         try:
+            point = self.database.get_analog_output(index)
+            if point is None or not point.config.track_commands:
+                return
             self.database.update_analog_output(index, value)
         except ValueError:
             _log.warning("analog output %d: commanded value %r rejected, status unchanged", index, value)
