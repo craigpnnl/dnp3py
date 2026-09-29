@@ -42,7 +42,7 @@ def _send(outstation: Outstation, *objects: ObjectBlock, seq: int = 0) -> Respon
 
 
 class TestWriteTimeApplies:
-    """Item 1: a well-formed g50v1 WRITE delivers the time and clears NEED_TIME."""
+    """A well-formed g50v1 WRITE delivers the time and clears NEED_TIME."""
 
     def test_write_time_delivers_value_and_clears_need_time(self) -> None:
         delivered: list[DNP3Timestamp] = []
@@ -58,7 +58,7 @@ class TestWriteTimeApplies:
 
 
 class TestWriteTimeNoHandler:
-    """Item 2: with no time_handler, the write still clears NEED_TIME and answers null."""
+    """With no time_handler, the write still clears NEED_TIME and answers null."""
 
     def test_write_time_with_no_handler_still_clears_need_time(self) -> None:
         outstation = Outstation()
@@ -72,7 +72,7 @@ class TestWriteTimeNoHandler:
 
 
 class TestWriteTimeMalformedQualifier:
-    """Item 3: a qualifier or count A.23.1.2.3 does not fix answers IIN2.2 unapplied."""
+    """A qualifier or count A.23.1.2.3 does not fix answers IIN2.2 unapplied."""
 
     def test_qualifier_0x08_answers_parameter_error(self) -> None:
         delivered: list[DNP3Timestamp] = []
@@ -129,7 +129,7 @@ class TestWriteTimeMalformedQualifier:
 
 
 class TestWriteTimeUnknownWidthVariations:
-    """Item 4: g50v2/v0 stop at framing (pins today's refusal) with IIN2.1.
+    """g50v2/v0 stop at framing (pins today's refusal) with IIN2.1.
 
     g50v3 is not an unknown-width variation any more: #142 adds its layout
     row, so a malformed g50v3 block now fails at a known width instead
@@ -156,7 +156,7 @@ class TestWriteTimeUnknownWidthVariations:
 
 
 class TestDelayMeasureDoesNotClearNeedTime:
-    """Item 5: DELAY_MEASURE still answers one g52v2 object, and leaves NEED_TIME set."""
+    """DELAY_MEASURE still answers one g52v2 object, and leaves NEED_TIME set."""
 
     def test_delay_measure_reports_delay_and_leaves_need_time_set(self) -> None:
         config = OutstationConfig(time_sync_required=True)
@@ -174,7 +174,7 @@ class TestDelayMeasureDoesNotClearNeedTime:
 
 
 class TestWriteG80v1IndexFour:
-    """Item 6: WRITE of g80v1 index 4 clears NEED_TIME per 4.5.5; index 7 is unaffected."""
+    """WRITE of g80v1 index 4 clears NEED_TIME per 4.5.5; index 7 is unaffected."""
 
     def test_index_4_written_0_clears_need_time_only(self) -> None:
         outstation = Outstation()
@@ -204,7 +204,7 @@ class TestWriteG80v1IndexFour:
 
 
 class TestRuleWAllOrNothing:
-    """Item 7: any failing block in a WRITE applies none of the request's blocks."""
+    """Any failing block in a WRITE applies none of the request's blocks."""
 
     def test_good_g50v1_with_bad_g80v1_qualifier_applies_neither(self) -> None:
         delivered: list[DNP3Timestamp] = []
@@ -241,7 +241,7 @@ class TestRuleWAllOrNothing:
 
 
 class TestRuleWFirstFailingBlockWins:
-    """Item 8: the IIN of the first failing block is answered, not a later one's."""
+    """The IIN of the first failing block is answered, not a later one's."""
 
     def test_unwritable_object_before_malformed_time_answers_object_unknown_only(self) -> None:
         outstation = Outstation()
@@ -261,7 +261,7 @@ class TestRuleWFirstFailingBlockWins:
 
 
 class TestRuleWBothValid:
-    """Item 9: two valid blocks both apply, in wire order."""
+    """Two valid blocks both apply, in wire order."""
 
     def test_time_write_and_clear_restart_both_apply(self) -> None:
         delivered: list[DNP3Timestamp] = []
@@ -281,7 +281,7 @@ class TestRuleWBothValid:
 
 
 class TestWriteTimeHandlerRaises:
-    """Item 10: a raising time_handler answers IIN2.2 (#46), and NEED_TIME stays set."""
+    """A raising time_handler answers IIN2.2 (#46), and NEED_TIME stays set."""
 
     def test_raising_handler_answers_parameter_error_and_leaves_need_time_set(self) -> None:
         def raiser(_timestamp: DNP3Timestamp) -> None:
@@ -343,7 +343,7 @@ class TestWriteTimeHandlerRaisesAmongOtherBlocks:
 
 
 class TestTimeHandlerConstructionCheck:
-    """Item 2: a non-callable time_handler is rejected at construction."""
+    """A non-callable time_handler is rejected at construction."""
 
     def test_non_callable_time_handler_raises_type_error(self) -> None:
         with pytest.raises(TypeError, match="time_handler must be callable"):
