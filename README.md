@@ -161,10 +161,14 @@ handling, see [docs/mesa-outstation.md](docs/mesa-outstation.md).
 ### Function Codes
 
 `CONFIRM`, `READ`, `WRITE`, `SELECT`, `OPERATE`, `DIRECT_OPERATE`,
-`DIRECT_OPERATE_NO_ACK`, `COLD_RESTART`, `WARM_RESTART`, `DELAY_MEASURE`,
+`DIRECT_OPERATE_NO_ACK`, `COLD_RESTART`*, `WARM_RESTART`*, `DELAY_MEASURE`,
 `RECORD_CURRENT_TIME`, `ENABLE_UNSOLICITED`, `DISABLE_UNSOLICITED`,
-`IMMEDIATE_FREEZE`, `IMMEDIATE_FREEZE_NO_ACK`, `FREEZE_CLEAR`,
-`FREEZE_CLEAR_NO_ACK` (IEEE 1815-2012 Clause 4). Control commands are covered
+`IMMEDIATE_FREEZE`*, `IMMEDIATE_FREEZE_NO_ACK`*, `FREEZE_CLEAR`*,
+`FREEZE_CLEAR_NO_ACK`* (IEEE 1815-2012 Clause 4). `*` marks a handler hook
+the default handler and the `dnp3.mesa` outstation leave unimplemented: the
+ACK forms answer IIN2.1 (NO_FUNC_CODE_SUPPORT) unless an application
+implements the hook, and `IMMEDIATE_FREEZE_NO_ACK`/`FREEZE_CLEAR_NO_ACK`
+get no response at all (see Level 2 below). Control commands are covered
 in detail, with wire-level request/response encoding, in
 [docs/control-commands.md](docs/control-commands.md).
 
@@ -175,7 +179,7 @@ in detail, with wire-level request/response encoding, in
 | 1, 2 | Binary Input (static, event) |
 | 10 | Binary Output (static) |
 | 12 | Control Relay Output Block (select, operate, direct operate) |
-| 20, 21, 22 | Counter (static, frozen, event) |
+| 20, 21, 22 | Counter (static, frozen, event); freezing is a handler hook the default and `dnp3.mesa` handlers refuse, so a frozen counter is never actually frozen (#199) |
 | 30, 32 | Analog Input (static, event) |
 | 40, 41 | Analog Output (status, command: select, operate, direct operate) |
 | 50 | Time and Date (WRITE g50v1 sets time; WRITE g50v3 sets time from RECORD_CURRENT_TIME, LAN sync) |
@@ -202,14 +206,17 @@ receipt instant, and a following WRITE of g50v3 delivers the written time
 plus the elapsed time since that instant, and clears NEED_TIME the same way.
 A WRITE of g80v1 index 4 also clears NEED_TIME directly (4.5.5).
 
-Event reads against Table 14-3 are incomplete: a g2 event read returns
-every event of its class rather than events of that group (#194); only
-g2v1 is served, not g2v2 or g2v3 (#195); and limited-quantity qualifiers
-07/08 are ignored (#196). FC 13 COLD_RESTART and the freeze function codes
-(FC 7-10) are handler hooks (see Function Codes above); the default
-handler and the `dnp3.mesa` outstation both answer them with IIN2.1
-(NO_FUNC_CODE_SUPPORT) unless an application implements the hook (#201,
-#199). g51 (Time and Date Common Time of Occurrence) appears only in the
+Event reads against Table 14-3 are incomplete: a g2, g22 or g32 event read
+returns every event of its class rather than events of that group (#194);
+only g2v1 is served, not g2v2 or g2v3 (#195); and limited-quantity
+qualifiers 07/08 are ignored (#196). FC 13 COLD_RESTART (#201) and
+WARM_RESTART, and the ACK forms of the freeze function codes,
+IMMEDIATE_FREEZE (FC 7) and FREEZE_CLEAR (FC 9) (#199), are handler hooks
+(see Function Codes above); the default handler and the `dnp3.mesa`
+outstation both answer them with IIN2.1 (NO_FUNC_CODE_SUPPORT) unless an
+application implements the hook. Their NO_ACK forms, IMMEDIATE_FREEZE_NO_ACK
+(FC 8) and FREEZE_CLEAR_NO_ACK (FC 10), get no response at all rather than
+IIN2.1 (#199). g51 (Time and Date Common Time of Occurrence) appears only in the
 response column of Table 14-3 and this outstation reports no relative-time
 events that would need it.
 
