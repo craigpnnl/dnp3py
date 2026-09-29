@@ -213,6 +213,8 @@ handler and the `dnp3.mesa` outstation both answer them with IIN2.1
 response column of Table 14-3 and this outstation reports no relative-time
 events that would need it.
 
+See [ROADMAP.md](ROADMAP.md) for the path to full IEEE 1815.2-2025 conformance.
+
 ## Development
 
 ### Setup
