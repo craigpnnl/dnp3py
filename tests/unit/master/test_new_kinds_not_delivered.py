@@ -45,8 +45,25 @@ NEW_KIND_BLOCKS = [
     (120, 3, struct.pack("<IH", 123456, 7)),
     # A.46.1: flag octet, UINT16 association ID, UINT32 count (g121v1, SECURITY_STATISTIC).
     (121, 1, bytes([0x01]) + struct.pack("<HI", 3, 42)),
+    # A.41.1: OSTR1, 1 octet of value, no flags (g110v1, OCTET_STRING).
+    (110, 1, bytes([0xAB])),
+    # A.42.1: OSTR3, 3 octets of value, no flags (g111v3, OCTET_STRING).
+    (111, 3, bytes([0x01, 0x02, 0x03])),
 ]
-NEW_KIND_IDS = ["g13v1", "g31v1", "g34v1", "g41v1", "g43v1", "g86v2", "g101v1", "g102v1", "g120v3", "g121v1"]
+NEW_KIND_IDS = [
+    "g13v1",
+    "g31v1",
+    "g34v1",
+    "g41v1",
+    "g43v1",
+    "g86v2",
+    "g101v1",
+    "g102v1",
+    "g120v3",
+    "g121v1",
+    "g110v1",
+    "g111v3",
+]
 
 # A.14.1: flag octet, INT32 (g30v1, ANALOG_INPUT): the delivered marker block.
 G30V1_DATA = bytes([0x01]) + struct.pack("<i", 2401)
@@ -65,6 +82,7 @@ UNDELIVERED_NEW_KINDS = frozenset(
         PointKind.UNSIGNED_INTEGER,
         PointKind.AUTHENTICATION,
         PointKind.SECURITY_STATISTIC,
+        PointKind.OCTET_STRING,
     }
 )
 
