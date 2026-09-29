@@ -38,6 +38,7 @@ from dnp3.objects.binary_input import BinaryInputEvent, BinaryInputFlags
 from dnp3.objects.binary_output import BinaryOutputFlags
 from dnp3.objects.binary_output import CommandStatus as ObjectsCommandStatus
 from dnp3.objects.counter import Counter32, CounterEvent32Time, FrozenCounter32
+from dnp3.outstation._failure_log import WINDOW_SECONDS, FailureKey, FailureLogLimiter
 from dnp3.outstation.config import OutstationConfig
 from dnp3.outstation.handler import CommandHandler, CommandResult, DefaultCommandHandler
 from dnp3.outstation.peer import UNSPECIFIED_PEER, PeerId
@@ -740,6 +741,14 @@ class _ControlStop:
         self.stopped = False
 
 
+class _NotACommandResult(Exception):
+    """Failure-log key marker: a handler returned something other than a CommandResult (#46)."""
+
+
+class _InvalidCommandStatus(Exception):
+    """Failure-log key marker: a handler's returned status did not coerce (#46)."""
+
+
 def _coerce_command_status(value: object) -> CommandStatus | None:
     """Accept a status value a handler may reasonably return, or None when it is invalid.
 
@@ -872,14 +881,20 @@ class Outstation:
             synchronously in process_request, so raising leaves NEED_TIME
             set and answers the WRITE with IIN2.2 instead of applying it
             (#46), and blocking stalls every connection.
+        handler_failures: Count of every covered application-code failure
+            (a control handler raise or invalid return, or a tracking
+            failure after a successful analog output operate), logged or
+            not (#46 L3). Monotonic: never reset or decremented.
     """
 
     config: OutstationConfig = field(default_factory=OutstationConfig)
     database: Database = field(default_factory=Database)
     handler: CommandHandler = field(default_factory=DefaultCommandHandler)
     time_handler: Callable[[DNP3Timestamp], None] | None = None
+    handler_failures: int = field(default=0, init=False)
     _state: OutstationStateManager = field(default_factory=OutstationStateManager, init=False)
     _connections_opened: int = field(default=0, init=False, repr=False)
+    _failure_log_limiter: FailureLogLimiter = field(default_factory=FailureLogLimiter, init=False, repr=False)
     # RECORD_CURRENT_TIME's receipt instant (monotonic seconds), per peer, for
     # the LAN time-sync procedure (10.3.3.2): one master's FC 24 must not
     # shift or be consumed by another master's g50v3. A peer's entry is
@@ -1101,8 +1116,8 @@ class Outstation:
         return {
             FunctionCode.READ: self._handle_read,
             FunctionCode.WRITE: _answered(partial(self._handle_write, peer=peer)),
-            FunctionCode.DIRECT_OPERATE: _answered(self._handle_direct_operate),
-            FunctionCode.DIRECT_OPERATE_NO_ACK: _unanswered(self._handle_direct_operate),
+            FunctionCode.DIRECT_OPERATE: _answered(partial(self._handle_direct_operate, peer=peer)),
+            FunctionCode.DIRECT_OPERATE_NO_ACK: _unanswered(partial(self._handle_direct_operate, peer=peer)),
             FunctionCode.COLD_RESTART: _answered(self._handle_cold_restart),
             FunctionCode.WARM_RESTART: _answered(self._handle_warm_restart),
             FunctionCode.DELAY_MEASURE: _answered(self._handle_delay_measure),
@@ -1877,7 +1892,9 @@ class Outstation:
                     off_time=crob.off_time,
                 ),
                 function=function,
+                handler_method="select_binary_output",
                 index=crob.index,
+                peer=peer,
                 stop=stop,
             )
 
@@ -1898,12 +1915,42 @@ class Outstation:
 
         return results
 
+    def _log_handler_failure(
+        self,
+        *,
+        function: FunctionCode,
+        handler_method: str,
+        exception_type: type[BaseException],
+        exc_info: BaseException | None,
+        message: str,
+        args: tuple[object, ...],
+    ) -> None:
+        """Log one covered application-code failure, rate-limited per key (#46 L1-L3).
+
+        Every covered failure increments ``handler_failures`` whether or
+        not it is logged (L3). At most one ERROR record per (function,
+        handler method, exception type) key is written per
+        ``WINDOW_SECONDS`` (L2); the record after a window reports how
+        many were suppressed during it.
+        """
+        self.handler_failures += 1
+        key: FailureKey = (function, handler_method, exception_type)
+        suppressed = self._failure_log_limiter.record(key)
+        if suppressed is None:
+            return
+        if suppressed:
+            message = f"{message} (%d suppressed in the last {WINDOW_SECONDS:.0f}s)"
+            args = (*args, suppressed)
+        _log.error(message, *args, exc_info=exc_info)
+
     def _run_control_point(
         self,
         call: Callable[[], CommandResult],
         *,
         function: FunctionCode,
+        handler_method: str = "",
         index: int,
+        peer: PeerId = UNSPECIFIED_PEER,
         stop: "_ControlStop",
     ) -> CommandStatus:
         """Call one control handler method for one point, guarding a raise or a bad return.
@@ -1914,25 +1961,43 @@ class Outstation:
         call is made in this request, across blocks (4.4.4.3 Rule 5; #46).
         The status is not proof the point did nothing: a handler that acts
         and then raises is still reported as not accepted (Rule 7; the
-        CommandHandler docstring states the contract).
+        CommandHandler docstring states the contract). Each failure is
+        logged through ``_log_handler_failure``, rate-limited per
+        (function, handler method, exception type) (#46 L1-L3).
         """
         try:
             result = call()
-        except Exception:
-            _log.exception("Control handler raised for %s point %d", function.name, index)
+        except Exception as exc:
+            self._log_handler_failure(
+                function=function,
+                handler_method=handler_method,
+                exception_type=type(exc),
+                exc_info=exc,
+                message="Control handler raised for %s point %d, peer %s",
+                args=(function.name, index, peer),
+            )
             stop.stopped = True
             return CommandStatus.UNDEFINED
         if not isinstance(result, CommandResult):
-            _log.error("Control handler returned %r for %s point %d, not a CommandResult", result, function.name, index)
+            self._log_handler_failure(
+                function=function,
+                handler_method=handler_method,
+                exception_type=_NotACommandResult,
+                exc_info=None,
+                message="Control handler returned %r for %s point %d, not a CommandResult, peer %s",
+                args=(result, function.name, index, peer),
+            )
             stop.stopped = True
             return CommandStatus.UNDEFINED
         status = _coerce_command_status(result.status)
         if status is None:
-            _log.error(
-                "Control handler returned %r for %s point %d, whose status is not a valid CommandStatus",
-                result,
-                function.name,
-                index,
+            self._log_handler_failure(
+                function=function,
+                handler_method=handler_method,
+                exception_type=_InvalidCommandStatus,
+                exc_info=None,
+                message="Control handler returned %r for %s point %d, status not a valid CommandStatus, peer %s",
+                args=(result, function.name, index, peer),
             )
             stop.stopped = True
             return CommandStatus.UNDEFINED
@@ -2011,7 +2076,9 @@ class Outstation:
                     select_sequence=select_state.sequence,
                 ),
                 function=function,
+                handler_method="operate_binary_output",
                 index=crob.index,
+                peer=peer,
                 stop=stop,
             )
 
@@ -2053,7 +2120,9 @@ class Outstation:
             status = self._run_control_point(
                 partial(self.handler.select_analog_output, index=index, value=value),
                 function=function,
+                handler_method="select_analog_output",
                 index=index,
+                peer=peer,
                 stop=stop,
             )
 
@@ -2099,19 +2168,26 @@ class Outstation:
                     self.handler.operate_analog_output, index=index, value=value, select_sequence=select_state.sequence
                 ),
                 function=function,
+                handler_method="operate_analog_output",
                 index=index,
+                peer=peer,
                 stop=stop,
             )
             if status == CommandStatus.SUCCESS:
-                self._track_ao_command(index, value)
+                self._track_ao_command(index, value, function=function, peer=peer)
 
             self._state.remove_select(index, peer=peer, group=GROUP_ANALOG_OUTPUT)
             results.append((index, status))
 
         return results
 
-    def _handle_direct_operate(self, request: RequestFragment) -> ResponseFragment:
-        """Handle DIRECT_OPERATE request."""
+    def _handle_direct_operate(self, request: RequestFragment, *, peer: PeerId = UNSPECIFIED_PEER) -> ResponseFragment:
+        """Handle DIRECT_OPERATE request.
+
+        ``peer`` carries no selection state on this path (DIRECT_OPERATE
+        needs no prior SELECT); it is threaded through only so a failure
+        log names which master's request caused it (#46 L1).
+        """
         refusal = self._refuse_undecodable(request)
         if refusal is not None:
             return refusal
@@ -2122,9 +2198,9 @@ class Outstation:
 
         for block in request.objects:
             if block.header.group == GROUP_CROB and block.header.variation == 1:
-                block_results.append(self._process_crob_direct_operate(block, function=function, stop=stop))
+                block_results.append(self._process_crob_direct_operate(block, function=function, peer=peer, stop=stop))
             elif block.header.group == GROUP_ANALOG_OUTPUT:
-                block_results.append(self._process_ao_direct_operate(block, function=function, stop=stop))
+                block_results.append(self._process_ao_direct_operate(block, function=function, peer=peer, stop=stop))
 
         return self._build_control_response(request, block_results)
 
@@ -2132,6 +2208,7 @@ class Outstation:
         self,
         block: ObjectBlock,
         *,
+        peer: PeerId = UNSPECIFIED_PEER,
         function: FunctionCode = FunctionCode.DIRECT_OPERATE,
         stop: "_ControlStop",
     ) -> list[tuple[int, CommandStatus]]:
@@ -2164,7 +2241,9 @@ class Outstation:
                     off_time=crob.off_time,
                 ),
                 function=function,
+                handler_method="direct_operate_binary_output",
                 index=crob.index,
+                peer=peer,
                 stop=stop,
             )
 
@@ -2176,6 +2255,7 @@ class Outstation:
         self,
         block: ObjectBlock,
         *,
+        peer: PeerId = UNSPECIFIED_PEER,
         function: FunctionCode = FunctionCode.DIRECT_OPERATE,
         stop: "_ControlStop",
     ) -> list[tuple[int, CommandStatus]]:
@@ -2196,40 +2276,67 @@ class Outstation:
             status = self._run_control_point(
                 partial(self.handler.direct_operate_analog_output, index=index, value=value),
                 function=function,
+                handler_method="direct_operate_analog_output",
                 index=index,
+                peer=peer,
                 stop=stop,
             )
             if status == CommandStatus.SUCCESS:
-                self._track_ao_command(index, value)
+                self._track_ao_command(index, value, function=function, peer=peer)
             results.append((index, status))
         return results
 
-    def _track_ao_command(self, index: int, value: float) -> None:
+    def _track_ao_command(
+        self,
+        index: int,
+        value: float,
+        *,
+        function: FunctionCode = FunctionCode.OPERATE,
+        peer: PeerId = UNSPECIFIED_PEER,
+    ) -> None:
         """Store a commanded analog output value as its status (clause 11.9.2.2).
 
         Called after DIRECT_OPERATE, DIRECT_OPERATE_NO_ACK or OPERATE of
         group 41 succeeds. A no-op when the Database has no point at index or
         the point opts out with config.track_commands = False. A NaN value
         (g41v3/v4) is refused rather than synthesized: the point keeps its
-        prior value and the refusal is logged once. Any other exception the
-        Database raises, including from the lookup itself, is caught and
-        logged too: the output already operated, so the point's control
-        status stays SUCCESS even though its tracked value could not be
-        stored (#46).
+        prior value and the refusal is logged once, and is not rate-limited
+        (it is a bounded per-call refusal, not an unbounded failure).
+        Any other exception the Database raises, including from the lookup
+        itself, is caught, counted and rate-limited through
+        ``_log_handler_failure`` like a control handler failure: the output
+        already operated, so the point's control status stays SUCCESS even
+        though its tracked value could not be stored (#46 L1-L3). The
+        commanded value never appears in a log message: it comes from the
+        request and this module logs no master-supplied bytes.
         """
         try:
             point = self.database.get_analog_output(index)
-        except Exception:
-            _log.exception("analog output %d: lookup failed after operate, tracked value not stored", index)
+        except Exception as exc:
+            self._log_handler_failure(
+                function=function,
+                handler_method="get_analog_output",
+                exception_type=type(exc),
+                exc_info=exc,
+                message="analog output %d: lookup failed after operate, tracked value not stored, function %s, peer %s",
+                args=(index, function.name, peer),
+            )
             return
         if point is None or not point.config.track_commands:
             return
         try:
             self.database.update_analog_output(index, value)
         except ValueError:
-            _log.warning("analog output %d: commanded value %r rejected, status unchanged", index, value)
-        except Exception:
-            _log.exception("analog output %d: commanded value %r not stored after operate", index, value)
+            _log.warning("analog output %d: commanded value rejected, status unchanged", index)
+        except Exception as exc:
+            self._log_handler_failure(
+                function=function,
+                handler_method="update_analog_output",
+                exception_type=type(exc),
+                exc_info=exc,
+                message="analog output %d: commanded value not stored after operate, function %s, peer %s",
+                args=(index, function.name, peer),
+            )
 
     def _build_control_response(
         self,
