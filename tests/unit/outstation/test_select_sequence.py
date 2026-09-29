@@ -129,6 +129,36 @@ def _outstation(select_timeout: float = 10.0) -> tuple[Outstation, _RecordingHan
 POINT_5 = _crob_block((5, 1000))
 
 
+class _FakeClock:
+    """A monotonic clock the SELECT-timer tests advance by hand.
+
+    Patches every real ``time.monotonic()`` read on the selection path:
+    ``state.py`` ``is_expired``, ``clear_expired_selects`` and
+    ``begin_selection``. ``SelectState.timestamp``'s own default_factory
+    (``state.py:58``) still reads the real clock once when a point is first
+    selected, but ``OutstationStateManager.add_select`` overwrites that value
+    with the shared ``selection.started`` before any expiry check reads it
+    (whenever a selection already exists, which every request in this class
+    goes through), so the unpatched read never reaches a timing assertion.
+    """
+
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def __call__(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
+
+
+@pytest.fixture
+def fake_clock(monkeypatch: pytest.MonkeyPatch) -> _FakeClock:
+    clock = _FakeClock()
+    monkeypatch.setattr(time, "monotonic", clock)
+    return clock
+
+
 class TestOperateSequence:
     """An OPERATE executes only at the selection's sequence plus one."""
 
@@ -178,20 +208,20 @@ class TestOperateSequence:
 class TestSelectRetryDiscardOverride:
     """A second SELECT from the same peer is a retry, a discard or an override."""
 
-    def test_retry_repeats_the_response_without_the_handler_or_a_new_timer(self) -> None:
+    def test_retry_repeats_the_response_without_the_handler_or_a_new_timer(self, fake_clock: _FakeClock) -> None:
         timeout = 0.5
         outstation, handler = _outstation(select_timeout=timeout)
         first = _select(outstation, MASTER_A, 4, POINT_5)
         assert _statuses(first) == [(5, SUCCESS)]
 
-        time.sleep(timeout * 0.7)
+        fake_clock.advance(timeout * 0.7)
         retry = _select(outstation, MASTER_A, 4, POINT_5)
 
         assert [r.to_bytes() for r in retry] == [r.to_bytes() for r in first]
         assert handler.selects == [(5, 1000)]
 
         # Past the original timer but not past one restarted by the retry.
-        time.sleep(timeout * 0.7)
+        fake_clock.advance(timeout * 0.7)
         assert _statuses(_operate(outstation, MASTER_A, 5, POINT_5)) == [(5, NO_SELECT)]
         assert handler.operates == []
 
@@ -237,17 +267,17 @@ class TestSelectRetryDiscardOverride:
         assert _statuses(_operate(outstation, MASTER_A, 5, POINT_5)) == [(5, SUCCESS)]
         assert handler.operates == [(5, 5000, 0), (5, 1000, 4)]
 
-    def test_expired_selection_is_not_retried(self) -> None:
+    def test_expired_selection_is_not_retried(self, fake_clock: _FakeClock) -> None:
         timeout = 0.2
         outstation, handler = _outstation(select_timeout=timeout)
         _select(outstation, MASTER_A, 4, POINT_5)
 
-        time.sleep(timeout * 1.5)
+        fake_clock.advance(timeout * 1.5)
         assert _statuses(_select(outstation, MASTER_A, 4, POINT_5)) == [(5, SUCCESS)]
         assert handler.selects == [(5, 1000), (5, 1000)]
         assert _statuses(_operate(outstation, MASTER_A, 5, POINT_5)) == [(5, SUCCESS)]
 
-    def test_every_point_shares_the_selections_timer(self) -> None:
+    def test_every_point_shares_the_selections_timer(self, fake_clock: _FakeClock) -> None:
         timeout = 0.4
         outstation, handler = _outstation(select_timeout=timeout)
         accept_select = handler.select_binary_output
@@ -256,7 +286,7 @@ class TestSelectRetryDiscardOverride:
             index: int, code: ControlCode, count: int, on_time: int, off_time: int
         ) -> CommandResult:
             if index == 6:
-                time.sleep(timeout * 0.75)
+                fake_clock.advance(timeout * 0.75)
             return accept_select(index, code, count, on_time, off_time)
 
         handler.select_binary_output = select_point_6_slowly  # type: ignore[method-assign]
@@ -264,7 +294,7 @@ class TestSelectRetryDiscardOverride:
         assert _statuses(_select(outstation, MASTER_A, 0, both)) == [(5, SUCCESS), (6, SUCCESS)]
 
         # Past the timer started with the SELECT, though not yet past the moment point 6 was accepted.
-        time.sleep(timeout * 0.5)
+        fake_clock.advance(timeout * 0.5)
         assert _statuses(_operate(outstation, MASTER_A, 1, both)) == [(5, NO_SELECT), (6, NO_SELECT)]
         assert handler.operates == []
 
