@@ -55,10 +55,7 @@ class TestFrameParserResyncNoRecursionError:
         frames = list(parser.feed(data))
 
         assert len(frames) == 1
-        assert frames[0].header.destination == 1
-        assert frames[0].header.source == 2
-        assert frames[0].header.control == ControlByte.from_int(0xC4)
-        assert frames[0].user_data == b"after garbage"
+        assert frames[0].to_bytes() == frame.to_bytes()
 
     def test_garbage_only_yields_no_frames_and_raises_nothing(self) -> None:
         """64 KB of garbage with no valid frame anywhere returns an empty
@@ -227,7 +224,9 @@ class TestFrameParserResyncAcrossChunks:
 
     def test_garbage_split_across_feeds_then_valid_frame(self) -> None:
         """Garbage fed in two chunks resynchronizes the same as one chunk;
-        the frame after it is delivered byte for byte."""
+        the frame after it is delivered byte for byte. The split lands at
+        an odd offset so the feed() boundary falls between the two start
+        bytes of a repeating garbage pair, not on a pair boundary."""
         frame = DataLinkFrame.build(
             destination=5,
             source=6,
@@ -235,7 +234,7 @@ class TestFrameParserResyncAcrossChunks:
             user_data=b"split garbage",
         )
         garbage = b"\x05\x64" * 4096  # 8 KB, well past the old ~2 KB limit
-        midpoint = len(garbage) // 2
+        midpoint = (len(garbage) // 2) + 1  # odd: splits a 0x05 0x64 pair
 
         parser = FrameParser()
         frames1 = list(parser.feed(garbage[:midpoint]))
@@ -243,4 +242,4 @@ class TestFrameParserResyncAcrossChunks:
 
         assert frames1 == []
         assert len(frames2) == 1
-        assert frames2[0].user_data == b"split garbage"
+        assert frames2[0].to_bytes() == frame.to_bytes()
