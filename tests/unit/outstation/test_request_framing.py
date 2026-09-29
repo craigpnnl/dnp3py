@@ -75,6 +75,7 @@ _EXECUTED = [
     (FunctionCode.ENABLE_UNSOLICITED, _G60V2_ALL + _TRAILING),
     (FunctionCode.DISABLE_UNSOLICITED, _G60V2_ALL + _TRAILING),
     (FunctionCode.DELAY_MEASURE, _G60V1_ALL + _TRAILING),
+    (FunctionCode.RECORD_CURRENT_TIME, _G60V1_ALL + _TRAILING),
 ]
 _NO_ACK = {FunctionCode.DIRECT_OPERATE_NO_ACK, FunctionCode.IMMEDIATE_FREEZE_NO_ACK, FunctionCode.FREEZE_CLEAR_NO_ACK}
 # A request for each reason framing stops, after a first block that frames, and the IIN2

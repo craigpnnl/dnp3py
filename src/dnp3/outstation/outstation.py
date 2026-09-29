@@ -7,6 +7,7 @@ processes them according to the DNP3 protocol, and generates responses.
 import logging
 import math
 import struct
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from functools import partial
@@ -111,6 +112,13 @@ MIN_IIN_WRITE_DATA = 2  # start + stop bytes
 # A.23.1.2.3 fixes the WRITE qualifier for g50v1 to 0x07 (1-byte count) and
 # the count to 1; any other qualifier or count is not the time-set object.
 _WRITE_TIME_QUALIFIER = 0x07
+
+# A.23.3 fixes g50v3 (the LAN-synchronized time write, #142) to this variation.
+_VARIATION_TIME_LAN_WRITE = 3
+
+# DNP3Timestamp is unsigned and TIMESTAMP_SIZE (6) octets wide: the largest
+# value a g50v3 delivery can carry without overflowing DNP3Timestamp.to_bytes.
+_MAX_TIMESTAMP_MS = (1 << (TIMESTAMP_SIZE * 8)) - 1
 
 # Analog output value sizes in bytes, keyed by variation number
 # (parallel to _CROB_BODY_BYTES for CROB).
@@ -708,15 +716,20 @@ def _echo_control_block(block: ObjectBlock, results: list[tuple[int, CommandStat
 def _write_block_error(block: ObjectBlock) -> IIN | None:
     """Return the IIN error bit a WRITE request answers for ``block``, or None when it applies.
 
-    Only g50v1 (time) and g80v1 (internal indications) are objects this
-    outstation writes; any other object it does not act on is unknown
-    (IIN2.1, IEEE 1815-2012 Table 4-14). A qualifier or count its own source
-    does not fix is malformed (IIN2.2, 4.5.11): A.23.1.2.3 fixes g50v1 to
-    qualifier 0x07 and count 1; the Level 1-3 profile tables (Tables 14-2
+    Only g50v1 (time), g50v3 (LAN-synchronized time, #142) and g80v1
+    (internal indications) are objects this outstation writes; any other
+    object it does not act on is unknown (IIN2.1, IEEE 1815-2012 Table 4-14).
+    A qualifier or count its own source does not fix is malformed (IIN2.2,
+    4.5.11): A.23.1.2.3 fixes g50v1 to qualifier 0x07 and count 1; A.23.3
+    fixes g50v3 the same way; the Level 1-3 profile tables (Tables 14-2
     through 14-4, WRITE row "00 (start-stop)") fix g80v1 to qualifier 0x00.
+
+    g50v3 additionally requires a RECORD_CURRENT_TIME instant to be applied
+    (10.3.3.2 steps a-e); that check depends on outstation state, so it is
+    made by ``Outstation._write_block_check``, not here.
     """
     header = block.header
-    if (header.group, header.variation) == (GROUP_TIME_AND_DATE, 1):
+    if (header.group, header.variation) in ((GROUP_TIME_AND_DATE, 1), (GROUP_TIME_AND_DATE, _VARIATION_TIME_LAN_WRITE)):
         if header.qualifier != _WRITE_TIME_QUALIFIER:
             return IIN.PARAMETER_ERROR
         if len(block.data) != 1 + TIMESTAMP_SIZE or block.data[0] != 1:
@@ -741,13 +754,17 @@ class Outstation:
         database: Point database.
         handler: Command handler for control operations.
         time_handler: Called with the decoded time when a master writes
-            g50v1 (IEEE 1815-2012 A.23.1.2.3). None (the default) accepts
-            and ignores the write, which the clause permits for an
-            outstation with its own accurate time source. The value comes
-            from the master and is untrusted: it may fall outside the
-            range a datetime can represent, and it is not adjusted for
-            this outstation's own request-processing delay ([F] to [G],
-            10.3.3.1 h). The handler must not raise or block: it runs
+            g50v1 (IEEE 1815-2012 A.23.1.2.3) or g50v3 (A.23.3, LAN time
+            sync: the written time plus the elapsed time since the
+            RECORD_CURRENT_TIME instant, 10.3.3.2 step e). None (the
+            default) accepts and ignores the write, which the clause
+            permits for an outstation with its own accurate time source.
+            The value comes from the master and is untrusted: it may fall
+            outside the range a datetime can represent, and for g50v1 it is
+            not adjusted for this outstation's own request-processing delay
+            ([F] to [G], 10.3.3.1 h). A g50v3 sum that would not fit the
+            48-bit timestamp is refused (IIN2.2) before this handler is
+            called. The handler must not raise or block: it runs
             synchronously in process_request, so raising propagates
             (leaving NEED_TIME set) and blocking stalls every connection.
     """
@@ -758,6 +775,13 @@ class Outstation:
     time_handler: Callable[[DNP3Timestamp], None] | None = None
     _state: OutstationStateManager = field(default_factory=OutstationStateManager, init=False)
     _connections_opened: int = field(default=0, init=False, repr=False)
+    # RECORD_CURRENT_TIME's receipt instant (monotonic seconds), per peer, for
+    # the LAN time-sync procedure (10.3.3.2): one master's FC 24 must not
+    # shift or be consumed by another master's g50v3. A peer's entry is
+    # absent until its FC 24, and again after its g50v3 WRITE consumes it,
+    # another FC 24 from the same peer replaces it, or its connection is
+    # released.
+    _record_current_time_instants: dict[PeerId, float] = field(default_factory=dict, init=False, repr=False)
 
     def __post_init__(self) -> None:
         """Initialize outstation state."""
@@ -827,15 +851,18 @@ class Outstation:
         return self._connections_opened
 
     def release_connection(self, connection: int) -> None:
-        """Release every SELECT made on a transport connection.
+        """Release every SELECT and RECORD_CURRENT_TIME instant made on a transport connection.
 
-        A transport calls this when the connection closes, so a selection
-        cannot outlive the connection that made it.
+        A transport calls this when the connection closes, so a selection or
+        a recorded instant cannot outlive the connection that made it.
 
         Args:
             connection: The connection id the transport put in each PeerId.
         """
         self._state.release_connection(connection)
+        expired = [peer for peer in self._record_current_time_instants if peer.connection == connection]
+        for peer in expired:
+            del self._record_current_time_instants[peer]
 
     def _process_request_fragment(self, request: RequestFragment, peer: PeerId, body: bytes) -> list[ResponseFragment]:
         """Process a parsed request fragment.
@@ -911,7 +938,7 @@ class Outstation:
 
         if function != FunctionCode.CONFIRM:
             self._state.terminate(peer)
-        return self._dispatch(request)
+        return self._dispatch(request, peer)
 
     def _refuse_unframed(self, request: RequestFragment, truncation: Truncation) -> list[ResponseFragment]:
         """Answer a request with a block that could not be framed, having executed none of it.
@@ -933,18 +960,24 @@ class Outstation:
         CONFIRM runs none, and an unsupported function answers NO_FUNC_CODE_SUPPORT
         whether or not its objects framed.
         """
-        return function in (FunctionCode.SELECT, FunctionCode.OPERATE) or function in self._executors()
+        return function in (FunctionCode.SELECT, FunctionCode.OPERATE) or function in self._executors(UNSPECIFIED_PEER)
 
-    def _executors(self) -> dict[FunctionCode, _Executor]:
-        """The executor of every supported function other than SELECT, OPERATE and CONFIRM."""
+    def _executors(self, peer: PeerId) -> dict[FunctionCode, _Executor]:
+        """The executor of every supported function other than SELECT, OPERATE and CONFIRM.
+
+        WRITE and RECORD_CURRENT_TIME are bound to the requesting peer, so a
+        g50v3's recorded instant is looked up and consumed under that same
+        peer (see _record_current_time_instants).
+        """
         return {
             FunctionCode.READ: self._handle_read,
-            FunctionCode.WRITE: _answered(self._handle_write),
+            FunctionCode.WRITE: _answered(partial(self._handle_write, peer=peer)),
             FunctionCode.DIRECT_OPERATE: _answered(self._handle_direct_operate),
             FunctionCode.DIRECT_OPERATE_NO_ACK: _unanswered(self._handle_direct_operate),
             FunctionCode.COLD_RESTART: _answered(self._handle_cold_restart),
             FunctionCode.WARM_RESTART: _answered(self._handle_warm_restart),
             FunctionCode.DELAY_MEASURE: _answered(self._handle_delay_measure),
+            FunctionCode.RECORD_CURRENT_TIME: _answered(partial(self._handle_record_current_time, peer=peer)),
             FunctionCode.ENABLE_UNSOLICITED: _answered(self._handle_enable_unsolicited),
             FunctionCode.DISABLE_UNSOLICITED: _answered(self._handle_disable_unsolicited),
             FunctionCode.IMMEDIATE_FREEZE: _answered(partial(self._handle_freeze, clear=False)),
@@ -953,7 +986,7 @@ class Outstation:
             FunctionCode.FREEZE_CLEAR_NO_ACK: _unanswered(partial(self._handle_freeze, clear=True)),
         }
 
-    def _dispatch(self, request: RequestFragment) -> list[ResponseFragment]:
+    def _dispatch(self, request: RequestFragment, peer: PeerId) -> list[ResponseFragment]:
         """Dispatch a request that is neither SELECT nor OPERATE by function code."""
         header = request.header
         function = header.function
@@ -961,7 +994,7 @@ class Outstation:
         if function == FunctionCode.CONFIRM:
             result = self._handle_confirm(request)
             return [result] if result is not None else []
-        execute = self._executors().get(function)
+        execute = self._executors(peer).get(function)
         if execute is not None:
             return execute(request)
         return [
@@ -1384,7 +1417,7 @@ class Outstation:
             return [], IIN(0)
         return self._build_frozen_counter_blocks(points), IIN(0)
 
-    def _handle_write(self, request: RequestFragment) -> ResponseFragment:
+    def _handle_write(self, request: RequestFragment, *, peer: PeerId = UNSPECIFIED_PEER) -> ResponseFragment:
         """Handle WRITE request.
 
         Rule W is this outstation's own policy, mirroring #130's control
@@ -1400,21 +1433,35 @@ class Outstation:
         exactly as they were.
 
         Supports g50v1 (deliver the time to time_handler, then clear
-        NEED_TIME) and g80v1 (clear DEVICE_RESTART or NEED_TIME).
+        NEED_TIME), g50v3 (deliver the written time plus elapsed time since
+        ``peer``'s RECORD_CURRENT_TIME instant, then clear NEED_TIME and
+        consume that peer's instant, 10.3.3.2) and g80v1 (clear
+        DEVICE_RESTART or NEED_TIME).
+
+        A g50v3 block's delivered time is computed once, in the check pass,
+        and reused for the handler call below: a second clock read there
+        could push a sum the check just accepted past the 48-bit width.
         """
         seq = request.header.control.seq
+        delivered_times: list[DNP3Timestamp | None] = []
         for block in request.objects:
-            error = _write_block_error(block)
+            error, delivered = self._write_block_check(block, peer=peer)
             if error is not None:
                 return build_null_response(iin=self.iin | error, seq=seq)
+            delivered_times.append(delivered)
 
-        for block in request.objects:
+        for block, delivered in zip(request.objects, delivered_times, strict=True):
             if block.header.group == GROUP_TIME_AND_DATE and block.header.variation == 1:
                 self._call_time_handler(block)
+            elif block.header.group == GROUP_TIME_AND_DATE and block.header.variation == _VARIATION_TIME_LAN_WRITE:
+                self._call_time_handler_g50v3(delivered)
 
         for block in request.objects:
             if block.header.group == GROUP_TIME_AND_DATE and block.header.variation == 1:
                 self._state.clear_need_time()
+            elif block.header.group == GROUP_TIME_AND_DATE and block.header.variation == _VARIATION_TIME_LAN_WRITE:
+                self._state.clear_need_time()
+                self._record_current_time_instants.pop(peer, None)
             elif block.header.group == GROUP_IIN and block.header.variation == 1:
                 self._handle_write_iin(block)
 
@@ -1422,6 +1469,42 @@ class Outstation:
             iin=self.iin,
             seq=seq,
         )
+
+    def _write_block_check(
+        self, block: ObjectBlock, *, peer: PeerId = UNSPECIFIED_PEER
+    ) -> tuple[IIN | None, DNP3Timestamp | None]:
+        """Return the IIN error bit a WRITE answers for ``block``, or the g50v3 delivered time.
+
+        Delegates the block-only checks (qualifier, count) to
+        ``_write_block_error``. Adds the checks that depend on outstation
+        state: a g50v3 block needs ``peer``'s own RECORD_CURRENT_TIME
+        instant recorded, or it has nothing to compute the delivered time
+        from (10.3.3.2 step e); and the written time plus the elapsed time
+        since that instant must fit the 48-bit timestamp width, or there is
+        nothing a conforming DNP3Timestamp can deliver. Both answer IIN2.2
+        the same as a bad qualifier.
+
+        For a g50v3 block that passes, the second element is the delivered
+        time computed from this single clock read, so the handler call
+        later in ``_handle_write`` delivers exactly the value this check
+        accepted rather than reading the clock again. For every other
+        block, and for any failing block, the second element is None.
+        """
+        error = _write_block_error(block)
+        if error is not None:
+            return error, None
+        is_g50v3 = block.header.group == GROUP_TIME_AND_DATE and block.header.variation == _VARIATION_TIME_LAN_WRITE
+        if not is_g50v3:
+            return None, None
+        recorded = self._record_current_time_instants.get(peer)
+        if recorded is None:
+            return IIN.PARAMETER_ERROR, None
+        written = DNP3Timestamp.from_bytes(block.data[1:])
+        elapsed_ms = round((time.monotonic() - recorded) * 1000)
+        delivered_ms = written.milliseconds + elapsed_ms
+        if delivered_ms > _MAX_TIMESTAMP_MS:
+            return IIN.PARAMETER_ERROR, None
+        return None, DNP3Timestamp(delivered_ms)
 
     def _call_time_handler(self, block: ObjectBlock) -> None:
         """Decode g50v1's timestamp and call time_handler. Clears no state.
@@ -1441,6 +1524,31 @@ class Outstation:
             return
         timestamp = DNP3Timestamp.from_bytes(block.data[1:])
         self.time_handler(timestamp)
+
+    def _call_time_handler_g50v3(self, delivered: DNP3Timestamp | None) -> None:
+        """Call time_handler with ``delivered``, g50v3's already-checked time.
+
+        Clears no state and does not consume the instant (see
+        _handle_write). ``delivered`` is the value ``_write_block_check``
+        computed from IEEE 1815-2012 10.3.3.2 step e (the written time plus
+        the milliseconds from [B], the recorded instant, to [C], the instant
+        the clock was read): calling this with anything but that value
+        would let a WRITE deliver a time the 48-bit check never accepted.
+        Kept separate from clearing NEED_TIME and consuming the instant so,
+        as with g50v1, a raising handler leaves both unchanged.
+
+        Args:
+            delivered: The time ``_write_block_check`` computed for this
+                block, or None if reached without one.
+        """
+        if self.time_handler is None:
+            return
+        if delivered is None:
+            # _write_block_check already refused any block reaching here
+            # with no computed delivered time.
+            msg = "_call_time_handler_g50v3 reached with no delivered time"
+            raise RuntimeError(msg)
+        self.time_handler(delivered)
 
     def _handle_write_iin(self, block: ObjectBlock) -> None:
         """Apply a WRITE of g80v1 (Internal Indications): clear a bit written 0.
@@ -1858,6 +1966,26 @@ class Outstation:
 
         return build_response(
             objects=(block,),
+            iin=self.iin,
+            seq=request.header.control.seq,
+        )
+
+    def _handle_record_current_time(
+        self, request: RequestFragment, *, peer: PeerId = UNSPECIFIED_PEER
+    ) -> ResponseFragment:
+        """Handle RECORD_CURRENT_TIME (FC 24) for LAN time sync (IEEE 1815-2012
+        10.3.3.2, 4.4.16.1 Rule 2 for a TCP/IP outstation that sets NEED_TIME).
+
+        Records this instant [B] for ``peer`` on a monotonic clock, so the
+        g50v3 WRITE that should follow from the SAME peer can compute the
+        elapsed time to [C] (10.3.3.2 step e). Keyed by peer so one master's
+        RECORD_CURRENT_TIME never shifts or is consumed by another's g50v3.
+        A later RECORD_CURRENT_TIME from ``peer`` with no intervening WRITE
+        discards its earlier instant (step, "shall discard the original
+        recorded time"), matching this assignment's overwrite.
+        """
+        self._record_current_time_instants[peer] = time.monotonic()
+        return build_null_response(
             iin=self.iin,
             seq=request.header.control.seq,
         )

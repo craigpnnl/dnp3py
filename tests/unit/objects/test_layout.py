@@ -170,6 +170,7 @@ _EXPECTED_ROWS = {
     (43, 7): (PointKind.ANALOG_COMMAND_EVENT, 11, 0, False, _REC, _ABS),  # A.22.7: status, FLT32, DNP3TIME
     (43, 8): (PointKind.ANALOG_COMMAND_EVENT, 15, 0, False, _REC, _ABS),  # A.22.8: status, FLT64, DNP3TIME
     (50, 1): (PointKind.TIME, 6, 0, False, _UINT, _NO),  # A.23.1: DNP3TIME
+    (50, 3): (PointKind.TIME, 6, 0, False, _UINT, _NO),  # A.23.3: DNP3TIME
     (51, 1): (PointKind.TIME, 6, 0, False, _UINT, _NO),  # A.24.1: DNP3TIME
     (51, 2): (PointKind.TIME, 6, 0, False, _UINT, _NO),  # A.24.2: DNP3TIME
     (52, 1): (PointKind.TIME_DELAY, 2, 0, False, _UINT, _NO),  # A.25.1: UINT16

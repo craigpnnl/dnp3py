@@ -159,10 +159,10 @@ handling, see [docs/mesa-outstation.md](docs/mesa-outstation.md).
 
 `CONFIRM`, `READ`, `WRITE`, `SELECT`, `OPERATE`, `DIRECT_OPERATE`,
 `DIRECT_OPERATE_NO_ACK`, `COLD_RESTART`, `WARM_RESTART`, `DELAY_MEASURE`,
-`ENABLE_UNSOLICITED`, `DISABLE_UNSOLICITED`, `IMMEDIATE_FREEZE`,
-`IMMEDIATE_FREEZE_NO_ACK`, `FREEZE_CLEAR`, `FREEZE_CLEAR_NO_ACK` (IEEE
-1815-2012 Clause 4). Control commands are covered in detail, with wire-level
-request/response encoding, in
+`RECORD_CURRENT_TIME`, `ENABLE_UNSOLICITED`, `DISABLE_UNSOLICITED`,
+`IMMEDIATE_FREEZE`, `IMMEDIATE_FREEZE_NO_ACK`, `FREEZE_CLEAR`,
+`FREEZE_CLEAR_NO_ACK` (IEEE 1815-2012 Clause 4). Control commands are covered
+in detail, with wire-level request/response encoding, in
 [docs/control-commands.md](docs/control-commands.md).
 
 ### Object Groups (outstation)
@@ -175,9 +175,10 @@ request/response encoding, in
 | 20, 21, 22 | Counter (static, frozen, event) |
 | 30, 32 | Analog Input (static, event) |
 | 40, 41 | Analog Output (status, command: select, operate, direct operate) |
+| 50 | Time and Date (WRITE g50v1 sets time; WRITE g50v3 sets time from RECORD_CURRENT_TIME, LAN sync) |
 | 52 | Time Delay (response to DELAY_MEASURE) |
 | 60 | Class data |
-| 80 | Internal Indications (WRITE to clear DEVICE_RESTART) |
+| 80 | Internal Indications (WRITE to clear DEVICE_RESTART or NEED_TIME) |
 
 Wire layout follows IEEE 1815-2012 Annex A. The master additionally decodes
 and delivers Double-Bit Binary Input (groups 3, 4) from a peer that sends it,
@@ -187,13 +188,19 @@ are framed but not delivered to any handler.
 
 ### Level 2 (clause 14.4, Table 14-3)
 
-The outstation does not yet parse WRITE requests for Group 50 (time
-synchronization): the write is silently ignored, and the outstation answers
-with a null response carrying no error IIN, so a master reading only the
-response sees success. DELAY_MEASURE (function code 23) is implemented and
-clears the outstation's NEED_TIME flag on its own, independent of any time
-write. Tracked in #140 (the Group 50 write and the Group 80 NEED_TIME clear)
-and #142 (RECORD_CURRENT_TIME and Group 50 Variation 3).
+Time synchronization is implemented for both procedures IEEE 1815-2012
+10.3.3 describes. Non-LAN (10.3.3.1): DELAY_MEASURE (function code 23)
+answers the outstation's own processing delay (step c), which this
+outstation reports as 0 (#146), and a WRITE of g50v1 delivers the written
+time to the `time_handler` hook and clears NEED_TIME in its own response.
+LAN (10.3.3.2, required of a TCP/IP outstation that sets NEED_TIME per
+4.4.16.1 Rule 2): RECORD_CURRENT_TIME (function code 24) records the
+receipt instant, and a following WRITE of g50v3 delivers the written time
+plus the elapsed time since that instant, and clears NEED_TIME the same way.
+A WRITE of g80v1 index 4 also clears NEED_TIME directly (4.5.5). Every other
+Table 14-3 request row is implemented; g51 (Time and Date Common Time of
+Occurrence) appears only in the response column of Table 14-3 and this
+outstation reports no relative-time events that would need it.
 
 ## Development
 
