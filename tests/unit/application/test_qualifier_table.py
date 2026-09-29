@@ -10,9 +10,12 @@ own gap (it does not implement the vendor-specific virtual-address ranges
 The valid sweep runs on both the request path (`frame_request_object_blocks`,
 header-only, so a valid code needs no object value bytes) and the response
 path (`frame_response_object_blocks`, which needs a real g30v1 value per
-object). A free-format code (0x4B/0x5B/0x6B) is the one exception on both
-paths: its frame is self-describing (Table 4-5 row B), so it already carries
-a real, size-prefixed object rather than needing one appended.
+object). A free-format code (0x4B/0x5B/0x6B) is the one exception on the
+response path only: its frame is self-describing (Table 4-5 row B), so it
+already carries a real, size-prefixed object rather than needing one
+appended. On the request path a free-format code carries no object data
+either (#175): it is header-only like every other qualifier, so it is swept
+by its own test with its own fixtures, below.
 """
 
 import pytest
@@ -49,10 +52,10 @@ _VALID_QUALIFIERS = frozenset(
 
 # One well-formed g30v1 header-only frame per valid qualifier: a start-stop or count
 # range of 1 object at index/start 7, with an index list where the prefix needs one.
-# 0x4B/0x5B/0x6B instead carry a 1-octet count (Table 4-5 row B) and one
-# size-prefixed object (Table 4-4): the free-format range is self-describing at
-# the wire, so its frame is already complete without an appended value, even
-# though its payload octets (0xAA, 0xBB) are arbitrary rather than decoded.
+# Serves the response-path sweep for every qualifier below, and the request-path
+# sweep for every qualifier but 0x4B/0x5B/0x6B: those three carry a real,
+# size-prefixed object (Table 4-4), which only a response or a data-carrying
+# request has; their request-path frame is _REQUEST_FREE_FORMAT_FRAMES instead.
 _VALID_FRAMES = {
     0x00: bytes([0x1E, 0x01, 0x00, 0x07, 0x07]),
     0x01: bytes([0x1E, 0x01, 0x01, 0x07, 0x00, 0x07, 0x00]),
@@ -79,8 +82,10 @@ _VALID_FRAMES = {
 }
 
 # Free-format qualifiers (Table 4-6's one range-0xB pairing): each object carries
-# its own size field, so a free-format frame is already a complete, real object
-# on the wire. Kept as its own set only to skip appending _G30V1_VALUE below.
+# its own size field, so a free-format frame is a complete, real object on the
+# response path. Kept as its own set to skip appending _G30V1_VALUE below, and
+# to exclude these three from the generic request-path sweep (#175: on the
+# request path they carry no object data, so they get their own test).
 _FREE_FORMAT = frozenset({0x4B, 0x5B, 0x6B})
 
 # g30v1 object value (A.14.1: flag, INT32 little-endian), the same encoding as _G7 in
@@ -94,6 +99,18 @@ _G30V1_VALUE = bytes([0x01, 0xC8, 0x00, 0x00, 0x00])
 _VALID_RESPONSE_FRAMES = {
     qualifier: frame if qualifier == 0x06 or qualifier in _FREE_FORMAT else frame + _G30V1_VALUE
     for qualifier, frame in _VALID_FRAMES.items()
+}
+
+# g1v0, ALL_OBJECTS: frames with no range data. Appended to each request-path
+# free-format frame below so the sweep proves the next header is reached, not
+# swallowed as a size field and payload.
+_TRAILING_HEADER = bytes([0x01, 0x00, 0x06])
+
+# 0x4B/0x5B/0x6B on the request path (#175): a header-only request has no
+# object data for a free-format qualifier's size field to describe, so its
+# frame is the header and its 1-octet count (Table 4-5 row B) alone.
+_REQUEST_FREE_FORMAT_FRAMES = {
+    qualifier: bytes([0x1E, 0x01, qualifier, 0x01]) + _TRAILING_HEADER for qualifier in _FREE_FORMAT
 }
 
 
@@ -125,13 +142,29 @@ def _expected_reason(qualifier: int) -> TruncationReason:
     return TruncationReason.SIZE_PREFIX
 
 
-@pytest.mark.parametrize("qualifier", sorted(_VALID_QUALIFIERS), ids=lambda q: f"0x{q:02X}")
+@pytest.mark.parametrize("qualifier", sorted(_VALID_QUALIFIERS - _FREE_FORMAT), ids=lambda q: f"0x{q:02X}")
 def test_every_table_4_6_qualifier_is_accepted_on_the_request_path(qualifier: int) -> None:
     frame = _VALID_FRAMES[qualifier]
 
     blocks, truncation = frame_request_object_blocks(FunctionCode.READ, frame)
 
     assert blocks == [_block(frame)]
+    assert truncation is None
+
+
+@pytest.mark.parametrize("qualifier", sorted(_FREE_FORMAT), ids=lambda q: f"0x{q:02X}")
+def test_free_format_qualifier_on_the_request_path_frames_header_alone_then_steps_over(qualifier: int) -> None:
+    """#175: a free-format qualifier on the request path carries no object
+    data for its size field to describe, so it frames as its header and
+    1-octet count alone, and the header after it is reached intact, not
+    swallowed as a size field and payload.
+    """
+    header_and_count = bytes([0x1E, 0x01, qualifier, 0x01])
+    frame = _REQUEST_FREE_FORMAT_FRAMES[qualifier]
+
+    blocks, truncation = frame_request_object_blocks(FunctionCode.READ, frame)
+
+    assert blocks == [_block(header_and_count), _block(_TRAILING_HEADER)]
     assert truncation is None
 
 
