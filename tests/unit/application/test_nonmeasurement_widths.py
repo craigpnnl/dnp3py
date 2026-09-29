@@ -1,10 +1,10 @@
-"""Framing tests for #82's fixed-width non-measurement objects.
+"""Framing tests for #82's non-measurement objects.
 
-Each new layout row (g86v2, g101v1-3, g102v1, g120v3, g121v1, g122v1-2) is
-proved by the same shape the library already uses for a measurement group:
-one block of that group, followed by a g30v1 block, both framed and the
-g30v1 value delivered intact. Widths are IEEE 1815-2012 Annex A, cited beside
-each row.
+Each new layout row (g86v2, g101v1-3, g102v1, g120v3, g121v1, g122v1-2), and
+g110/g111's variation-is-width special case, is proved by the same shape the
+library already uses for a measurement group: one block of that group,
+followed by a g30v1 block, both framed and the g30v1 value delivered intact.
+Widths are IEEE 1815-2012 Annex A, cited beside each row or class.
 """
 
 import pytest
@@ -68,6 +68,32 @@ class TestFixedWidthRowsFrameAndStepOver:
         blocks = parse_response_object_blocks(data)
 
         assert blocks == []
+
+
+class TestOctetStringGroupsFrameAndStepOver:
+    """g110 (A.41.1) and g111 (A.42.1): width equals the variation number
+    (OSTRn), computed at lookup time rather than read from a table row, so
+    a block is still bounded and the g30v1 block after it is reached intact.
+    Index-prefixed (qualifier 0x17): A.41.1.2.3/A.42.1.2.3 note reading and
+    writing an octet string by absolute (index) addressing.
+    """
+
+    @pytest.mark.parametrize("group", [110, 111], ids=["g110", "g111"])
+    @pytest.mark.parametrize("variation", [1, 5, 255])
+    def test_block_then_g30v1(self, group: int, variation: int) -> None:
+        assert layout_for(group, variation) is not None, f"g{group}v{variation} has no layout"
+        qualifier = 0x17  # prefix code 1 (UINT8_INDEX), range code 7 (UINT8_COUNT)
+        count = bytes([1])
+        index = bytes([0x03])
+        payload = bytes((n % 256) for n in range(1, 1 + variation))  # `variation` octets
+        objects = index + payload
+        data = bytes([group, variation, qualifier]) + count + objects + _G30V1_TAIL
+
+        blocks = parse_response_object_blocks(data)
+
+        assert [(b.header.group, b.header.variation) for b in blocks] == [(group, variation), (30, 1)]
+        assert blocks[0].data == count + objects
+        assert _decode_g30v1(blocks[1].data).value == _G30V1_VALUE
 
 
 class TestG101V1HandEncoded:
