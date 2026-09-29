@@ -521,7 +521,13 @@ class TestInvalidHandlerReturnStops:
         [
             pytest.param(None, id="none"),
             pytest.param(CommandResult(status=200), id="status-outside-commandstatus"),  # type: ignore[arg-type]
-            pytest.param(CommandResult(status=True), id="status-is-a-bool"),  # type: ignore[arg-type]
+            pytest.param(CommandResult(status=True), id="status-is-a-bool-true"),  # type: ignore[arg-type]
+            pytest.param(CommandResult(status=False), id="status-is-a-bool-false"),  # type: ignore[arg-type]
+            pytest.param(CommandResult(status=None), id="status-is-none"),  # type: ignore[arg-type]
+            pytest.param(
+                CommandResult(status=FunctionCode.CONFIRM),  # type: ignore[arg-type]
+                id="status-is-an-unrelated-intenum",
+            ),
         ],
     )
     def test_bad_return_gives_undefined_stops_the_second_point_and_logs_once(
