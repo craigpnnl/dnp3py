@@ -59,6 +59,27 @@ _START_STOP_CODES = frozenset({RangeCode.UINT8_START_STOP, RangeCode.UINT16_STAR
 _RESERVED_PREFIX_CODE = 0x07
 _RESERVED_RANGE_CODES = frozenset({0x0A, 0x0C, 0x0D, 0x0E, 0x0F})
 
+# 4.2.2.7.3.1: qualifier bit 7 is reserved and must be clear.
+_RESERVED_BIT = 0x80
+
+# Table 4-6: an index prefix (codes 1 to 3) is defined with any count range
+# (7 to 9), whatever its own width (0x17-0x19, 0x27-0x29, 0x37-0x39). Keyed on
+# the raw 3-bit prefix and 4-bit range fields so they can be checked before
+# the qualifier is known decodable.
+_INDEX_PREFIX_CODES_RAW = frozenset(
+    {PrefixCode.UINT8_INDEX.value, PrefixCode.UINT16_INDEX.value, PrefixCode.UINT32_INDEX.value}
+)
+_INDEX_PREFIX_VALID_RANGES = frozenset(
+    {RangeCode.UINT8_COUNT.value, RangeCode.UINT16_COUNT.value, RangeCode.UINT32_COUNT.value}
+)
+
+# Table 4-6: the free-format range (0xB) is defined only with a size prefix
+# (0x4B, 0x5B, 0x6B). Any other prefix paired with it is a shaded, undefined cell.
+_FREE_FORMAT_RANGE_CODE = RangeCode.FREE_FORMAT.value
+_SIZE_PREFIX_CODES_RAW = frozenset(
+    {PrefixCode.UINT8_SIZE.value, PrefixCode.UINT16_SIZE.value, PrefixCode.UINT32_SIZE.value}
+)
+
 
 # Request functions whose object headers carry no object data (IEEE 1815-2012 4.4): a
 # block is its header, its range field and any index list. Every other request is
@@ -385,7 +406,24 @@ def _lookup_data_length(header: ObjectHeader) -> _DataLength | TruncationReason:
 
 
 def _has_reserved_code(qualifier: int) -> bool:
-    return (qualifier >> 4) & 0x07 == _RESERVED_PREFIX_CODE or qualifier & 0x0F in _RESERVED_RANGE_CODES
+    """Whether the qualifier octet is not one IEEE 1815-2012 defines.
+
+    Covers the reserved bit (4.2.2.7.3.1), prefix code 7 and range codes 0xA
+    and 0xC to 0xF (Tables 4-4, 4-5); an index prefix paired with any range
+    but a count range; and the free-format range (0xB) paired with any
+    prefix but a size prefix (Table 4-6). A size prefix's own Table 4-6
+    range rule is instead a length-lookup result (`_unsupported_qualifier`),
+    since a size prefix can lack a usable width for other reasons too.
+    """
+    prefix = (qualifier >> 4) & 0x07
+    range_code = qualifier & 0x0F
+    return bool(
+        qualifier & _RESERVED_BIT
+        or prefix == _RESERVED_PREFIX_CODE
+        or range_code in _RESERVED_RANGE_CODES
+        or (prefix in _INDEX_PREFIX_CODES_RAW and range_code not in _INDEX_PREFIX_VALID_RANGES)
+        or (range_code == _FREE_FORMAT_RANGE_CODE and prefix not in _SIZE_PREFIX_CODES_RAW)
+    )
 
 
 def parse_response_object_blocks(data: bytes) -> list[ObjectBlock]:
@@ -465,11 +503,13 @@ def _frame_object_blocks(
         length_of: _DataLength | None = None
         if not isinstance(length_or_reason, TruncationReason):
             length_of = length_or_reason
-        elif header.range_code != RangeCode.ALL_OBJECTS:
+        elif header.range_code != RangeCode.ALL_OBJECTS or length_or_reason != TruncationReason.UNKNOWN_WIDTH:
             return blocks, _stopped_at(length_or_reason, offset, header)
-        # Otherwise an all-objects block of unknown width: no range field and no
-        # objects, so it frames as its header alone. One of known width goes
-        # through its length, so a packed layout with an index prefix stops.
+        # Otherwise an all-objects block whose only problem is an unknown width
+        # has no range field and no objects, so it frames as its header alone.
+        # A prefix Table 4-6 does not allow with an all-objects range
+        # (SIZE_PREFIX) stops above instead: it names no object to size, so
+        # "unknown width" never applies to it.
 
         try:
             block, consumed = _parse_object_block(

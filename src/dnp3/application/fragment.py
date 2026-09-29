@@ -63,8 +63,9 @@ class TruncationReason(Enum):
     UNSUPPORTED_RANGE = "unsupported_range"
 
     # Invalid frames (IEEE 1815-2012 Tables 4-4 to 4-6).
-    SIZE_PREFIX = "size_prefix"  # prefix codes 4 to 6 with a range code other than 0xB
-    RESERVED_QUALIFIER = "reserved_qualifier"  # prefix code 7, or range code 0xA or 0xC to 0xF
+    SIZE_PREFIX = "size_prefix"  # prefix codes 4 to 6 with a start-stop, all-objects or count range
+    RESERVED_QUALIFIER = "reserved_qualifier"  # the Res bit, prefix code 7, range code 0xA or 0xC to 0xF,
+    # or an index prefix (1 to 3) with a range that is not a count range
     PACKED_WITH_INDEX_PREFIX = "packed_with_index_prefix"  # A.2.1 packs only over a contiguous range
     RANGE_NAMES_NO_OBJECT = "range_names_no_object"  # start-stop range with stop below start
     DATA_SHORTER_THAN_DECLARED = "data_shorter_than_declared"  # range field or object data past the end
