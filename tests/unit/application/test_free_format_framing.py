@@ -13,6 +13,8 @@ the shape ``test_nonmeasurement_widths.py`` and
 ``test_octet_string_request_framing.py`` already use.
 """
 
+import pytest
+
 from dnp3.application.fragment import Truncation, TruncationReason
 from dnp3.application.parser import (
     frame_request_object_blocks,
@@ -220,6 +222,86 @@ class TestSizePrefixWithoutFreeFormatRangeUnchanged:
 
         assert blocks == []
         assert truncation == Truncation(TruncationReason.SIZE_PREFIX, 0, 70, 1, 0x57)
+
+
+def _g83v1_pro() -> bytes:
+    """g83v1 (A.31.1.2.2): VSTR4 vendor code, UINT16 identifier, UINT16 length, data."""
+    vendor = b"TEST"
+    identifier = (1).to_bytes(2, "little")
+    payload = bytes([0xAA, 0xBB, 0xCC])
+    length = len(payload).to_bytes(2, "little")
+    return vendor + identifier + length + payload
+
+
+def _descriptor_element(descriptor_code: int) -> bytes:
+    """One data set descriptor element (A.32.1.2.2 g85v1 / A.33.1.2.2 g86v1), no ancillary value."""
+    return bytes([3, descriptor_code, 0, 0])
+
+
+def _g86v3_point_index() -> bytes:
+    """g86v3 (A.33.3.2.2): UINT8 length, data set identifier, one point-index element."""
+    identifier = bytes([0x01])
+    element = bytes([2, 30, 0x00])  # element length, point type (group 30), point index
+    return bytes([len(identifier)]) + identifier + element
+
+
+def _g87_or_g88_snapshot(identifier: int) -> bytes:
+    """A.34.1.2.2 (g87v1) / A.35.1.2.2 (g88v1): id length, id, time length (6), 6-octet
+    time, zero data elements (the set-of-n is not decoded here, so n=0 is a valid object).
+    """
+    id_bytes = bytes([identifier])
+    return bytes([len(id_bytes)]) + id_bytes + bytes([6]) + bytes(6)
+
+
+def _g120v1_challenge() -> bytes:
+    """g120v1 (A.45.1.2.2): CSQ, USR, MAC algorithm, reason, then challenge data
+    (minimum 4 octets). A.45.1.2.3 mandates qualifier 0x5B.
+    """
+    csq = (1).to_bytes(4, "little")
+    usr = (0).to_bytes(2, "little")
+    return csq + usr + bytes([1, 0]) + bytes([0xDE, 0xAD, 0xBE, 0xEF])
+
+
+def _g120v2_reply() -> bytes:
+    """g120v2 (A.45.2.2.2): CSQ, USR, then a MAC value sized by the object prefix.
+    A.45.2.2.3 mandates qualifier 0x5B.
+    """
+    csq = (1).to_bytes(4, "little")
+    usr = (0).to_bytes(2, "little")
+    return csq + usr + bytes([0x11, 0x22, 0x33, 0x44])
+
+
+_FREE_FORMAT_ROWS = [
+    pytest.param(83, 1, _g83v1_pro(), id="g83v1"),
+    pytest.param(85, 1, _descriptor_element(1), id="g85v1"),
+    pytest.param(86, 1, _descriptor_element(2), id="g86v1"),
+    pytest.param(86, 3, _g86v3_point_index(), id="g86v3"),
+    pytest.param(87, 1, _g87_or_g88_snapshot(1), id="g87v1"),
+    pytest.param(88, 1, _g87_or_g88_snapshot(2), id="g88v1"),
+    pytest.param(120, 1, _g120v1_challenge(), id="g120v1"),
+    pytest.param(120, 2, _g120v2_reply(), id="g120v2"),
+]
+
+
+class TestOtherFreeFormatGroupsFrameAndStepOver:
+    """Every group whose range code 0xB pairs with a size-prefix qualifier
+    (Table 4-6) frames the same way, regardless of group: the walking loop
+    never decodes the object, so a payload built by hand from its own Annex A
+    clause frames identically to g70 (TestG70BlockFramesAndStepsOver). 0x5B
+    (Table 4-7 preferred; mandatory for g120 per A.45.1.2.3 / A.45.2.2.3).
+    """
+
+    @pytest.mark.parametrize("group,variation,obj", _FREE_FORMAT_ROWS)
+    def test_block_then_g30v1(self, group: int, variation: int, obj: bytes) -> None:
+        count = bytes([1])
+        sized = _sized_object(2, obj)
+        data = bytes([group, variation, 0x5B]) + count + sized + _G30V1_TAIL
+
+        blocks = parse_response_object_blocks(data)
+
+        assert [(b.header.group, b.header.variation) for b in blocks] == [(group, variation), (30, 1)]
+        assert blocks[0].data == count + sized
+        assert _decode_g30v1(blocks[1].data).value == _G30V1_VALUE
 
 
 class TestFreeFormatRequestPath:
