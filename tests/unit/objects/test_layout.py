@@ -180,6 +180,15 @@ _EXPECTED_ROWS = {
     (60, 3): (PointKind.CLASS, 0, 0, False, ValueCodec.NONE, _NO),  # A.26.3
     (60, 4): (PointKind.CLASS, 0, 0, False, ValueCodec.NONE, _NO),  # A.26.4
     (80, 1): (PointKind.INTERNAL_INDICATION, 0, 1, False, _PK, _NO),  # A.28.1: BSTRn
+    (86, 2): (PointKind.DATA_SET_CHARACTERISTICS, 1, 0, False, _REC, _NO),  # A.33.2: BSTR4
+    (101, 1): (PointKind.BCD_INTEGER, 2, 0, False, _REC, _NO),  # A.39.1: BCD4, 4 digits, 2 octets
+    (101, 2): (PointKind.BCD_INTEGER, 4, 0, False, _REC, _NO),  # A.39.2: BCD8, 8 digits, 4 octets
+    (101, 3): (PointKind.BCD_INTEGER, 8, 0, False, _REC, _NO),  # A.39.3: BCD16, 16 digits, 8 octets
+    (102, 1): (PointKind.UNSIGNED_INTEGER, 1, 0, False, _UINT, _NO),  # A.40.1: UINT8
+    (120, 3): (PointKind.AUTHENTICATION, 6, 0, False, _REC, _NO),  # A.45.3: UINT32, UINT16
+    (121, 1): (PointKind.SECURITY_STATISTIC, 7, 0, True, _REC, _NO),  # A.46.1: flag, UINT16, UINT32
+    (122, 1): (PointKind.SECURITY_STATISTIC, 7, 0, True, _REC, _NO),  # A.47.1: flag, UINT16, UINT32
+    (122, 2): (PointKind.SECURITY_STATISTIC, 13, 0, True, _REC, _ABS),  # A.47.2: as v1, plus DNP3TIME
 }
 
 

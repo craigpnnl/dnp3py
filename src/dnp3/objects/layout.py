@@ -41,6 +41,11 @@ class PointKind(Enum):
     TIME_DELAY = "time_delay"
     CLASS = "class"
     INTERNAL_INDICATION = "internal_indication"
+    DATA_SET_CHARACTERISTICS = "data_set_characteristics"
+    BCD_INTEGER = "bcd_integer"
+    UNSIGNED_INTEGER = "unsigned_integer"
+    AUTHENTICATION = "authentication"
+    SECURITY_STATISTIC = "security_statistic"
 
 
 class ValueCodec(Enum):
@@ -299,6 +304,24 @@ _TABLE: dict[tuple[int, int], WireLayout] = {
     (60, 4): _octets(PointKind.CLASS, 0, ValueCodec.NONE, flags=False),
     # A.28.1: one bit per internal indication, written to clear DEVICE_RESTART.
     (80, 1): _packed(PointKind.INTERNAL_INDICATION, 1),
+    # A.33.2: BSTR4 characteristics octet, no flags, no time. Framed and
+    # stepped over only (#82): no decoder reads the RD/WR/ST/EV/DF bits yet.
+    (86, 2): _octets(PointKind.DATA_SET_CHARACTERISTICS, 1, _REC, flags=False),
+    # A.39.1-3: BCD value alone, no flags. Not a binary UINT, so RECORD rather
+    # than UINT: framed and stepped over only, per #82.
+    (101, 1): _octets(PointKind.BCD_INTEGER, 2, _REC, flags=False),
+    (101, 2): _octets(PointKind.BCD_INTEGER, 4, _REC, flags=False),
+    (101, 3): _octets(PointKind.BCD_INTEGER, 8, _REC, flags=False),
+    # A.40.1: UINT8 value alone, no flags.
+    (102, 1): _octets(PointKind.UNSIGNED_INTEGER, 1, _UINT, flags=False),
+    # A.45.3: UINT32 Challenge Sequence Number + UINT16 User Number, no flags.
+    (120, 3): _octets(PointKind.AUTHENTICATION, 6, _REC, flags=False),
+    # A.46.1, A.47.1-2: flag octet, UINT16 association ID, UINT32 count value,
+    # v2 adds a DNP3TIME. Static and event share one PointKind, as COUNTER and
+    # FROZEN_COUNTER do above.
+    (121, 1): _octets(PointKind.SECURITY_STATISTIC, 6, _REC),
+    (122, 1): _octets(PointKind.SECURITY_STATISTIC, 6, _REC),
+    (122, 2): _octets(PointKind.SECURITY_STATISTIC, 6, _REC, time=_ABS),
 }
 
 LAYOUTS: Mapping[tuple[int, int], WireLayout] = MappingProxyType(_TABLE)
