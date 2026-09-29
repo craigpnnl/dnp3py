@@ -38,7 +38,7 @@ from dnp3.objects.binary_input import BinaryInputEvent, BinaryInputFlags
 from dnp3.objects.binary_output import BinaryOutputFlags
 from dnp3.objects.binary_output import CommandStatus as ObjectsCommandStatus
 from dnp3.objects.counter import Counter32, CounterEvent32Time, FrozenCounter32
-from dnp3.outstation._failure_log import WINDOW_SECONDS, FailureKey, FailureLogLimiter
+from dnp3.outstation._failure_log import FailureKey, FailureLogLimiter
 from dnp3.outstation.config import OutstationConfig
 from dnp3.outstation.handler import CommandHandler, CommandResult, DefaultCommandHandler
 from dnp3.outstation.peer import UNSPECIFIED_PEER, PeerId
@@ -1939,7 +1939,7 @@ class Outstation:
         if suppressed is None:
             return
         if suppressed:
-            message = f"{message} (%d suppressed in the last {WINDOW_SECONDS:.0f}s)"
+            message = f"{message} (%d suppressed since the previous record)"
             args = (*args, suppressed)
         _log.log(level, message, *args, exc_info=exc_info)
 
