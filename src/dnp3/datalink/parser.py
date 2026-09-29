@@ -15,6 +15,7 @@ from dnp3.datalink.frame import (
     DATA_BLOCK_SIZE,
     HEADER_SIZE,
     HEADER_SIZE_NO_CRC,
+    LENGTH_FIELD_OVERHEAD,
     DataLinkFrame,
     DataLinkHeader,
 )
@@ -86,6 +87,20 @@ def _validate_header_crc(header_bytes: bytes) -> bool:
     data = header_bytes[:HEADER_SIZE_NO_CRC]
     crc = int.from_bytes(header_bytes[8:10], byteorder="little")
     return compute_crc(data) == crc
+
+
+def _validate_header_length(header_bytes: bytes) -> bool:
+    """Validate the LENGTH field meets the minimum (IEEE 1815-2012
+    9.2.4.1.2: at least 5, the header alone with no user data).
+
+    Args:
+        header_bytes: Header bytes, CRC-validated or not; only the LENGTH
+            field at offset 2 is read.
+
+    Returns:
+        True if LENGTH is at least the minimum.
+    """
+    return header_bytes[2] >= LENGTH_FIELD_OVERHEAD
 
 
 def _validate_data_block_crc(block: bytes) -> bool:
@@ -218,6 +233,17 @@ class FrameParser:
             # Validate header CRC
             if not _validate_header_crc(bytes(self._buffer[:HEADER_SIZE])):
                 # Bad CRC - skip first byte and hunt again
+                del self._buffer[0]
+                continue
+
+            # Validate LENGTH minimum (issue #65): a CRC-valid header can
+            # still carry a LENGTH below 5, which would make
+            # user_data_length negative. Read the raw byte rather than
+            # calling DataLinkHeader.from_bytes, which now raises on this
+            # case instead of resyncing.
+            if not _validate_header_length(bytes(self._buffer[:HEADER_SIZE])):
+                # LENGTH too short - skip first byte and hunt again, same
+                # recovery path as a header CRC failure
                 del self._buffer[0]
                 continue
 

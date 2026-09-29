@@ -83,9 +83,18 @@ class DataLinkHeader:
 
         Returns:
             DataLinkHeader instance.
+
+        Raises:
+            ValueError: If the LENGTH field is below the minimum of 5
+                (IEEE 1815-2012 9.2.4.1.2), which would make
+                user_data_length negative.
         """
+        length = data[2]
+        if length < LENGTH_FIELD_OVERHEAD:
+            msg = f"LENGTH field {length} is below the minimum of {LENGTH_FIELD_OVERHEAD} (IEEE 1815-2012 9.2.4.1.2)"
+            raise ValueError(msg)
         return cls(
-            length=data[2],
+            length=length,
             control=ControlByte.from_int(data[3]),
             destination=int.from_bytes(data[4:6], byteorder="little"),
             source=int.from_bytes(data[6:8], byteorder="little"),
