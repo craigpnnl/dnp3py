@@ -46,6 +46,20 @@ class TestMalformedResponseReturnsNoneAndLogs:
         warnings = [r for r in caplog.records if r.name == "dnp3.master.master" and r.levelname == "WARNING"]
         assert len(warnings) == 1
 
+    def test_full_length_unknown_function_code_returns_none_and_logs(self, caplog: pytest.LogCaptureFixture) -> None:
+        """A fragment at or past the header size still routes through ParseError."""
+        master = Master()
+        # 0xFF is not a FunctionCode member; the header is otherwise well-formed.
+        fragment = bytes([0xC1, 0xFF, 0x00, 0x00])
+
+        with caplog.at_level(logging.WARNING, logger="dnp3.master.master"):
+            result = master.process_response(fragment)
+
+        assert result is None
+        warnings = [r for r in caplog.records if r.name == "dnp3.master.master" and r.levelname == "WARNING"]
+        assert len(warnings) == 1
+        assert "Unknown function code" in warnings[0].getMessage()
+
 
 class TestWellFormedResponseIsUnchanged:
     """The narrowed handler does not touch the success path."""
