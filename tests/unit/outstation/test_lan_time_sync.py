@@ -352,6 +352,29 @@ class TestWriteG50v3ConsumesOnlyItsOwnPeer:
         assert not response.header.iin & IIN.PARAMETER_ERROR
 
 
+class TestReleaseConnectionOnlyAffectsThatConnection:
+    """release_connection drops only instants recorded on that connection
+    (#142); an instant recorded on another connection stays usable."""
+
+    def test_releasing_one_connection_leaves_another_connections_instant_usable(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        clock = _FakeClock(200.0)
+        monkeypatch.setattr("dnp3.outstation.outstation.time.monotonic", clock)
+        delivered: list[DNP3Timestamp] = []
+        outstation = Outstation(time_handler=delivered.append)
+
+        _record_current_time(outstation, seq=1, peer=_PEER_A)
+        _record_current_time(outstation, seq=2, peer=_PEER_B)
+        outstation.release_connection(1)  # _PEER_A.connection
+        clock.value = 200.25
+
+        response = _write(outstation, _g50v3_write(), seq=3, peer=_PEER_B)
+
+        assert delivered == [DNP3Timestamp(_TIME_MS + 250)]
+        assert not response.header.iin & IIN.PARAMETER_ERROR
+
+
 class TestWriteG50v3Bounded:
     """A written time plus elapsed time that would not fit the 48-bit
     timestamp is refused in the check pass (#142), before any handler call
