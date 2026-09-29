@@ -45,8 +45,25 @@ NEW_KIND_BLOCKS = [
     (120, 3, struct.pack("<IH", 123456, 7)),
     # A.46.1: flag octet, UINT16 association ID, UINT32 count (g121v1, SECURITY_STATISTIC).
     (121, 1, bytes([0x01]) + struct.pack("<HI", 3, 42)),
+    # A.41.1: OSTR1, 1 octet of value, no flags (g110v1, OCTET_STRING).
+    (110, 1, bytes([0xAB])),
+    # A.42.1: OSTR3, 3 octets of value, no flags (g111v3, OCTET_STRING).
+    (111, 3, bytes([0x01, 0x02, 0x03])),
 ]
-NEW_KIND_IDS = ["g13v1", "g31v1", "g34v1", "g41v1", "g43v1", "g86v2", "g101v1", "g102v1", "g120v3", "g121v1"]
+NEW_KIND_IDS = [
+    "g13v1",
+    "g31v1",
+    "g34v1",
+    "g41v1",
+    "g43v1",
+    "g86v2",
+    "g101v1",
+    "g102v1",
+    "g120v3",
+    "g121v1",
+    "g110v1",
+    "g111v3",
+]
 
 # A.14.1: flag octet, INT32 (g30v1, ANALOG_INPUT): the delivered marker block.
 G30V1_DATA = bytes([0x01]) + struct.pack("<i", 2401)
@@ -65,6 +82,7 @@ UNDELIVERED_NEW_KINDS = frozenset(
         PointKind.UNSIGNED_INTEGER,
         PointKind.AUTHENTICATION,
         PointKind.SECURITY_STATISTIC,
+        PointKind.OCTET_STRING,
     }
 )
 
@@ -116,3 +134,15 @@ class TestNewKindsNotDelivered:
         that has wrongly gained a callback under a different, decodable codec.
         """
         assert UNDELIVERED_NEW_KINDS.isdisjoint(_DELIVERIES)
+
+    @pytest.mark.parametrize(("group", "variation", "data"), NEW_KIND_BLOCKS, ids=NEW_KIND_IDS)
+    def test_row_point_kind_is_one_of_the_undelivered_kinds(self, group: int, variation: int, data: bytes) -> None:
+        """Pins each row's own point kind against the static set above: the
+        static-set check alone cannot catch a row wrongly given a kind that
+        DOES have a delivery entry (e.g. ANALOG_INPUT), since a codec the
+        entry's decoder does not handle still decodes to no values and
+        delivers nothing, identically to a kind with no entry at all.
+        """
+        wire = layout_for(group, variation)
+        assert wire is not None
+        assert wire.point_kind in UNDELIVERED_NEW_KINDS
