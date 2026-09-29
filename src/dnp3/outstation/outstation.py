@@ -1915,6 +1915,34 @@ class Outstation:
 
         return results
 
+    def _log_rate_limited(
+        self,
+        *,
+        level: int,
+        function: FunctionCode,
+        handler_method: str,
+        exception_type: type[BaseException],
+        exc_info: BaseException | None,
+        message: str,
+        args: tuple[object, ...],
+    ) -> None:
+        """Log one record at ``level``, rate-limited per (function, handler method,
+        exception type) key (#46).
+
+        At most one record per key is written per ``WINDOW_SECONDS``; the
+        record after a gap in activity for that key reports how many were
+        suppressed since the previous one. Does not touch ``handler_failures``:
+        callers that count toward it call ``_log_handler_failure`` instead.
+        """
+        key: FailureKey = (function, handler_method, exception_type)
+        suppressed = self._failure_log_limiter.record(key)
+        if suppressed is None:
+            return
+        if suppressed:
+            message = f"{message} (%d suppressed in the last {WINDOW_SECONDS:.0f}s)"
+            args = (*args, suppressed)
+        _log.log(level, message, *args, exc_info=exc_info)
+
     def _log_handler_failure(
         self,
         *,
@@ -1928,19 +1956,18 @@ class Outstation:
         """Log one covered application-code failure, rate-limited per key (#46).
 
         Every covered failure increments ``handler_failures`` whether or
-        not it is logged. At most one ERROR record per (function, handler
-        method, exception type) key is written per ``WINDOW_SECONDS``; the
-        record after a window reports how many were suppressed during it.
+        not it is logged, unlike a plain ``_log_rate_limited`` call.
         """
         self.handler_failures += 1
-        key: FailureKey = (function, handler_method, exception_type)
-        suppressed = self._failure_log_limiter.record(key)
-        if suppressed is None:
-            return
-        if suppressed:
-            message = f"{message} (%d suppressed in the last {WINDOW_SECONDS:.0f}s)"
-            args = (*args, suppressed)
-        _log.error(message, *args, exc_info=exc_info)
+        self._log_rate_limited(
+            level=logging.ERROR,
+            function=function,
+            handler_method=handler_method,
+            exception_type=exception_type,
+            exc_info=exc_info,
+            message=message,
+            args=args,
+        )
 
     def _run_control_point(
         self,
@@ -2299,8 +2326,11 @@ class Outstation:
         group 41 succeeds. A no-op when the Database has no point at index or
         the point opts out with config.track_commands = False. A NaN value
         (g41v3/v4) is refused rather than synthesized: the point keeps its
-        prior value and the refusal is logged once, and is not rate-limited
-        (it is a bounded per-call refusal, not an unbounded failure).
+        prior value and the refusal is logged at WARNING through
+        ``_log_rate_limited``, under its own key, so a peer that keeps
+        commanding NaN cannot flood the log either; it does not count
+        toward ``handler_failures``, which tracks failures rather than
+        refusals of a well-formed but out-of-range request.
         Any other exception the Database raises, including from the lookup
         itself, is caught, counted and rate-limited through
         ``_log_handler_failure`` like a control handler failure: the output
@@ -2326,7 +2356,15 @@ class Outstation:
         try:
             self.database.update_analog_output(index, value)
         except ValueError:
-            _log.warning("analog output %d: commanded value rejected, status unchanged", index)
+            self._log_rate_limited(
+                level=logging.WARNING,
+                function=function,
+                handler_method="update_analog_output",
+                exception_type=ValueError,
+                exc_info=None,
+                message="analog output %d: commanded value rejected, status unchanged, function %s, peer %s",
+                args=(index, function.name, peer),
+            )
         except Exception as exc:
             self._log_handler_failure(
                 function=function,
