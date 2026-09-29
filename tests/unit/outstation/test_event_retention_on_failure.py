@@ -21,7 +21,6 @@ from dnp3.application.fragment import ObjectBlock, ResponseFragment
 from dnp3.core.flags import IIN, AnalogQuality
 from dnp3.database import Database, Event, EventClass
 from dnp3.database.point import AnalogInputConfig, BinaryInputConfig
-from dnp3.objects.analog_input import AnalogInputEvent32
 from dnp3.outstation.outstation import Outstation
 
 ONLINE = AnalogQuality.ONLINE
@@ -50,14 +49,19 @@ def _find_block(responses: Sequence[ResponseFragment], group: int, variation: in
 
 
 def _decode_analog_events(block_data: bytes) -> list[tuple[int, int]]:
-    """Decode a g32v1 (qualifier 0x17, 1-byte index) event block into (index, value) pairs."""
+    """Decode a g32v1 (qualifier 0x17, 1-byte index) event block into (index, value) pairs.
+
+    Decodes the quality-plus-value bytes directly, not through
+    AnalogInputEvent32 (the SUT's own encoder class), so a wrong byte
+    layout in that class would not pass unnoticed here.
+    """
     count = block_data[0]
     events = []
     offset = 1
     for _ in range(count):
         index = block_data[offset]
-        event = AnalogInputEvent32.from_bytes(block_data[offset + 1 : offset + 6])
-        events.append((index, event.value))
+        value = int.from_bytes(block_data[offset + 2 : offset + 6], "little", signed=True)
+        events.append((index, value))
         offset += 6
     return events
 
@@ -158,6 +162,7 @@ class TestUnsolicitedEventsSurviveAFailedBuild:
         assert block_data is not None
         assert _decode_analog_events(block_data) == [(0, 9)]
         assert outstation.database.event_buffer.class2.count == 0
+        assert IIN.CLASS_2_EVENTS not in response.header.iin
 
 
 class TestEventAddedDuringBuildSurvives:
