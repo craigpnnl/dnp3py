@@ -130,6 +130,34 @@ class TestGroup0Truncation:
         assert truncation == Truncation(TruncationReason.DATA_SHORTER_THAN_DECLARED, 0, 0, 217, 0x00)
 
 
+class TestGroup0NoObjectVariationsUnchanged:
+    """Variations 0 and 254 have no object body (4.2.2.7.2.1; A.1.43.2) and
+    stay refused as UNKNOWN_WIDTH, the pre-existing behavior for an unmapped
+    group/variation: this is a protocol violation in a response, not
+    something this module frames.
+    """
+
+    def test_variation_0_stays_unknown_width(self) -> None:
+        header = bytes([0, 0, 0x00])
+        obj_range = bytes([0x00, 0x00])
+        data = header + obj_range + _G30V1_TAIL
+
+        blocks, truncation = frame_response_object_blocks(data)
+
+        assert blocks == []
+        assert truncation == Truncation(TruncationReason.UNKNOWN_WIDTH, 0, 0, 0, 0x00)
+
+    def test_variation_254_stays_unknown_width(self) -> None:
+        header = bytes([0, 254, 0x00])
+        obj_range = bytes([0x00, 0x00])
+        data = header + obj_range + _G30V1_TAIL
+
+        blocks, truncation = frame_response_object_blocks(data)
+
+        assert blocks == []
+        assert truncation == Truncation(TruncationReason.UNKNOWN_WIDTH, 0, 0, 254, 0x00)
+
+
 class TestGroup0RequestPath:
     """Table 12-1: READ carries no group 0 attribute data; WRITE does."""
 
