@@ -4,8 +4,7 @@ Each new layout row (g86v2, g101v1-3, g102v1, g120v3, g121v1, g122v1-2) is
 proved by the same shape the library already uses for a measurement group:
 one block of that group, followed by a g30v1 block, both framed and the
 g30v1 value delivered intact. Widths are IEEE 1815-2012 Annex A, cited beside
-each row; see the width table in the issue's linked plan for the clause
-numbers this test file assumes.
+each row.
 """
 
 import pytest
@@ -31,9 +30,9 @@ class TestFixedWidthRowsFrameAndStepOver:
         ("group", "variation", "width"),
         [
             (86, 2, 1),  # A.33.2: BSTR4
-            (101, 1, 4),  # A.39.1: BCD4
-            (101, 2, 8),  # A.39.2: BCD8
-            (101, 3, 16),  # A.39.3: BCD16
+            (101, 1, 2),  # A.39.1: BCD4, 4 digits, 2 octets
+            (101, 2, 4),  # A.39.2: BCD8, 8 digits, 4 octets
+            (101, 3, 8),  # A.39.3: BCD16, 16 digits, 8 octets
             (102, 1, 1),  # A.40.1: UINT8
             (120, 3, 6),  # A.45.3: UINT32 CSQ, UINT16 user number
             (121, 1, 7),  # A.46.1: flag, UINT16, UINT32
@@ -69,3 +68,23 @@ class TestFixedWidthRowsFrameAndStepOver:
         blocks = parse_response_object_blocks(data)
 
         assert blocks == []
+
+
+class TestG101V1HandEncoded:
+    """A.39.1: BCD4 is 4 digits, one nibble per digit, 2 octets total.
+
+    Built from literal BCD octets rather than derived from the row's own
+    width, so a doubled width still fails this even though the width-derived
+    parametrize case above cannot tell the two widths apart on its own.
+    """
+
+    def test_hand_encoded_bcd4_frames_and_steps_over(self) -> None:
+        bcd_octets = bytes([0x34, 0x12])  # one BCD4 object, 4 digits, 2 octets (A.39.1)
+        range_field = bytes([0x05, 0x05])  # start-stop 5..5: one object
+        data = bytes([101, 1, 0x00]) + range_field + bcd_octets + _G30V1_TAIL
+
+        blocks = parse_response_object_blocks(data)
+
+        assert [(b.header.group, b.header.variation) for b in blocks] == [(101, 1), (30, 1)]
+        assert blocks[0].data == range_field + bcd_octets
+        assert _decode_g30v1(blocks[1].data).value == _G30V1_VALUE
