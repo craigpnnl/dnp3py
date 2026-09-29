@@ -1773,9 +1773,18 @@ class Outstation:
             _log.exception("Control handler raised for %s point %d", function.name, index)
             stop.stopped = True
             return CommandStatus.UNDEFINED
-        status = _coerce_command_status(result.status) if isinstance(result, CommandResult) else None
-        if status is None:
+        if not isinstance(result, CommandResult):
             _log.error("Control handler returned %r for %s point %d, not a CommandResult", result, function.name, index)
+            stop.stopped = True
+            return CommandStatus.UNDEFINED
+        status = _coerce_command_status(result.status)
+        if status is None:
+            _log.error(
+                "Control handler returned %r for %s point %d, whose status is not a valid CommandStatus",
+                result,
+                function.name,
+                index,
+            )
             stop.stopped = True
             return CommandStatus.UNDEFINED
         return status
@@ -2061,8 +2070,12 @@ class Outstation:
         """
         try:
             point = self.database.get_analog_output(index)
-            if point is None or not point.config.track_commands:
-                return
+        except Exception:
+            _log.exception("analog output %d: lookup failed after operate, tracked value not stored", index)
+            return
+        if point is None or not point.config.track_commands:
+            return
+        try:
             self.database.update_analog_output(index, value)
         except ValueError:
             _log.warning("analog output %d: commanded value %r rejected, status unchanged", index, value)
