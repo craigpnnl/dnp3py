@@ -573,7 +573,34 @@ class TestAcceptedStatusForms:
         assert handler.calls == [("direct_operate_binary_output", 1), ("direct_operate_binary_output", 2)]
         statuses = _statuses(responses[0], count=2)
         assert statuses == [expected_status, CommandStatus.SUCCESS]
-        assert type(statuses[0]) is CommandStatus
+
+    @pytest.mark.parametrize(
+        ("returned_status", "expected_status"),
+        [
+            pytest.param(ObjectsCommandStatus.SUCCESS, CommandStatus.SUCCESS, id="objects-enum-success"),
+            pytest.param(0, CommandStatus.SUCCESS, id="plain-int-success"),
+        ],
+    )
+    def test_run_control_point_return_value_is_the_converted_core_type(
+        self, returned_status: object, expected_status: CommandStatus
+    ) -> None:
+        """_statuses() reads a wire byte and always rebuilds a CommandStatus, so that check
+        cannot fail regardless of what _run_control_point actually returned. Call it directly
+        and check its own return value's type, to catch a mutant that skips the conversion.
+        """
+        outstation = _outstation(_CallTrackingHandler())
+        stop = _ControlStop()
+
+        status = outstation._run_control_point(
+            lambda: CommandResult(status=returned_status),  # type: ignore[arg-type]
+            function=FunctionCode.DIRECT_OPERATE,
+            index=1,
+            stop=stop,
+        )
+
+        assert status == expected_status
+        assert type(status) is CommandStatus
+        assert stop.stopped is False
 
 
 class TestNoAckStopsAfterRaise:
