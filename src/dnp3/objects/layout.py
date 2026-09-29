@@ -286,6 +286,7 @@ _TABLE: dict[tuple[int, int], WireLayout] = {
     (43, 8): _octets(PointKind.ANALOG_COMMAND_EVENT, 9, _REC, flags=False, time=_ABS),
     # A.23 and A.24: a DNP3TIME (UINT48) is the whole object.
     (50, 1): _octets(PointKind.TIME, 6, _UINT, flags=False),
+    (50, 3): _octets(PointKind.TIME, 6, _UINT, flags=False),
     (51, 1): _octets(PointKind.TIME, 6, _UINT, flags=False),
     (51, 2): _octets(PointKind.TIME, 6, _UINT, flags=False),
     # A.25

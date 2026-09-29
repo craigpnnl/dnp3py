@@ -129,7 +129,13 @@ class TestWriteTimeMalformedQualifier:
 
 
 class TestWriteTimeUnknownWidthVariations:
-    """Item 4: g50v2/v3/v0 stop at framing (pins today's refusal) with IIN2.1."""
+    """Item 4: g50v2/v0 stop at framing (pins today's refusal) with IIN2.1.
+
+    g50v3 is not an unknown-width variation any more: #142 adds its layout
+    row, so a malformed g50v3 block now fails at a known width instead
+    (IIN2.2) and a well-formed one is a write this outstation accepts.
+    See tests/unit/outstation/test_lan_time_sync.py.
+    """
 
     def test_g50v2_answers_object_unknown(self) -> None:
         outstation = Outstation()
@@ -138,14 +144,6 @@ class TestWriteTimeUnknownWidthVariations:
 
         assert IIN.OBJECT_UNKNOWN in response.header.iin
         assert IIN.PARAMETER_ERROR not in response.header.iin
-        assert IIN.NEED_TIME in outstation.iin
-
-    def test_g50v3_answers_object_unknown(self) -> None:
-        outstation = Outstation()
-        block = ObjectBlock(header=ObjectHeader(group=50, variation=3, qualifier=0x07), data=bytes([1]))
-        response = _send(outstation, block, seq=6)
-
-        assert IIN.OBJECT_UNKNOWN in response.header.iin
         assert IIN.NEED_TIME in outstation.iin
 
     def test_g50v0_answers_object_unknown(self) -> None:
