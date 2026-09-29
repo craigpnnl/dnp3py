@@ -379,47 +379,53 @@ class TestOtherRequestsBetweenSelectAndOperate:
 
 
 class TestHandlerRaises:
-    """A handler that raises leaves no selection behind to retry or to operate.
+    """A handler that raises stops the point, not the whole selection state machine.
 
-    process_request now answers the raise with a null response carrying
-    IIN2.2 (craigpnnl/dnp3py#46) instead of letting it reach this test's
-    caller; the state guarantees below are unchanged by that.
+    A raising point echoes UNDEFINED (127) instead of the whole request
+    answering a null response with IIN2.2 (craigpnnl/dnp3py#46 part 2); the
+    handler is never called again for that point or any later one in the
+    request. The state guarantees below (what a retry repeats, what a
+    selection keeps armed) still hold under that answer.
     """
 
-    def test_raise_during_select_leaves_no_record_to_retry(self) -> None:
+    def test_raise_leaves_a_cancelled_record_that_a_same_seq_retry_repeats(self) -> None:
         outstation, handler = _outstation()
         handler.raise_on_select.add(5)
 
         failed = _select(outstation, MASTER_A, 4, POINT_5)
-        assert len(failed) == 1
-        assert IIN.PARAMETER_ERROR in failed[0].header.iin
-        assert failed[0].header.control.seq == 4
+        assert _statuses(failed) == [(5, CommandStatus.UNDEFINED)]
+        assert IIN.PARAMETER_ERROR not in failed[0].header.iin
+        assert handler.selects == []
 
-        assert _statuses(_select(outstation, MASTER_A, 4, POINT_5)) == [(5, SUCCESS)]
+        retry = _select(outstation, MASTER_A, 4, POINT_5)
+        assert [r.to_bytes() for r in retry] == [r.to_bytes() for r in failed]
+        assert handler.selects == []
+
+        assert _statuses(_select(outstation, MASTER_A, 5, POINT_5)) == [(5, SUCCESS)]
         assert handler.selects == [(5, 1000)]
 
-    def test_raise_partway_through_select_arms_nothing(self) -> None:
+    def test_raise_partway_through_select_stops_the_second_point_and_cancels_the_selection(self) -> None:
         outstation, handler = _outstation()
         handler.raise_on_select.add(6)
         both = _crob_block((5, 1000), (6, 6000))
 
         failed = _select(outstation, MASTER_A, 4, both)
-        assert len(failed) == 1
-        assert IIN.PARAMETER_ERROR in failed[0].header.iin
+        assert _statuses(failed) == [(5, SUCCESS), (6, CommandStatus.UNDEFINED)]
+        assert IIN.PARAMETER_ERROR not in failed[0].header.iin
         assert handler.selects == [(5, 1000)]
 
         assert _statuses(_operate(outstation, MASTER_A, 5, both)) == [(5, NO_SELECT), (6, NO_SELECT)]
         assert handler.operates == []
 
-    def test_raise_partway_through_operate_ends_the_selection(self) -> None:
+    def test_raise_partway_through_operate_stops_the_third_point_and_ends_the_selection(self) -> None:
         outstation, handler = _outstation()
         three = _crob_block((5, 1000), (6, 6000), (7, 7000))
         assert _statuses(_select(outstation, MASTER_A, 2, three)) == [(5, SUCCESS), (6, SUCCESS), (7, SUCCESS)]
         handler.raise_on_operate.add(6)
 
         failed = _operate(outstation, MASTER_A, 3, three)
-        assert len(failed) == 1
-        assert IIN.PARAMETER_ERROR in failed[0].header.iin
+        assert _statuses(failed) == [(5, SUCCESS), (6, CommandStatus.UNDEFINED), (7, CommandStatus.UNDEFINED)]
+        assert IIN.PARAMETER_ERROR not in failed[0].header.iin
         assert handler.operates == [(5, 1000, 2)]
 
         assert _statuses(_operate(outstation, MASTER_A, 3, three)) == [(5, NO_SELECT), (6, NO_SELECT), (7, NO_SELECT)]
