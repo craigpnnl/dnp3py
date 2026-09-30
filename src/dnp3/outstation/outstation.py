@@ -1102,7 +1102,7 @@ class Outstation:
         """Whether a request of this function runs the objects it carries.
 
         CONFIRM runs none, and an unsupported function answers NO_FUNC_CODE_SUPPORT
-        whether or not its objects framed.
+        whether or not its objects framed, unless it is a NO_ACK function.
         """
         return function in (FunctionCode.SELECT, FunctionCode.OPERATE) or function in self._executors(UNSPECIFIED_PEER)
 
@@ -1141,6 +1141,8 @@ class Outstation:
         execute = self._executors(peer).get(function)
         if execute is not None:
             return execute(request)
+        if function in _NO_ACK_FUNCTIONS:
+            return []
         return [
             build_null_response(
                 iin=self.iin | IIN.NO_FUNC_CODE_SUPPORT,
