@@ -40,6 +40,7 @@ class SimulatorChannel:
     _peer: "SimulatorChannel | None" = field(default=None, init=False)
     _read_buffer: bytes = field(default=b"", init=False)
     _parked_reads: int = field(default=0, init=False)
+    _peer_closed: bool = field(default=False, init=False)
 
     def __post_init__(self) -> None:
         """Initialize internal state."""
@@ -91,12 +92,14 @@ class SimulatorChannel:
             self._peer = None
             if peer._peer is self:
                 peer._peer = None
-                # Signal EOF to peer
+                # Retain EOF even when the queue has no room for the wake-up sentinel.
+                peer._peer_closed = True
                 with contextlib.suppress(asyncio.QueueFull):
                     peer._read_queue.put_nowait(b"")
 
         # Clear read buffer
         self._read_buffer = b""
+        self._peer_closed = False
         while not self._read_queue.empty():
             try:
                 self._read_queue.get_nowait()
@@ -136,6 +139,10 @@ class SimulatorChannel:
             data = self._read_buffer[:max_bytes]
             self._read_buffer = self._read_buffer[max_bytes:]
             return data
+
+        # Deliver queued data before reporting the peer's EOF.
+        if self._peer_closed and self._read_queue.empty():
+            return b""
 
         # Wait for data from queue
         timeout = self.config.read_timeout if self.config.read_timeout > 0 else None
@@ -262,6 +269,8 @@ class SimulatorChannel:
 
         self._peer = peer
         peer._peer = self
+        self._peer_closed = False
+        peer._peer_closed = False
 
 
 def create_channel_pair(
