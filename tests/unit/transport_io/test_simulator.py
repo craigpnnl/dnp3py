@@ -239,17 +239,19 @@ class TestChannelPairCommunication:
         assert data == b""  # EOF
 
     @pytest.mark.asyncio
-    async def test_read_exactly_eof_raises(self) -> None:
+    @pytest.mark.parametrize("buffer_size", [0, 1])
+    async def test_read_exactly_eof_raises(self, buffer_size: int) -> None:
         """read_exactly raises on EOF before requested bytes."""
-        a, b = create_channel_pair()
+        a, b = create_channel_pair(config=SimulatorConfig(buffer_size=buffer_size))
         await a.open()
         await b.open()
 
         await a.write(b"hi")
         await a.close()
 
-        with pytest.raises(ChannelClosedError, match="EOF"):
-            await b.read_exactly(10)
+        async with asyncio.timeout(0.2):
+            with pytest.raises(ChannelClosedError, match="EOF"):
+                await b.read_exactly(10)
 
     @pytest.mark.asyncio
     async def test_read_parked_own_close_raises_closed(self) -> None:
@@ -287,25 +289,53 @@ class TestChannelPairCommunication:
         assert b.state == ChannelState.OPEN
 
     @pytest.mark.asyncio
-    async def test_close_with_peer_queue_full_does_not_raise(self) -> None:
+    @pytest.mark.parametrize("read_timeout", [0.0, 0.05])
+    async def test_close_with_peer_queue_full_does_not_raise(self, read_timeout: float) -> None:
         """close() completes when the peer's queue has no room for the EOF
         sentinel, and the data already queued there is not lost.
         """
-        config = SimulatorConfig(buffer_size=1)
+        config = SimulatorConfig(buffer_size=1, read_timeout=read_timeout)
         a, b = create_channel_pair(config=config)
         await a.open()
         await b.open()
 
-        await a.write(b"x")  # fills b's read queue to its capacity of 1
+        await a.write(b"xy")  # fills b's read queue to its capacity of 1
 
         await a.close()
 
         assert a.state == ChannelState.CLOSED
         assert a.peer is None
         assert b.peer is None
-        assert await b.read(100) == b"x"
+        assert await b.read(1) == b"x"
+        assert await b.read(1) == b"y"
+        async with asyncio.timeout(0.2):
+            assert await b.read(100) == b""
+            assert await b.read(100) == b""
+        assert b.state == ChannelState.OPEN
         with pytest.raises(ChannelError, match="No peer connected"):
             await b.write(b"y")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("reconnect", [False, True])
+    async def test_full_queue_eof_does_not_survive_reuse(self, reconnect: bool) -> None:
+        """Reopening or reconnecting starts without a stale peer EOF."""
+        config = SimulatorConfig(buffer_size=1, read_timeout=0.05)
+        a, b = create_channel_pair(config=config)
+        await a.open()
+        await b.open()
+        await a.write(b"x")
+        await a.close()
+        assert await b.read(1) == b"x"
+
+        if reconnect:
+            await a.open()
+            a.connect_to(b)
+        else:
+            await b.close()
+            await b.open()
+
+        with pytest.raises(ChannelTimeoutError):
+            await b.read(1)
 
     @pytest.mark.asyncio
     async def test_reopened_channel_reads_nothing_stale(self) -> None:
