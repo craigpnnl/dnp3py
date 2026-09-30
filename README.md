@@ -2,6 +2,7 @@
 
 [![CI](https://github.com/craigpnnl/dnp3py/actions/workflows/ci.yml/badge.svg)](https://github.com/craigpnnl/dnp3py/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/craigpnnl/dnp3py/graph/badge.svg)](https://codecov.io/gh/craigpnnl/dnp3py)
+[![Codacy Badge](https://app.codacy.com/project/badge/Grade/f82136e9bcbb45b6b75dd9eaf9813e8b)](https://app.codacy.com/gh/craigpnnl/dnp3py/dashboard?utm_source=gh&utm_medium=referral&utm_content=&utm_campaign=Badge_grade)
 [![PyPI version](https://img.shields.io/pypi/v/dnp3py.svg)](https://pypi.org/project/dnp3py/)
 [![Python versions](https://img.shields.io/pypi/pyversions/dnp3py.svg)](https://pypi.org/project/dnp3py/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
