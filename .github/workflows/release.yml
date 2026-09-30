@@ -1,6 +1,6 @@
 name: Release
 
-# Deliberate-dispatch only (doctrine §1).
+# Deliberate-dispatch only (doctrine sec 1).
 # Merging to main does NOT cut a release.
 # A default dispatch (dry_run=true) exercises build + test + smoke-test
 # but creates NO tag, NO GitHub release, and NO PyPI publish.
@@ -19,7 +19,9 @@ on:
 
 # Least-privilege baseline: read-only for all jobs by default.
 # Elevated permissions are granted only at the job level where needed:
-#   semantic-release: contents: write (to push the tag and GitHub release)
+#   dry-run-version-check, semantic-release: checks: read (the CI Check gate)
+#   semantic-release: contents: write (to push the tag, the GitHub release,
+#     and the follow-up changelog branch; never a commit to main)
 #   publish-pypi: id-token: write (OIDC trusted-publisher flow)
 permissions:
   contents: read
@@ -59,7 +61,7 @@ jobs:
           path: dist/
 
   # ------------------------------------------------------------------ #
-  # Phase 2: version smoke-test (doctrine §4)                           #
+  # Phase 2: version smoke-test (doctrine sec 4)                           #
   # Builds a canary wheel with a synthetic sentinel version, installs   #
   # it, and asserts importlib.metadata.version("dnp3py") matches the   #
   # sentinel exactly. Any other value is a hard failure.                #
@@ -86,7 +88,7 @@ jobs:
 
       - name: Build canary wheel with sentinel version
         env:
-          # setuptools-scm / hatch-vcs pretend-version mechanism (§4).
+          # setuptools-scm / hatch-vcs pretend-version mechanism (sec 4).
           # Must be PEP-440 compliant because hatchling validates the version
           # string. "0.0.0.dev0+smoke.test" is clearly synthetic and
           # unambiguously not a real release version.
@@ -161,12 +163,38 @@ jobs:
     name: Dry-run version-print guard
     needs: [smoke-test, test]
     runs-on: ubuntu-latest
-    if: inputs.dry_run == 'true'
+    # Restrict to the branch PSR itself would release from: workflow_dispatch
+    # accepts any ref, and PSR's branch match is a prefix regex, so a ref such
+    # as refs/heads/main-x would otherwise be treated as a release branch.
+    if: inputs.dry_run == 'true' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+      # checks: read is required for the CI Check gate below.
+      checks: read
 
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
+
+      - name: Require a passing CI Check on the commit to be tagged
+        # Mirrors the same-named step in the semantic-release job below, so a
+        # dry run proves the gate too, not just the PSR flags.
+        # The check_runs list is filtered to app.id == 15368 (the
+        # github-actions app), the id the branch-protection ruleset pins, so a
+        # same-named check run from a different app or a fork cannot pass
+        # this gate.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          SHA=$(git rev-parse HEAD)
+          RESULT=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${SHA}/check-runs?check_name=CI%20Check" \
+            -q '[.check_runs[] | select(.app.id == 15368) | .conclusion] | if length == 0 then "none" else (map(select(. == "success")) | length | tostring) end')
+          echo "CI Check on ${SHA}: ${RESULT}"
+          if [ "${RESULT}" = "none" ] || [ "${RESULT}" = "0" ]; then
+            echo "FAIL: ${SHA} has no successful CI Check run from the github-actions app; refusing to tag an untested commit."
+            exit 1
+          fi
 
       - name: Set up Python
         uses: actions/setup-python@v7
@@ -176,53 +204,79 @@ jobs:
       - name: Install python-semantic-release
         run: |
           python -m pip install --upgrade pip
-          # GitPython is pinned below 3.1.60, which removed Actor.name_email_regex.
-          # PSR 10.6.1 still reads that attribute and declares only gitpython~=3.0,
-          # so an unpinned install resolves a combination that fails at run time with
-          # "type object 'Actor' has no attribute 'name_email_regex'". Drop the pin
-          # once PSR releases a version that no longer uses it.
-          pip install python-semantic-release "gitpython<3.1.60"
+          # python-semantic-release is pinned to one exact version (10.7.0)
+          # so a dry run and a later real run always execute the same code;
+          # an unpinned install can resolve a newer release with different
+          # flag or CLI behavior between the two.
+          #
+          # gitpython is pinned below 3.1.60, which removed
+          # Actor.name_email_regex. PSR 10.7.0 (pinned below) no longer reads
+          # that attribute: cli/config.py parses "Name <email>" with its own
+          # regex, confirmed by reading the 10.7.0 source. The gitpython pin
+          # is kept defensively; drop it only after confirming the same for
+          # whatever version this line pins next.
+          pip install "python-semantic-release==10.7.0" "gitpython<3.1.60"
 
-      - name: Assert PSR would produce a release (version --print)
+      - name: Assert PSR would produce a release (version --print --strict)
         # `semantic-release version --print` computes the next semver version
         # from conventional commits and prints it, with no side effects
-        # (no commit, no tag, no push, no GitHub release). If PSR determines
-        # there are no releasable commits since the last tag, it prints
-        # nothing (empty output). We assert that output is non-empty: if it
-        # is empty, the pipeline fails here rather than silently producing a
-        # no-op when dry_run is later set to false.
+        # (no commit, no tag, no push, no GitHub release). Without --strict,
+        # PSR prints the current version and exits 0 even when there is
+        # nothing new to release (next_version() returns the already-released
+        # version, and version.py echoes it before the "already released"
+        # check runs), so a non-empty check alone passes on a no-op. --strict
+        # is a global option of the `semantic-release` command (it must
+        # precede the `version` subcommand) and makes PSR exit 2 in that case
+        # (cli/commands/version.py: "if new_version in previously_released_versions").
+        # --no-commit is added so the dry run also proves the real run's flag
+        # combination parses; --print returns before commit/tag logic runs,
+        # so it has no other effect here.
         run: |
-          NEXT_VERSION=$(semantic-release version --print)
-          echo "PSR computed next version: '${NEXT_VERSION}'"
-          if [ -z "${NEXT_VERSION}" ]; then
-            echo "FAIL: semantic-release version --print produced no output."
+          RC=0
+          NEXT_VERSION=$(semantic-release --strict version --print --no-commit) || RC=$?
+          if [ "${RC}" -ne 0 ]; then
+            echo "FAIL: semantic-release --strict version --print exited ${RC}."
             echo "  Either there are no releasable conventional commits since the last tag,"
             echo "  or the PSR configuration is broken (wrong branch, wrong parser, etc.)."
             echo "  Fix the configuration or add a releasable commit before dispatching a real release."
             exit 1
           fi
+          if [ -z "${NEXT_VERSION}" ]; then
+            echo "FAIL: semantic-release --strict version --print produced no output."
+            exit 1
+          fi
           echo "PASS: PSR would produce version ${NEXT_VERSION} on a real release dispatch."
 
   # ------------------------------------------------------------------ #
-  # Phase 4: PSR tag + CHANGELOG + GitHub release (gated on dry_run=false) #
+  # Phase 4: PSR tags the CI-checked commit and pushes only the tag      #
+  # (gated on dry_run=false). PSR does NOT commit or push to main; the   #
+  # regenerated CHANGELOG.md goes to a follow-up branch below instead.   #
   # PSR does NOT publish to PyPI (upload_to_pypi = false in pyproject.toml).
   # The dedicated publish-pypi OIDC job is the sole PyPI publish path.   #
   # The new release tag is exposed as a job output so publish-pypi can   #
   # check out exactly that tag and build a clean PEP 440 wheel.          #
   # ------------------------------------------------------------------ #
   semantic-release:
-    name: Semantic Release (tag + CHANGELOG + GitHub release)
+    name: Semantic Release (tag, GitHub release, changelog branch)
     needs: [smoke-test, test]
     runs-on: ubuntu-latest
-    if: inputs.dry_run != 'true'
+    # Restrict to the branch PSR itself would release from: workflow_dispatch
+    # accepts any ref, and PSR's branch match is a prefix regex, so a ref such
+    # as refs/heads/main-x would otherwise be treated as a release branch.
+    if: inputs.dry_run != 'true' && github.ref == 'refs/heads/main'
     permissions:
-      # contents: write is required so PSR can push the tag and create the
-      # GitHub release. Scoped here rather than at the workflow level so
-      # build/smoke-test/test jobs retain read-only access.
+      # contents: write is required so PSR can push the tag, create the
+      # GitHub release, and so this job can push the changelog branch below.
+      # checks: read is required for the CI Check gate below.
       contents: write
-    # Expose the new tag to downstream jobs so publish-pypi can check it out.
+      checks: read
+    # Expose the new tag and its asserted commit to downstream jobs so
+    # publish-pypi can check out exactly the commit this job proved, not just
+    # a tag name that could move.
     outputs:
       release_tag: ${{ steps.post-release.outputs.release_tag }}
+      release_sha: ${{ steps.post-release.outputs.release_sha }}
+      changelog_status: ${{ steps.changelog-branch.outputs.status }}
 
     steps:
       - uses: actions/checkout@v7
@@ -230,6 +284,21 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Require a passing CI Check on the commit to be tagged
+        id: ci-gate
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          SHA=$(git rev-parse HEAD)
+          RESULT=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${SHA}/check-runs?check_name=CI%20Check" \
+            -q '[.check_runs[] | select(.app.id == 15368) | .conclusion] | if length == 0 then "none" else (map(select(. == "success")) | length | tostring) end')
+          echo "CI Check on ${SHA}: ${RESULT}"
+          if [ "${RESULT}" = "none" ] || [ "${RESULT}" = "0" ]; then
+            echo "FAIL: ${SHA} has no successful CI Check run from the github-actions app; refusing to tag an untested commit."
+            exit 1
+          fi
+          echo "pre_sha=${SHA}" >> "$GITHUB_OUTPUT"
+
       - name: Set up Python
         uses: actions/setup-python@v7
         with:
@@ -238,12 +307,18 @@ jobs:
       - name: Install python-semantic-release
         run: |
           python -m pip install --upgrade pip
-          # GitPython is pinned below 3.1.60, which removed Actor.name_email_regex.
-          # PSR 10.6.1 still reads that attribute and declares only gitpython~=3.0,
-          # so an unpinned install resolves a combination that fails at run time with
-          # "type object 'Actor' has no attribute 'name_email_regex'". Drop the pin
-          # once PSR releases a version that no longer uses it.
-          pip install python-semantic-release "gitpython<3.1.60"
+          # python-semantic-release is pinned to one exact version (10.7.0)
+          # so a dry run and a later real run always execute the same code;
+          # an unpinned install can resolve a newer release with different
+          # flag or CLI behavior between the two.
+          #
+          # gitpython is pinned below 3.1.60, which removed
+          # Actor.name_email_regex. PSR 10.7.0 (pinned below) no longer reads
+          # that attribute: cli/config.py parses "Name <email>" with its own
+          # regex, confirmed by reading the 10.7.0 source. The gitpython pin
+          # is kept defensively; drop it only after confirming the same for
+          # whatever version this line pins next.
+          pip install "python-semantic-release==10.7.0" "gitpython<3.1.60"
 
       - name: Download build artifacts
         uses: actions/download-artifact@v8
@@ -251,7 +326,7 @@ jobs:
           name: dist
           path: dist/
 
-      # Post-release assert baseline (doctrine §5): record the current latest
+      # Post-release assert baseline (doctrine sec 5): record the current latest
       # tag BEFORE PSR runs so the post-assert can compare pre vs. post and
       # detect a no-op (PSR exits zero without creating a new tag).
       - name: Capture pre-release tag baseline
@@ -259,8 +334,11 @@ jobs:
         run: |
           git fetch --tags origin
           PRE_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+          PRE_MAIN=$(git ls-remote origin refs/heads/main | cut -f1)
           echo "Pre-release latest tag: ${PRE_TAG}"
+          echo "Pre-release main: ${PRE_MAIN}"
           echo "pre_tag=${PRE_TAG}" >> "$GITHUB_OUTPUT"
+          echo "pre_main=${PRE_MAIN}" >> "$GITHUB_OUTPUT"
 
       - name: Run python-semantic-release
         # In PSR v10, `version` is the command that computes the semver bump
@@ -273,35 +351,116 @@ jobs:
         # cutting anything. The dedicated publish-pypi OIDC job handles PyPI;
         # PSR's own upload_to_pypi is false, so `version` here only tags and
         # creates the GitHub release (upload_to_release = true in pyproject.toml).
+        # --no-commit: HEAD is already CI-checked (ci-gate above); PSR must
+        # tag that commit rather than commit and push a changelog commit that
+        # main never ran CI on. CHANGELOG.md is still written in the runner
+        # and picked up by the follow-up branch step below.
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: semantic-release version
+        run: semantic-release version --no-commit
 
       - name: Post-release tag assert
         id: post-release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PRE_TAG: ${{ steps.pre-release.outputs.pre_tag }}
+          PRE_MAIN: ${{ steps.pre-release.outputs.pre_main }}
+          PRE_SHA: ${{ steps.ci-gate.outputs.pre_sha }}
         run: |
           git fetch --tags origin
           POST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
-          PRE_TAG="${{ steps.pre-release.outputs.pre_tag }}"
           echo "Pre-release tag:  ${PRE_TAG}"
           echo "Post-release tag: ${POST_TAG}"
-          if [ -z "${POST_TAG}" ] || [ "${POST_TAG}" = "${PRE_TAG}" ]; then
-            echo "FAIL: no new tag was created by semantic-release."
-            echo "  Expected a new vX.Y.Z tag beyond '${PRE_TAG}' on origin."
-            echo "  PSR exited zero without cutting a release (no releasable commits since last tag,"
-            echo "  or the wrong subcommand was used)."
+
+          # By the time this step runs the tag (and, per PSR defaults, the
+          # GitHub release) already exist. A failure reported from here on is
+          # a post-tag failure: name the tag, say whether the GitHub release
+          # exists, and say PyPI was not published, so a reader does not
+          # assume nothing happened.
+          report_post_tag_failure() {
+            local msg="$1"
+            local release_state="unknown"
+            if [ -n "${POST_TAG}" ]; then
+              if gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${POST_TAG}" >/dev/null 2>&1; then
+                release_state="exists"
+              else
+                release_state="not found"
+              fi
+            fi
+            echo "FAIL: ${msg}"
+            echo "  Tag: ${POST_TAG:-<none>}; GitHub release: ${release_state}; PyPI: not published."
             exit 1
+          }
+
+          if [ -z "${POST_TAG}" ] || [ "${POST_TAG}" = "${PRE_TAG}" ]; then
+            report_post_tag_failure "no new tag was created by semantic-release. Expected a new vX.Y.Z tag beyond '${PRE_TAG}' on origin. PSR exited zero without cutting a release (no releasable commits since last tag, or the wrong subcommand was used)."
           fi
+
           REMOTE_CHECK=$(git ls-remote --tags origin "refs/tags/${POST_TAG}")
           if [ -z "${REMOTE_CHECK}" ]; then
-            echo "FAIL: new tag ${POST_TAG} was created locally but not found on origin."
-            exit 1
+            report_post_tag_failure "new tag ${POST_TAG} was created locally but not found on origin."
           fi
-          echo "Post-release assert PASS: new tag ${POST_TAG} confirmed on origin (was: ${PRE_TAG})."
+
+          TAGGED_SHA=$(git rev-parse "${POST_TAG}^{commit}")
+          if [ "${TAGGED_SHA}" != "${PRE_SHA}" ]; then
+            report_post_tag_failure "tag ${POST_TAG} resolves to ${TAGGED_SHA}, expected the CI-checked commit ${PRE_SHA}."
+          fi
+
+          # The tag now provably resolves to the CI-checked commit: the tag
+          # and GitHub release are trustworthy. A moved main after this point
+          # cannot undo them and must not abort before PyPI publish, so it is
+          # reported as a warning naming the tag rather than a failure.
+          POST_MAIN=$(git ls-remote origin refs/heads/main | cut -f1)
+          if [ "${POST_MAIN}" != "${PRE_MAIN}" ]; then
+            echo "WARNING: origin main moved from ${PRE_MAIN} to ${POST_MAIN} while releasing tag ${POST_TAG}. The tag still resolves to the CI-checked commit ${PRE_SHA}; PyPI publish continues." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          echo "Post-release assert PASS: new tag ${POST_TAG} confirmed on origin (was: ${PRE_TAG}); tag matches the CI-checked commit."
           echo "release_outcome=released" >> "$GITHUB_OUTPUT"
           echo "release_tag=${POST_TAG}" >> "$GITHUB_OUTPUT"
+          echo "release_sha=${TAGGED_SHA}" >> "$GITHUB_OUTPUT"
+
+      - name: Push the regenerated changelog to a follow-up branch
+        id: changelog-branch
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          POST_TAG: ${{ steps.post-release.outputs.release_tag }}
+        run: |
+          BRANCH="docs/changelog-${POST_TAG}"
+          # Compare against HEAD, not just the index: PSR stages CHANGELOG.md
+          # even under --no-commit (it always calls git_add before checking
+          # commit_changes), so the working tree already matches the index
+          # and a plain `git diff` (index vs. working tree) reports
+          # "unchanged" on every release. Comparing against HEAD catches the
+          # staged-but-uncommitted edit.
+          if git diff --quiet HEAD -- CHANGELOG.md; then
+            echo "status=unchanged" >> "$GITHUB_OUTPUT"
+            # A real release always adds a changelog entry, so "unchanged"
+            # here is a reported failure, not a benign no-op: state it in
+            # words instead of leaving it to the step's own pass/fail icon,
+            # which is easy to miss on a job that otherwise reports success.
+            echo "FAIL: CHANGELOG.md is unchanged after releasing ${POST_TAG}; expected a new entry from PSR. No follow-up branch was pushed." >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          # continue-on-error is set: the tag and GitHub release above are
+          # already done, and a changelog push must not undo them. Report the
+          # failure to the summary explicitly rather than relying on the
+          # step's own icon, which is easy to miss.
+          if ! {
+            git config user.name "github-actions[bot]" &&
+            git config user.email "github-actions[bot]@users.noreply.github.com" &&
+            git switch -c "${BRANCH}" &&
+            git add CHANGELOG.md &&
+            git commit -m "docs(changelog): ${POST_TAG}" &&
+            git push origin "${BRANCH}"
+          }; then
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            echo "FAILED to push the changelog branch ${BRANCH}. The release above is unaffected; open the changelog PR by hand from CHANGELOG.md at this run's HEAD." >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo "status=ok" >> "$GITHUB_OUTPUT"
+          echo "Changelog follow-up: open https://github.com/${GITHUB_REPOSITORY}/compare/main...${BRANCH}?expand=1" >> "$GITHUB_STEP_SUMMARY"
 
   # ------------------------------------------------------------------ #
   # Phase 5: PyPI publish (gated on dry_run=false)                      #
@@ -330,15 +489,35 @@ jobs:
       id-token: write
 
     steps:
-      # Check out the exact tag that semantic-release just created.
+      # Check out the exact commit that the semantic-release job's
+      # post-release assert proved carries the new tag, not the tag name
+      # alone: a tag with no ruleset can be moved between jobs, and checking
+      # out by name alone would then silently build from a different commit.
       # fetch-depth: 0 is required so hatch-vcs / setuptools-scm can walk
       # the full tag graph and stamp the clean release version (e.g. 0.1.2).
       # Without this, git describe cannot find the tag and produces a dev+local
       # version string that PyPI rejects.
       - uses: actions/checkout@v7
         with:
-          ref: ${{ needs.semantic-release.outputs.release_tag }}
+          ref: ${{ needs.semantic-release.outputs.release_sha }}
           fetch-depth: 0
+
+      - name: Verify the checked-out commit matches the asserted release
+        env:
+          EXPECTED_SHA: ${{ needs.semantic-release.outputs.release_sha }}
+          EXPECTED_TAG: ${{ needs.semantic-release.outputs.release_tag }}
+        run: |
+          ACTUAL_SHA=$(git rev-parse HEAD)
+          if [ "${ACTUAL_SHA}" != "${EXPECTED_SHA}" ]; then
+            echo "FAIL: checked out ${ACTUAL_SHA}, expected the asserted release commit ${EXPECTED_SHA}."
+            exit 1
+          fi
+          ACTUAL_TAG=$(git describe --tags --exact-match "${ACTUAL_SHA}" 2>/dev/null || echo "")
+          if [ "${ACTUAL_TAG}" != "${EXPECTED_TAG}" ]; then
+            echo "FAIL: commit ${ACTUAL_SHA} carries tag '${ACTUAL_TAG}', expected '${EXPECTED_TAG}'."
+            exit 1
+          fi
+          echo "PASS: checked out ${ACTUAL_SHA} at tag ${ACTUAL_TAG}, matching the asserted release."
 
       - name: Set up Python
         uses: actions/setup-python@v7
@@ -383,7 +562,7 @@ jobs:
         uses: pypa/gh-action-pypi-publish@v1.14.2
 
   # ------------------------------------------------------------------ #
-  # Phase 6: structured outcome notification (doctrine §6)              #
+  # Phase 6: structured outcome notification (doctrine sec 6)              #
   # One success event at end of clean run; one failure event from the   #
   # first failing phase (via GitHub Actions job-summary, redacted).     #
   # A richer transport (Telegram/Discord) is a follow-up; not wired.   #
@@ -396,6 +575,8 @@ jobs:
 
     steps:
       - name: Write release outcome to job summary
+        env:
+          CHANGELOG: ${{ needs.semantic-release.outputs.changelog_status }}
         run: |
           BUILD="${{ needs.build.result }}"
           SMOKE="${{ needs.smoke-test.result }}"
@@ -417,6 +598,11 @@ jobs:
           else
             echo "| semantic-release | ${PSR} |" >> "$GITHUB_STEP_SUMMARY"
             echo "| publish-pypi | ${PYPI} |" >> "$GITHUB_STEP_SUMMARY"
+            # changelog-branch runs with continue-on-error, so its failure
+            # never shows up in the semantic-release row above; carry its own
+            # status through so a reader sees it in this table, not only in
+            # that one step's own log line.
+            echo "| changelog branch | ${CHANGELOG:-not run} |" >> "$GITHUB_STEP_SUMMARY"
           fi
           echo "" >> "$GITHUB_STEP_SUMMARY"
 
@@ -466,5 +652,8 @@ jobs:
               echo "**Outcome: SUCCESS (dry run)** Build, smoke-test, test matrix, and PSR version-print check all passed. No tag or publish performed." >> "$GITHUB_STEP_SUMMARY"
             else
               echo "**Outcome: SUCCESS** Tag created, GitHub release published, PyPI artifact pushed." >> "$GITHUB_STEP_SUMMARY"
+              if [ "${CHANGELOG}" != "ok" ]; then
+                echo "**Warning: changelog branch not pushed** (status: \`${CHANGELOG:-not run}\`). The release above is unaffected; open the changelog PR by hand from CHANGELOG.md at the tagged commit." >> "$GITHUB_STEP_SUMMARY"
+              fi
             fi
           fi

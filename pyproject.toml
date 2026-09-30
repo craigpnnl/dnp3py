@@ -128,8 +128,11 @@ show_missing = true
 # [tool.semantic_release.changelog]) and silently renders a byte-identical
 # CHANGELOG.md, with no error, when the marker is absent.
 #
-# branch = "main": PSR runs on main and pushes the tag and the changelog commit
-# back to main.
+# branch = "main": PSR runs on main and tags the commit that release.yml has
+# already confirmed has a successful CI Check run. PSR pushes only the tag
+# (release.yml runs `version --no-commit`); the regenerated CHANGELOG.md is
+# pushed to a follow-up docs/changelog-vX.Y.Z branch instead of main, so a
+# required CI Check on main never sees an uncommitted, unchecked push.
 [tool.semantic_release]
 version_toml = []
 version_variables = []
