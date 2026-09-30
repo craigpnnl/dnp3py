@@ -382,20 +382,31 @@ class TestUnframeableRequestRunsNothing:
         assert response.to_bytes() == _null_response(4, 0x01)
 
     @pytest.mark.parametrize("function", _UNSUPPORTED, ids=[function.name for function in _UNSUPPORTED])
-    def test_every_unsupported_function_still_answers_no_function_support(
+    def test_every_unsupported_function_obeys_response_policy(
         self, function: FunctionCode, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         outstation, handler = _outstation()
         called = _spy_on_function_handlers(outstation, monkeypatch)
 
-        response = _only(_send(outstation, function, _G60V1_ALL + _TRAILING, seq=4))
+        responses = _send(outstation, function, _G60V1_ALL + _TRAILING, seq=4)
 
-        assert response.to_bytes() == _null_response(4, 0x01)
+        if function in _NO_ACK_FUNCTIONS:
+            assert responses == []
+        else:
+            assert _only(responses).to_bytes() == _null_response(4, 0x01)  # nosec B101: pytest assertion
         assert called == []
         assert handler.calls == 0
 
+    @pytest.mark.parametrize("body", [b"", _G20_ALL, _G50V2 + _G20_ALL, _G60V1_ALL + _TRAILING])
+    def test_unsupported_freeze_at_time_no_ack_stays_silent(self, body: bytes) -> None:
+        """An unsupported NO_ACK function sends no response, even for an unframeable body."""
+        outstation, handler = _outstation()
+
+        assert _send(outstation, FunctionCode.FREEZE_AT_TIME_NO_ACK, body, seq=4) == []  # nosec B101: pytest assertion
+        assert handler.calls == 0
+
     def test_no_ack_functions_are_the_four_the_standard_names(self) -> None:
-        """IEEE 1815-2012 4.4.5 to 4.4.8; FREEZE_AT_TIME_NO_ACK is not executed, so no request reaches it yet."""
+        """IEEE 1815-2012 4.4.5 to 4.4.8 names four functions that never receive a response."""
         standard = {
             FunctionCode.DIRECT_OPERATE_NO_ACK,
             FunctionCode.IMMEDIATE_FREEZE_NO_ACK,
