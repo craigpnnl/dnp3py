@@ -1,6 +1,6 @@
 name: Release
 
-# Deliberate-dispatch only (doctrine §1).
+# Deliberate-dispatch only (doctrine sec 1).
 # Merging to main does NOT cut a release.
 # A default dispatch (dry_run=true) exercises build + test + smoke-test
 # but creates NO tag, NO GitHub release, and NO PyPI publish.
@@ -61,7 +61,7 @@ jobs:
           path: dist/
 
   # ------------------------------------------------------------------ #
-  # Phase 2: version smoke-test (doctrine §4)                           #
+  # Phase 2: version smoke-test (doctrine sec 4)                           #
   # Builds a canary wheel with a synthetic sentinel version, installs   #
   # it, and asserts importlib.metadata.version("dnp3py") matches the   #
   # sentinel exactly. Any other value is a hard failure.                #
@@ -88,7 +88,7 @@ jobs:
 
       - name: Build canary wheel with sentinel version
         env:
-          # setuptools-scm / hatch-vcs pretend-version mechanism (§4).
+          # setuptools-scm / hatch-vcs pretend-version mechanism (sec 4).
           # Must be PEP-440 compliant because hatchling validates the version
           # string. "0.0.0.dev0+smoke.test" is clearly synthetic and
           # unambiguously not a real release version.
@@ -293,7 +293,7 @@ jobs:
           name: dist
           path: dist/
 
-      # Post-release assert baseline (doctrine §5): record the current latest
+      # Post-release assert baseline (doctrine sec 5): record the current latest
       # tag BEFORE PSR runs so the post-assert can compare pre vs. post and
       # detect a no-op (PSR exits zero without creating a new tag).
       - name: Capture pre-release tag baseline
@@ -473,7 +473,7 @@ jobs:
         uses: pypa/gh-action-pypi-publish@v1.14.2
 
   # ------------------------------------------------------------------ #
-  # Phase 6: structured outcome notification (doctrine §6)              #
+  # Phase 6: structured outcome notification (doctrine sec 6)              #
   # One success event at end of clean run; one failure event from the   #
   # first failing phase (via GitHub Actions job-summary, redacted).     #
   # A richer transport (Telegram/Discord) is a follow-up; not wired.   #
