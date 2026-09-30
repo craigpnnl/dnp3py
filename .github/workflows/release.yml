@@ -19,7 +19,9 @@ on:
 
 # Least-privilege baseline: read-only for all jobs by default.
 # Elevated permissions are granted only at the job level where needed:
-#   semantic-release: contents: write (to push the tag and GitHub release)
+#   dry-run-version-check, semantic-release: checks: read (the CI Check gate)
+#   semantic-release: contents: write (to push the tag, the GitHub release,
+#     and the follow-up changelog branch; never a commit to main)
 #   publish-pypi: id-token: write (OIDC trusted-publisher flow)
 permissions:
   contents: read
@@ -162,11 +164,30 @@ jobs:
     needs: [smoke-test, test]
     runs-on: ubuntu-latest
     if: inputs.dry_run == 'true'
+    permissions:
+      contents: read
+      # checks: read is required for the CI Check gate below.
+      checks: read
 
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
+
+      - name: Require a passing CI Check on the commit to be tagged
+        # Mirrors the same-named step in the semantic-release job below, so a
+        # dry run proves the gate too, not just the PSR flags.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          SHA=$(git rev-parse HEAD)
+          RESULT=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${SHA}/check-runs?check_name=CI%20Check" \
+            -q '[.check_runs[].conclusion] | if length == 0 then "none" else (map(select(. == "success")) | length | tostring) end')
+          echo "CI Check on ${SHA}: ${RESULT}"
+          if [ "${RESULT}" = "none" ] || [ "${RESULT}" = "0" ]; then
+            echo "FAIL: ${SHA} has no successful CI Check run; refusing to tag an untested commit."
+            exit 1
+          fi
 
       - name: Set up Python
         uses: actions/setup-python@v7
@@ -191,8 +212,11 @@ jobs:
         # nothing (empty output). We assert that output is non-empty: if it
         # is empty, the pipeline fails here rather than silently producing a
         # no-op when dry_run is later set to false.
+        # --no-commit is added so the dry run also proves the real run's flag
+        # combination parses; --print returns before commit/tag logic runs,
+        # so it has no other effect here.
         run: |
-          NEXT_VERSION=$(semantic-release version --print)
+          NEXT_VERSION=$(semantic-release version --print --no-commit)
           echo "PSR computed next version: '${NEXT_VERSION}'"
           if [ -z "${NEXT_VERSION}" ]; then
             echo "FAIL: semantic-release version --print produced no output."
@@ -204,22 +228,25 @@ jobs:
           echo "PASS: PSR would produce version ${NEXT_VERSION} on a real release dispatch."
 
   # ------------------------------------------------------------------ #
-  # Phase 4: PSR tag + CHANGELOG + GitHub release (gated on dry_run=false) #
+  # Phase 4: PSR tags the CI-checked commit and pushes only the tag      #
+  # (gated on dry_run=false). PSR does NOT commit or push to main; the   #
+  # regenerated CHANGELOG.md goes to a follow-up branch below instead.   #
   # PSR does NOT publish to PyPI (upload_to_pypi = false in pyproject.toml).
   # The dedicated publish-pypi OIDC job is the sole PyPI publish path.   #
   # The new release tag is exposed as a job output so publish-pypi can   #
   # check out exactly that tag and build a clean PEP 440 wheel.          #
   # ------------------------------------------------------------------ #
   semantic-release:
-    name: Semantic Release (tag + CHANGELOG + GitHub release)
+    name: Semantic Release (tag only)
     needs: [smoke-test, test]
     runs-on: ubuntu-latest
     if: inputs.dry_run != 'true'
     permissions:
-      # contents: write is required so PSR can push the tag and create the
-      # GitHub release. Scoped here rather than at the workflow level so
-      # build/smoke-test/test jobs retain read-only access.
+      # contents: write is required so PSR can push the tag, create the
+      # GitHub release, and so this job can push the changelog branch below.
+      # checks: read is required for the CI Check gate below.
       contents: write
+      checks: read
     # Expose the new tag to downstream jobs so publish-pypi can check it out.
     outputs:
       release_tag: ${{ steps.post-release.outputs.release_tag }}
@@ -229,6 +256,21 @@ jobs:
         with:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Require a passing CI Check on the commit to be tagged
+        id: ci-gate
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          SHA=$(git rev-parse HEAD)
+          RESULT=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${SHA}/check-runs?check_name=CI%20Check" \
+            -q '[.check_runs[].conclusion] | if length == 0 then "none" else (map(select(. == "success")) | length | tostring) end')
+          echo "CI Check on ${SHA}: ${RESULT}"
+          if [ "${RESULT}" = "none" ] || [ "${RESULT}" = "0" ]; then
+            echo "FAIL: ${SHA} has no successful CI Check run; refusing to tag an untested commit."
+            exit 1
+          fi
+          echo "pre_sha=${SHA}" >> "$GITHUB_OUTPUT"
 
       - name: Set up Python
         uses: actions/setup-python@v7
@@ -259,8 +301,11 @@ jobs:
         run: |
           git fetch --tags origin
           PRE_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+          PRE_MAIN=$(git ls-remote origin refs/heads/main | cut -f1)
           echo "Pre-release latest tag: ${PRE_TAG}"
+          echo "Pre-release main: ${PRE_MAIN}"
           echo "pre_tag=${PRE_TAG}" >> "$GITHUB_OUTPUT"
+          echo "pre_main=${PRE_MAIN}" >> "$GITHUB_OUTPUT"
 
       - name: Run python-semantic-release
         # In PSR v10, `version` is the command that computes the semver bump
@@ -273,9 +318,13 @@ jobs:
         # cutting anything. The dedicated publish-pypi OIDC job handles PyPI;
         # PSR's own upload_to_pypi is false, so `version` here only tags and
         # creates the GitHub release (upload_to_release = true in pyproject.toml).
+        # --no-commit: HEAD is already CI-checked (ci-gate above); PSR must
+        # tag that commit rather than commit and push a changelog commit main
+        # never ran CI on. CHANGELOG.md is still written in the runner and
+        # picked up by the follow-up branch step below.
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: semantic-release version
+        run: semantic-release version --no-commit
 
       - name: Post-release tag assert
         id: post-release
@@ -299,9 +348,50 @@ jobs:
             echo "FAIL: new tag ${POST_TAG} was created locally but not found on origin."
             exit 1
           fi
-          echo "Post-release assert PASS: new tag ${POST_TAG} confirmed on origin (was: ${PRE_TAG})."
+          POST_MAIN=$(git ls-remote origin refs/heads/main | cut -f1)
+          PRE_MAIN="${{ steps.pre-release.outputs.pre_main }}"
+          if [ "${POST_MAIN}" != "${PRE_MAIN}" ]; then
+            echo "FAIL: origin main moved from ${PRE_MAIN} to ${POST_MAIN}; refusing a release that cannot say which commit it tagged."
+            exit 1
+          fi
+          TAGGED_SHA=$(git rev-parse "${POST_TAG}^{commit}")
+          PRE_SHA="${{ steps.ci-gate.outputs.pre_sha }}"
+          if [ "${TAGGED_SHA}" != "${PRE_SHA}" ]; then
+            echo "FAIL: tag ${POST_TAG} resolves to ${TAGGED_SHA}, expected the CI-checked commit ${PRE_SHA}."
+            exit 1
+          fi
+          echo "Post-release assert PASS: new tag ${POST_TAG} confirmed on origin (was: ${PRE_TAG}); main unchanged; tag matches the CI-checked commit."
           echo "release_outcome=released" >> "$GITHUB_OUTPUT"
           echo "release_tag=${POST_TAG}" >> "$GITHUB_OUTPUT"
+
+      - name: Push the regenerated changelog to a follow-up branch
+        id: changelog-branch
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          POST_TAG="${{ steps.post-release.outputs.release_tag }}"
+          BRANCH="docs/changelog-${POST_TAG}"
+          if git diff --quiet -- CHANGELOG.md; then
+            echo "CHANGELOG.md is unchanged; no follow-up branch needed." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          # continue-on-error is set: the tag and GitHub release above are
+          # already done, and a changelog push must not undo them. Report
+          # failure to the summary explicitly (criterion 4) rather than
+          # relying on the step's own icon, which is easy to miss.
+          if ! {
+            git config user.name "github-actions[bot]" &&
+            git config user.email "github-actions[bot]@users.noreply.github.com" &&
+            git switch -c "${BRANCH}" &&
+            git add CHANGELOG.md &&
+            git commit -m "docs(changelog): ${POST_TAG}" &&
+            git push origin "${BRANCH}"
+          }; then
+            echo "FAILED to push the changelog branch ${BRANCH}. The release above is unaffected; open the changelog PR by hand from CHANGELOG.md at this run's HEAD." >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo "Changelog follow-up: open https://github.com/${GITHUB_REPOSITORY}/compare/main...${BRANCH}?expand=1" >> "$GITHUB_STEP_SUMMARY"
 
   # ------------------------------------------------------------------ #
   # Phase 5: PyPI publish (gated on dry_run=false)                      #
