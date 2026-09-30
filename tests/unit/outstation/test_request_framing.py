@@ -393,7 +393,7 @@ class TestUnframeableRequestRunsNothing:
         if function in _NO_ACK_FUNCTIONS:
             assert responses == []
         else:
-            assert _only(responses).to_bytes() == _null_response(4, 0x01)
+            assert _only(responses).to_bytes() == _null_response(4, 0x01)  # nosec B101: pytest assertion
         assert called == []
         assert handler.calls == 0
 
@@ -402,7 +402,7 @@ class TestUnframeableRequestRunsNothing:
         """An unsupported NO_ACK function sends no response, even for an unframeable body."""
         outstation, handler = _outstation()
 
-        assert _send(outstation, FunctionCode.FREEZE_AT_TIME_NO_ACK, body, seq=4) == []
+        assert _send(outstation, FunctionCode.FREEZE_AT_TIME_NO_ACK, body, seq=4) == []  # nosec B101: pytest assertion
         assert handler.calls == 0
 
     def test_no_ack_functions_are_the_four_the_standard_names(self) -> None:
