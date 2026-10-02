@@ -37,7 +37,8 @@ from dnp3.core.enums import LinkFunctionCode
 from dnp3.datalink.builder import build_reset_link_state, build_unconfirmed_user_data
 from dnp3.datalink.frame import DataLinkFrame
 from dnp3.datalink.parser import FrameParser
-from dnp3.master.handler import ResponseInfo
+from dnp3.master.commands import DirectOperateTask, OperateTask, SelectTask
+from dnp3.master.handler import CommandResponse, ResponseInfo
 from dnp3.master.master import Master
 from dnp3.master.polling import PollTask
 from dnp3.transport.reassembler import Reassembler, ReassemblyError
@@ -80,6 +81,11 @@ An outstation sends responses as primary frames reusing these codes
 (`build_primary_frame` sets PRM=1), so a master matches the same values a
 master sends.
 """
+
+
+def _command_responses(infos: list[ResponseInfo]) -> list[CommandResponse]:
+    """Every control status echoed across a response burst, in fragment order."""
+    return [response for info in infos for response in info.command_responses]
 
 
 class LinkResetPolicy(Enum):
@@ -365,6 +371,62 @@ class MasterTcpRunner:
                 ),
                 deadline,
             )
+
+    # -- commands -------------------------------------------------------------
+
+    async def direct_operate(self, task: DirectOperateTask) -> list[CommandResponse]:
+        """DIRECT_OPERATE the task's controls and return the status echoed for each.
+
+        Args:
+            task: The controls to operate, from `CommandBuilder.build_direct_operate()`.
+
+        Returns:
+            One `CommandResponse` per control the outstation echoed, in fragment
+            order (IEEE 1815-2012 4.4.4.2). Empty when it echoed none; the
+            response's IIN, on the handler's `last_response`, then says why.
+
+        Raises:
+            ResponseTimeoutError, LinkError, MasterRunnerError: As `request()`.
+        """
+        return _command_responses(await self.request(self.master.build_direct_operate(task)))
+
+    async def select_and_operate(
+        self,
+        select: SelectTask,
+        operate: OperateTask | None = None,
+    ) -> list[CommandResponse]:
+        """SELECT the controls, then OPERATE them if every one was accepted.
+
+        IEEE 1815-2012 4.4.4.3: OPERATE follows a SELECT whose echo reports
+        SUCCESS for each control sent, and names the same controls. OPERATE is
+        sent only then; otherwise the SELECT statuses are returned as they are
+        and nothing is operated, so a caller tells the two outcomes apart by
+        the statuses alone.
+
+        Args:
+            select: The controls to select, from `CommandBuilder.build_select()`.
+            operate: The controls to operate. Defaults to the same controls as
+                `select`, which is what the standard requires; pass one only to
+                control how the request is built.
+
+        Returns:
+            The statuses echoed for the OPERATE, or for the SELECT when it did
+            not accept every control.
+
+        Raises:
+            ResponseTimeoutError, LinkError, MasterRunnerError: As `request()`.
+        """
+        selected = _command_responses(await self.request(self.master.build_select(select)))
+        if len(selected) != len(select.operations) or not all(response.is_success for response in selected):
+            logger.info(
+                "SELECT of %d control(s) not accepted (%s); OPERATE not sent",
+                len(select.operations),
+                ", ".join(f"g{r.group} {r.index} {r.status.name}" for r in selected) or "no echo",
+            )
+            return selected
+        if operate is None:
+            operate = OperateTask(operations=list(select.operations))
+        return _command_responses(await self.request(self.master.build_operate(operate)))
 
     # -- unsolicited ----------------------------------------------------------
 
