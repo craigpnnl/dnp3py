@@ -20,6 +20,19 @@ from dnp3.master.handler import (
 )
 
 
+class TestCommandResponseGroup:
+    """CommandResponse names the echoed object's group when known."""
+
+    def test_group_defaults_to_unknown(self) -> None:
+        response = CommandResponse(index=3, status=CommandStatus.SUCCESS)
+        assert response.group == 0 and response.is_success
+
+    def test_group_is_part_of_equality(self) -> None:
+        assert CommandResponse(3, CommandStatus.SUCCESS, group=12) != CommandResponse(
+            3, CommandStatus.SUCCESS, group=41
+        )
+
+
 class TestBinaryValue:
     """Tests for BinaryValue."""
 
