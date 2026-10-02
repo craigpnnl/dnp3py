@@ -93,6 +93,17 @@ async def main():
 asyncio.run(main())
 ```
 
+Controls return the status the outstation echoed for each point (IEEE 1815-2012
+4.4.4.2); `select_and_operate()` sends OPERATE only when every control was accepted:
+
+```python
+    async with MasterTcpRunner(master=master, host="127.0.0.1", port=20000) as runner:
+        task = master.command_builder().latch_on(0).add_analog(0, 42).build_direct_operate()
+        for response in await runner.direct_operate(task):
+            print(response.group, response.index, response.status.name)   # 12 0 SUCCESS ...
+        await runner.select_and_operate(master.command_builder().latch_off(0).build_select())
+```
+
 ## MESA IEEE 1815.2 Outstation
 
 The `dnp3.mesa` module is a DER-oriented outstation built on mesa-tool's
