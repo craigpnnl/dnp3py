@@ -22,13 +22,14 @@ import pytest
 from dnp3.application.builder import build_response
 from dnp3.application.fragment import ObjectBlock, Truncation, TruncationReason
 from dnp3.application.qualifiers import ObjectHeader
-from dnp3.core.enums import FunctionCode, LinkFunctionCode
+from dnp3.core.enums import CommandStatus, FunctionCode, LinkFunctionCode
 from dnp3.datalink.builder import (
     build_ack,
     build_primary_frame,
     build_unconfirmed_user_data,
 )
 from dnp3.datalink.parser import FrameParser
+from dnp3.master.commands import CommandBuilder, OperateTask
 from dnp3.master.config import MasterConfig
 from dnp3.master.handler import ResponseInfo
 from dnp3.master.master import Master
@@ -1885,3 +1886,141 @@ class TestTruncatedFragments:
         assert handler.analog_inputs == {}
         confirms = await peer.read_fragments(1, timeout=0.5)
         assert confirms == [bytes([0xC0 | seq_holder[0], FunctionCode.CONFIRM.value])]
+
+
+# -- commands ------------------------------------------------------------------
+
+CROB_STATUS_OFFSET = 10  # A.8.1: control code, count, on-time, off-time, then status
+
+
+def command_echo(*, seq: int, request: bytes, statuses: list[int]) -> bytes:
+    """Echo a command request's control blocks as a RESPONSE, with statuses patched in.
+
+    The request's object blocks start at offset 2 (after the two-octet request
+    header). A control echo is the request's own objects with each status octet
+    set (4.4.4.2), so the echo is built from the request bytes rather than
+    re-encoded: whatever the master sent is what comes back, status aside.
+    """
+    objects = bytearray(request[2:])
+    # Each object here is one g12v1 record behind a 1-byte count and 1-byte index prefix.
+    assert objects[2] == 0x17 and objects[3] == len(statuses), "test echo expects one prefixed CROB block"
+    record_width = 1 + 11
+    for position, status in enumerate(statuses):
+        objects[4 + position * record_width + 1 + CROB_STATUS_OFFSET] = status
+    header = build_response(objects=(), seq=seq, fir=True, fin=True).to_bytes()
+    return header + bytes(objects)
+
+
+class TestCommands:
+    """direct_operate() and select_and_operate() report the echoed statuses."""
+
+    async def _runner_and_peer(self) -> tuple[MasterTcpRunner, FakeOutstation]:
+        channel_a, channel_b = create_channel_pair()
+        await channel_a.open()
+        await channel_b.open()
+        runner, _ = make_runner(channel_a)
+        await runner.open()
+        return runner, FakeOutstation(channel_b)
+
+    async def test_direct_operate_returns_one_status_per_control(self) -> None:
+        runner, peer = await self._runner_and_peer()
+        task = CommandBuilder().latch_on(0).latch_off(7).build_direct_operate()
+
+        async def respond() -> None:
+            (request,) = await peer.read_fragments(1)
+            assert request[1] == FunctionCode.DIRECT_OPERATE.value
+            await peer.send_fragment(
+                command_echo(
+                    seq=request[0] & 0x0F, request=request, statuses=[CommandStatus.SUCCESS, CommandStatus.LOCAL]
+                )
+            )
+
+        responder = asyncio.create_task(respond())
+        responses = await runner.direct_operate(task)
+        await responder
+
+        assert [(r.group, r.index, r.status) for r in responses] == [
+            (12, 0, CommandStatus.SUCCESS),
+            (12, 7, CommandStatus.LOCAL),
+        ]
+
+    async def test_select_and_operate_sends_operate_after_a_clean_select(self) -> None:
+        runner, peer = await self._runner_and_peer()
+        builder = CommandBuilder().latch_on(3)
+        functions: list[int] = []
+
+        async def respond() -> None:
+            for _ in range(2):
+                (request,) = await peer.read_fragments(1)
+                functions.append(request[1])
+                await peer.send_fragment(
+                    command_echo(seq=request[0] & 0x0F, request=request, statuses=[CommandStatus.SUCCESS])
+                )
+
+        responder = asyncio.create_task(respond())
+        responses = await runner.select_and_operate(builder.build_select())
+        await responder
+
+        assert functions == [FunctionCode.SELECT.value, FunctionCode.OPERATE.value]
+        assert [(r.index, r.status) for r in responses] == [(3, CommandStatus.SUCCESS)]
+
+    async def test_select_and_operate_stops_when_the_select_is_refused(self) -> None:
+        """A refused SELECT returns its statuses and no OPERATE follows (4.4.4.3)."""
+        runner, peer = await self._runner_and_peer()
+        builder = CommandBuilder().latch_on(0).latch_on(1)
+
+        async def respond() -> None:
+            (request,) = await peer.read_fragments(1)
+            await peer.send_fragment(
+                command_echo(
+                    seq=request[0] & 0x0F,
+                    request=request,
+                    statuses=[CommandStatus.SUCCESS, CommandStatus.NOT_SUPPORTED],
+                )
+            )
+
+        responder = asyncio.create_task(respond())
+        responses = await runner.select_and_operate(builder.build_select())
+        await responder
+
+        assert [r.status for r in responses] == [CommandStatus.SUCCESS, CommandStatus.NOT_SUPPORTED]
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(peer.channel.read(4096), timeout=0.2)  # type: ignore[attr-defined]
+
+    async def test_select_and_operate_stops_when_the_echo_is_incomplete(self) -> None:
+        """An echo that names fewer controls than were sent is not a clean SELECT."""
+        runner, peer = await self._runner_and_peer()
+        builder = CommandBuilder().latch_on(0).latch_on(1)
+
+        async def respond() -> None:
+            (request,) = await peer.read_fragments(1)
+            # A response with no objects: the outstation echoed nothing (IIN would say why).
+            await peer.send_fragment(build_response(objects=(), seq=request[0] & 0x0F, fir=True, fin=True).to_bytes())
+
+        responder = asyncio.create_task(respond())
+        responses = await runner.select_and_operate(builder.build_select())
+        await responder
+
+        assert responses == []
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(peer.channel.read(4096), timeout=0.2)  # type: ignore[attr-defined]
+
+    async def test_explicit_operate_task_is_used_as_given(self) -> None:
+        runner, peer = await self._runner_and_peer()
+        select = CommandBuilder().latch_on(2).build_select()
+        operate = OperateTask(operations=list(select.operations))
+        seen: list[bytes] = []
+
+        async def respond() -> None:
+            for _ in range(2):
+                (request,) = await peer.read_fragments(1)
+                seen.append(request)
+                await peer.send_fragment(
+                    command_echo(seq=request[0] & 0x0F, request=request, statuses=[CommandStatus.SUCCESS])
+                )
+
+        responder = asyncio.create_task(respond())
+        await runner.select_and_operate(select, operate)
+        await responder
+
+        assert seen[1][2:] == seen[0][2:]  # OPERATE names exactly the SELECTed controls
