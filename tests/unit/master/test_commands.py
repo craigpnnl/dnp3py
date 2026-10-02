@@ -1,15 +1,22 @@
 """Tests for command operations."""
 
+import struct
+
 import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from dnp3.core.enums import ControlCode, FunctionCode
 from dnp3.master.commands import (
+    ANALOG_OUTPUT_16_VARIATION,
     ANALOG_OUTPUT_32_VARIATION,
+    ANALOG_OUTPUT_DOUBLE_VARIATION,
+    ANALOG_OUTPUT_FLOAT_VARIATION,
     ANALOG_OUTPUT_GROUP,
     CROB_GROUP,
     CROB_VARIATION,
+    QUALIFIER_1BYTE_INDEX,
+    QUALIFIER_2BYTE_INDEX,
     CommandBuilder,
     CommandTask,
     ControlMode,
@@ -53,6 +60,7 @@ class TestControlOperation:
         assert op.off_time == 0
         assert op.analog_value == 0.0
         assert op.is_analog is False
+        assert op.variation == ANALOG_OUTPUT_32_VARIATION
 
     def test_binary_operation(self) -> None:
         """Test binary control operation."""
@@ -547,3 +555,116 @@ class TestCROBConstants:
         """Test analog output constants."""
         assert ANALOG_OUTPUT_GROUP == 41
         assert ANALOG_OUTPUT_32_VARIATION == 1
+
+
+class TestAnalogOutputVariations:
+    """A.20: the requested value is sent in the variation the operation names.
+
+    Each record is the value, little-endian, then one control status octet;
+    the request's status octet is 0. Expected bytes are built with ``struct``
+    from the clause's own description, not from the library.
+    """
+
+    @pytest.mark.parametrize(
+        ("variation", "value", "record"),
+        [
+            (ANALOG_OUTPUT_32_VARIATION, -2.9, struct.pack("<i", -2) + b"\x00"),  # A.20.1 INT32, truncates
+            (ANALOG_OUTPUT_16_VARIATION, 1234.6, struct.pack("<h", 1234) + b"\x00"),  # A.20.2 INT16, truncates
+            (ANALOG_OUTPUT_FLOAT_VARIATION, 98.5, struct.pack("<f", 98.5) + b"\x00"),  # A.20.3 FLT32
+            (ANALOG_OUTPUT_DOUBLE_VARIATION, 0.1, struct.pack("<d", 0.1) + b"\x00"),  # A.20.4 FLT64
+        ],
+        ids=["g41v1", "g41v2", "g41v3", "g41v4"],
+    )
+    def test_record_layout_per_variation(self, variation: int, value: float, record: bytes) -> None:
+        task = DirectOperateTask()
+        task.add_operation(ControlOperation(index=7, analog_value=value, is_analog=True, variation=variation))
+
+        (block,) = task.build_request().objects
+
+        assert block.header.group == ANALOG_OUTPUT_GROUP
+        assert block.header.variation == variation
+        assert block.header.qualifier == QUALIFIER_1BYTE_INDEX
+        assert block.data == bytes([1, 7]) + record  # count, index prefix, record
+
+    def test_float_values_are_not_truncated(self) -> None:
+        """The reason a float variation exists: 12.75 arrives as 12.75, not 12."""
+        task = DirectOperateTask()
+        task.add_operation(
+            ControlOperation(index=0, analog_value=12.75, is_analog=True, variation=ANALOG_OUTPUT_FLOAT_VARIATION)
+        )
+
+        (block,) = task.build_request().objects
+
+        assert struct.unpack("<f", block.data[2:6])[0] == pytest.approx(12.75)
+
+    def test_mixed_variations_become_separate_blocks_in_order_of_first_use(self) -> None:
+        """A block's header names one variation, so each variation used gets its own block."""
+        task = SelectTask()
+        task.add_operation(ControlOperation(index=1, analog_value=1.5, is_analog=True, variation=3))
+        task.add_operation(ControlOperation(index=2, analog_value=2, is_analog=True, variation=1))
+        task.add_operation(ControlOperation(index=3, analog_value=3.5, is_analog=True, variation=3))
+
+        blocks = task.build_request().objects
+
+        assert [(b.header.group, b.header.variation) for b in blocks] == [(41, 3), (41, 1)]
+        assert blocks[0].data[0] == 2 and blocks[1].data[0] == 1  # counts
+        assert blocks[0].data[1] == 1 and blocks[0].data[7] == 3  # indexes 1 and 3 in the FLT32 block
+
+    def test_binary_block_still_precedes_analog_blocks(self) -> None:
+        task = OperateTask()
+        task.add_operation(ControlOperation(index=0, analog_value=5, is_analog=True, variation=2))
+        task.add_operation(ControlOperation(index=0, control_code=ControlCode.LATCH_ON))
+
+        blocks = task.build_request().objects
+
+        assert [(b.header.group, b.header.variation) for b in blocks] == [(CROB_GROUP, CROB_VARIATION), (41, 2)]
+
+    def test_large_index_uses_two_byte_prefix_for_every_variation(self) -> None:
+        task = DirectOperateTask()
+        task.add_operation(ControlOperation(index=300, analog_value=1.0, is_analog=True, variation=4))
+
+        (block,) = task.build_request().objects
+
+        assert block.header.qualifier == QUALIFIER_2BYTE_INDEX
+        assert block.data[:3] == bytes([1]) + (300).to_bytes(2, "little")
+        assert len(block.data) == 1 + 2 + 9  # count, index, FLT64 record
+
+    @pytest.mark.parametrize("variation", [0, 5, 255])
+    def test_undefined_variation_is_refused(self, variation: int) -> None:
+        with pytest.raises(ValueError, match="variation"):
+            ControlOperation(index=0, analog_value=1.0, is_analog=True, variation=variation)
+        with pytest.raises(ValueError, match="variation"):
+            CommandBuilder().add_analog(0, 1.0, variation=variation)
+
+    def test_variation_is_ignored_for_binary_operations(self) -> None:
+        op = ControlOperation(index=0, control_code=ControlCode.LATCH_ON, variation=99)
+        assert op.variation == 99  # not validated: it does not reach the wire
+
+    @pytest.mark.parametrize(
+        ("variation", "value"),
+        [(ANALOG_OUTPUT_32_VARIATION, 2**31), (ANALOG_OUTPUT_16_VARIATION, -(2**15) - 1)],
+        ids=["int32-overflow", "int16-underflow"],
+    )
+    def test_value_outside_integer_variation_range_is_refused(self, variation: int, value: float) -> None:
+        task = DirectOperateTask()
+        task.add_operation(ControlOperation(index=0, analog_value=value, is_analog=True, variation=variation))
+
+        with pytest.raises(ValueError, match="does not fit"):
+            task.build_request()
+
+    def test_builder_passes_variation_through(self) -> None:
+        builder = CommandBuilder().add_analog(4, 2.5, variation=ANALOG_OUTPUT_FLOAT_VARIATION).add_analog(5, 7)
+
+        ops = builder.build_direct_operate().operations
+
+        assert [(op.index, op.variation) for op in ops] == [(4, 3), (5, 1)]
+
+    @given(value=st.floats(allow_nan=False, allow_infinity=False, width=32))
+    @settings(max_examples=50)
+    def test_float32_round_trips_any_single_precision_value(self, value: float) -> None:
+        task = DirectOperateTask()
+        task.add_operation(ControlOperation(index=0, analog_value=value, is_analog=True, variation=3))
+
+        (block,) = task.build_request().objects
+
+        assert struct.unpack("<f", block.data[2:6])[0] == value
