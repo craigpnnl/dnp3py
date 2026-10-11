@@ -34,7 +34,9 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -e ".[dev]" || pip install -e .
-          pip install pytest pytest-asyncio pytest-cov hypothesis
+          # Pin test tooling to avoid version skew between CI runs.
+          # Update these deliberately (as with ruff) rather than pulling latest.
+          pip install "pytest==9.1.1" "pytest-asyncio==1.4.0" "pytest-cov==7.1.0" "hypothesis==6.169.0"
 
       - name: Run tests
         run: pytest tests/ -v --tb=short
