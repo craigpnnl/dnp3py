@@ -32,7 +32,7 @@ from dnp3.application.qualifiers import (
 from dnp3.core.enums import CommandStatus, ControlCode, FunctionCode
 from dnp3.core.flags import IIN, AnalogQuality
 from dnp3.core.timestamp import TIMESTAMP_SIZE, DNP3Timestamp
-from dnp3.database import AnalogEvent, BinaryEvent, CounterEvent, Database, EventClass
+from dnp3.database import AnalogEvent, BinaryEvent, CounterEvent, Database, EventClass, EventType
 from dnp3.objects.analog_input import AnalogInput32, AnalogInputEvent32
 from dnp3.objects.binary_input import BinaryInputEvent, BinaryInputFlags
 from dnp3.objects.binary_output import BinaryOutputFlags
@@ -72,6 +72,8 @@ GV_ANALOG_INPUT_EVENT = (32, 1)  # g32v1 - 32-bit Analog Event without time
 # g22v5: 32-bit counter event WITH 48-bit timestamp, required for MESA/DER
 # settlement-grade energy accounting (Vance domain guidance).
 GV_COUNTER_EVENT = (22, 5)  # g22v5 - 32-bit Counter Event with time
+# g23v5: the frozen counter event of the same layout (flags, 32-bit value, time).
+GV_FROZEN_COUNTER_EVENT = (23, 5)  # g23v5 - 32-bit Frozen Counter Event with time
 
 # CROB group/variation
 GV_CROB = (12, 1)  # g12v1 - Control Relay Output Block
@@ -1436,7 +1438,10 @@ class Outstation:
         # so value-type checks are not sufficient to separate binary from counter events.
         binary_events = [e for e in events if isinstance(e, BinaryEvent)]
         analog_events = [e for e in events if isinstance(e, AnalogEvent)]
-        counter_events = [e for e in events if isinstance(e, CounterEvent)]
+        counter_events = [e for e in events if isinstance(e, CounterEvent) and e.event_type != EventType.FROZEN_COUNTER]
+        frozen_counter_events = [
+            e for e in events if isinstance(e, CounterEvent) and e.event_type == EventType.FROZEN_COUNTER
+        ]
 
         bi_cap = _event_block_capacity(self.config.max_fragment_size, 2)
         ai_cap = _event_block_capacity(self.config.max_fragment_size, 6)
@@ -1449,6 +1454,9 @@ class Outstation:
             objects.extend(self._build_analog_event_blocks(chunk))
         for chunk in _chunk_run(counter_events, ctr_cap):
             objects.extend(self._build_counter_event_blocks(chunk))
+        # g23v5 has the g22v5 layout, so the same capacity applies.
+        for chunk in _chunk_run(frozen_counter_events, ctr_cap):
+            objects.extend(self._build_counter_event_blocks(chunk, GV_FROZEN_COUNTER_EVENT))
 
         return objects, keys
 
@@ -1544,8 +1552,10 @@ class Outstation:
         )
         return [ObjectBlock(header=header, data=count_data + bytes(data))]
 
-    def _build_counter_event_blocks(self, events: list[Any]) -> list[ObjectBlock]:
-        """Build object blocks for counter events.
+    def _build_counter_event_blocks(
+        self, events: list[Any], group_variation: tuple[int, int] = GV_COUNTER_EVENT
+    ) -> list[ObjectBlock]:
+        """Build object blocks for counter events, or frozen counter events (g23v5).
 
         Emits g22v5: 32-bit counter event with 48-bit timestamp. Per-event wire
         size including the 1-byte index prefix is 12 bytes (1 index + 1 flag +
@@ -1570,8 +1580,8 @@ class Outstation:
             data.extend(CounterEvent32Time(quality=event.quality, value=event.value, timestamp=ts).to_bytes())
 
         header = ObjectHeader(
-            group=GV_COUNTER_EVENT[0],
-            variation=GV_COUNTER_EVENT[1],
+            group=group_variation[0],
+            variation=group_variation[1],
             qualifier=qualifier,
         )
         return [ObjectBlock(header=header, data=count_data + bytes(data))]
