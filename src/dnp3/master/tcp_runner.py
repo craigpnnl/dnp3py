@@ -34,7 +34,7 @@ from dnp3.application.fragment import RequestFragment
 from dnp3.application.header import MAX_APP_SEQUENCE
 from dnp3.application.parser import ParseError, parse_response_header
 from dnp3.core.enums import LinkFunctionCode
-from dnp3.datalink.builder import build_reset_link_state, build_unconfirmed_user_data
+from dnp3.datalink.builder import build_ack, build_link_status, build_reset_link_state, build_unconfirmed_user_data
 from dnp3.datalink.frame import DataLinkFrame
 from dnp3.datalink.parser import FrameParser
 from dnp3.master.handler import ResponseInfo
@@ -155,6 +155,12 @@ class MasterTcpRunner:
     _reassembler: Reassembler | None = field(default=None, init=False, repr=False)
     _owns_channel: bool = field(default=False, init=False, repr=False)
     _pending: deque[DataLinkFrame] = field(default_factory=deque, init=False, repr=False)
+    # Secondary-station replies (ACK, LINK_STATUS) owed to the outstation for
+    # frames _consume_frame has seen, written by _read_fragment_bytes.
+    _link_replies: list[DataLinkFrame] = field(default_factory=list, init=False, repr=False)
+    # FCB the next CONFIRMED_USER_DATA must carry, known once the outstation
+    # has reset the link; None before that.
+    _expected_fcb: bool | None = field(default=None, init=False, repr=False)
 
     @property
     def is_open(self) -> bool:
@@ -208,6 +214,8 @@ class MasterTcpRunner:
             # frames unconsumed; neither belongs in this connection's stream.
             self._parser.reset()
             self._pending.clear()
+            self._link_replies.clear()
+            self._expected_fcb = None
             logger.info("Master connected to %s:%d", self.host, self.port)
 
             if self.link_reset is LinkResetPolicy.ON_OPEN:
@@ -233,6 +241,8 @@ class MasterTcpRunner:
             self._reassembler = None
             self._parser.reset()
             self._pending.clear()
+            self._link_replies.clear()
+            self._expected_fcb = None
 
     async def __aenter__(self) -> MasterTcpRunner:
         await self.open()
@@ -687,6 +697,7 @@ class MasterTcpRunner:
             # by frames belonging to the next one.
             while self._pending:
                 fragment = self._consume_frame(self._pending.popleft(), reassembler)
+                await self._send_link_replies(deadline)
                 if fragment is not None:
                     return fragment
 
@@ -749,6 +760,8 @@ class MasterTcpRunner:
                 config.outstation_address,
             )
             return None
+        if frame.header.control.prm and not self._answer_primary_frame(frame):
+            return None
         # Link-management frames (ACK, link status) carry no user data
         # and nothing to reassemble. Checked before the function code
         # because the codes collide numerically across the PRM bit:
@@ -769,6 +782,54 @@ class MasterTcpRunner:
             msg = f"Transport reassembly failed: {exc}"
             raise LinkError(msg) from exc
         return None if result is None else result.data
+
+    def _answer_primary_frame(self, frame: DataLinkFrame) -> bool:
+        """Queue the secondary-station reply a primary frame from the outstation needs.
+
+        Data link layer, IEEE 1815-2012 Clause 9: RESET_LINK_STATE and
+        TEST_LINK_STATE are answered with ACK, REQUEST_LINK_STATUS with
+        LINK_STATUS, and CONFIRMED_USER_DATA with ACK. An outstation that sends
+        its responses as confirmed user data first resets the link and then
+        retransmits each frame until it is acknowledged, so without these
+        replies it never gets a response through.
+
+        A CONFIRMED_USER_DATA frame whose FCB is not the one expected after
+        the last reset is a retransmission of a frame already accepted (its
+        ACK was lost): it is acknowledged again but not delivered twice.
+
+        Args:
+            frame: A primary frame addressed to this master by its outstation.
+
+        Returns:
+            Whether the frame's user data, if any, should be reassembled.
+        """
+        control = frame.header.control
+        function = control.function_code
+        outstation = self.master.config.outstation_address
+        address = self.master.config.address
+        if function == LinkFunctionCode.PRI_RESET_LINK_STATE:
+            self._expected_fcb = True
+            self._link_replies.append(build_ack(outstation, address, True))
+            return False
+        if function == LinkFunctionCode.PRI_TEST_LINK_STATE:
+            self._link_replies.append(build_ack(outstation, address, True))
+            return False
+        if function == LinkFunctionCode.PRI_REQUEST_LINK_STATUS:
+            self._link_replies.append(build_link_status(outstation, address, True))
+            return False
+        if function == LinkFunctionCode.PRI_CONFIRMED_USER_DATA:
+            self._link_replies.append(build_ack(outstation, address, True))
+            if self._expected_fcb is not None:
+                if control.fcb != self._expected_fcb:
+                    logger.debug("Ignoring a repeated CONFIRMED_USER_DATA frame (FCB %s)", control.fcb)
+                    return False
+                self._expected_fcb = not self._expected_fcb
+        return True
+
+    async def _send_link_replies(self, deadline: float) -> None:
+        """Write the link-layer replies _consume_frame queued, in order."""
+        while self._link_replies:
+            await self._write_frame(self._link_replies.pop(0), deadline)
 
     async def _send_link_reset(self) -> None:
         """Send RESET_LINK_STATE.
