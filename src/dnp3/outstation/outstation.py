@@ -504,6 +504,61 @@ def _serialize_analog_input_event(event: Any) -> bytes:
     return AnalogInputEvent32(quality=quality, value=clamped).to_bytes()
 
 
+# Qualifiers a freeze request may use, with the size of their range field or
+# of each index.
+_FREEZE_START_STOP_SIZES = {0x00: 1, 0x01: 2, 0x02: 4}
+_FREEZE_COUNT_SIZES = {0x07: 1, 0x08: 2, 0x09: 4}
+_FREEZE_INDEX_SIZES = {0x17: 1, 0x28: 2, 0x39: 4}
+_FREEZE_ALL_STOP = 0xFFFF
+
+
+def _freeze_ranges(block: ObjectBlock) -> list[tuple[int, int]] | None:
+    """Return the inclusive (start, stop) index ranges a freeze request block names.
+
+    The block's qualifier selects the points (IEEE 1815-2012 Table 4-2/4-3):
+    all objects (0x06), a start-stop range (0x00-0x02), the first N points
+    (count, 0x07-0x09), or a list of indexes (0x17, 0x28, 0x39), which is
+    split into contiguous runs. A freeze names points only, so the block
+    carries no object data after its range or indexes.
+
+    Returns:
+        The ranges in request order, or None when the qualifier is not one
+        of these or the block's length does not match it.
+    """
+    qualifier = block.header.qualifier
+    data = block.data
+    if qualifier == RangeCode.ALL_OBJECTS:
+        return [(0, _FREEZE_ALL_STOP)] if not data else None
+    size = _FREEZE_START_STOP_SIZES.get(qualifier)
+    if size is not None:
+        if len(data) != 2 * size:
+            return None
+        start = int.from_bytes(data[:size], "little")
+        stop = int.from_bytes(data[size:], "little")
+        return [(start, stop)] if start <= stop else None
+    size = _FREEZE_COUNT_SIZES.get(qualifier)
+    if size is not None:
+        count = int.from_bytes(data[:size], "little")
+        return [(0, count - 1)] if len(data) == size and count > 0 else None
+    size = _FREEZE_INDEX_SIZES.get(qualifier)
+    if size is not None:
+        if len(data) < size:
+            return None
+        count = int.from_bytes(data[:size], "little")
+        if count == 0 or len(data) != size + count * size:
+            return None
+        ranges: list[tuple[int, int]] = []
+        for position in range(count):
+            offset = size + position * size
+            index = int.from_bytes(data[offset : offset + size], "little")
+            if ranges and index == ranges[-1][1] + 1:
+                ranges[-1] = (ranges[-1][0], index)
+            else:
+                ranges.append((index, index))
+        return ranges
+    return None
+
+
 def _crob_count_index_sizes(qualifier: int) -> tuple[int, int]:
     """Return (count_bytes, index_bytes) for a CROB qualifier.
 
@@ -2561,17 +2616,27 @@ class Outstation:
         return None
 
     def _handle_freeze(self, request: RequestFragment, clear: bool) -> ResponseFragment:
-        """Handle FREEZE or FREEZE_CLEAR request."""
+        """Handle FREEZE or FREEZE_CLEAR request.
+
+        Only counters (group 20) can be frozen here; a header of any other
+        group is answered OBJECT_UNKNOWN (IIN2.1) rather than silently
+        accepted. Each counter header freezes only the points its qualifier
+        names; a qualifier the freeze cannot use, or a header whose length
+        does not match it, is answered PARAMETER_ERROR (IIN2.2) and nothing
+        of that header is frozen.
+        """
         error_iin = IIN(0)
 
         for block in request.objects:
-            if block.header.group == GROUP_COUNTER:  # Counter group
-                # Freeze all counters
-                result = self.handler.freeze_counters(
-                    start=0,
-                    stop=65535,
-                    clear=clear,
-                )
+            if block.header.group != GROUP_COUNTER:
+                error_iin |= IIN.OBJECT_UNKNOWN
+                continue
+            ranges = _freeze_ranges(block)
+            if ranges is None:
+                error_iin |= IIN.PARAMETER_ERROR
+                continue
+            for start, stop in ranges:
+                result = self.handler.freeze_counters(start=start, stop=stop, clear=clear)
                 if not result.is_success:
                     error_iin |= IIN.NO_FUNC_CODE_SUPPORT
 
