@@ -1175,9 +1175,14 @@ class Outstation:
             # already covers every fragment the response will be split into.
             self._remove_events_by_key(seen_keys)
 
+        iin = self.iin | error_iin
+        if seen_keys:
+            # After `iin` is read, so this response still reports IIN2.3.
+            self._clear_reported_overflow()
+
         return _split_response_objects(
             objects=objects,
-            iin=self.iin | error_iin,
+            iin=iin,
             seq=request.header.control.seq,
             max_fragment_size=self.config.max_fragment_size,
         )
@@ -1475,6 +1480,24 @@ class Outstation:
                 buffer.class2.remove_by_serials(serials)
             elif event_class == EventClass.CLASS_3:
                 buffer.class3.remove_by_serials(serials)
+
+    def _clear_reported_overflow(self) -> None:
+        """Clear IIN2.3 once the events left after an overflow have been reported.
+
+        IIN2.3 (IEEE 1815-2012 Table 4-14) reports that events were lost. A
+        class's overflow is reset once every event it still held has been
+        removed into a response, and the IIN bit is cleared once no class is
+        overflowed any more. Call this only after the response's IIN has been
+        read, so the response carrying the remaining events still reports the
+        loss. Events are removed when a response is built, not when it is
+        confirmed (#77), so this is the point at which they count as reported.
+        """
+        buffer = self.database.event_buffer
+        for class_buffer in (buffer.class1, buffer.class2, buffer.class3):
+            if class_buffer.has_overflow and class_buffer.is_empty:
+                class_buffer.reset_overflow()
+        if not buffer.has_overflow:
+            self._state.clear_event_overflow()
 
     @staticmethod
     def _event_framing(events: list[Any]) -> tuple[int, bytes, int]:
@@ -2633,9 +2656,13 @@ class Outstation:
         unsolicited.pending_confirm = True
         unsolicited.confirm_sequence = seq
 
+        iin = self.iin
+        # After `iin` is read, so this response still reports IIN2.3.
+        self._clear_reported_overflow()
+
         return build_unsolicited_response(
             objects=tuple(objects),
-            iin=self.iin,
+            iin=iin,
             seq=seq,
             con=True,  # IEEE 1815-2012 4.2.2.4.3 Rule 3: unsolicited responses always request CON.
         )
