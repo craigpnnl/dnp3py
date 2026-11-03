@@ -733,12 +733,27 @@ class _ControlStop:
     Created fresh by each of _handle_select, _handle_operate and
     _handle_direct_operate and passed by reference into their block
     processors, so it never outlives the request that created it (#46).
+
+    It also counts the control objects of the request, across blocks, against
+    OutstationConfig.max_controls_per_request: ``take`` is False for every
+    object beyond the limit, which is answered TOO_MANY_OBJS (status 8) and
+    not run. ``limit`` None counts nothing.
     """
 
-    __slots__ = ("stopped",)
+    __slots__ = ("remaining", "stopped")
 
-    def __init__(self) -> None:
+    def __init__(self, limit: int | None = None) -> None:
         self.stopped = False
+        self.remaining = limit
+
+    def take(self) -> bool:
+        """Count one control object; False once the request's limit is spent."""
+        if self.remaining is None:
+            return True
+        if self.remaining <= 0:
+            return False
+        self.remaining -= 1
+        return True
 
 
 class _NotACommandResult(Exception):
@@ -1826,7 +1841,7 @@ class Outstation:
         """Handle SELECT request."""
         block_results: list[list[tuple[int, CommandStatus]]] = []
         seq = request.header.control.seq
-        stop = _ControlStop()
+        stop = _ControlStop(self.config.max_controls_per_request)
 
         self._state.clear_expired_selects(self.config.select_timeout)
 
@@ -1871,6 +1886,10 @@ class Outstation:
         for crob in _parse_crob_block(block):
             if stop.stopped:
                 results.append((crob.index, CommandStatus.UNDEFINED))
+                continue
+
+            if not stop.take():
+                results.append((crob.index, CommandStatus.TOO_MANY_OBJS))
                 continue
 
             if crob.control_code is None:
@@ -2033,7 +2052,7 @@ class Outstation:
         """Handle OPERATE request."""
         block_results: list[list[tuple[int, CommandStatus]]] = []
         seq = request.header.control.seq
-        stop = _ControlStop()
+        stop = _ControlStop(self.config.max_controls_per_request)
 
         # Clear expired selects first
         self._state.clear_expired_selects(self.config.select_timeout)
@@ -2072,6 +2091,10 @@ class Outstation:
         for crob in _parse_crob_block(block):
             if stop.stopped:
                 results.append((crob.index, CommandStatus.UNDEFINED))
+                continue
+
+            if not stop.take():
+                results.append((crob.index, CommandStatus.TOO_MANY_OBJS))
                 continue
 
             if crob.control_code is None:
@@ -2139,6 +2162,10 @@ class Outstation:
                 results.append((index, CommandStatus.UNDEFINED))
                 continue
 
+            if not stop.take():
+                results.append((index, CommandStatus.TOO_MANY_OBJS))
+                continue
+
             if self._state.held_by_other_peer(index, peer, self.config.select_timeout, group=GROUP_ANALOG_OUTPUT):
                 results.append((index, CommandStatus.BLOCKED_OTHER_MASTER))
                 continue
@@ -2183,6 +2210,10 @@ class Outstation:
                 results.append((index, CommandStatus.UNDEFINED))
                 continue
 
+            if not stop.take():
+                results.append((index, CommandStatus.TOO_MANY_OBJS))
+                continue
+
             select_state = self._state.get_select(index, peer=peer, group=GROUP_ANALOG_OUTPUT)
             if select_state is None or not select_state.matches_analog(index, value):
                 results.append((index, CommandStatus.NO_SELECT))
@@ -2220,7 +2251,7 @@ class Outstation:
 
         block_results: list[list[tuple[int, CommandStatus]]] = []
         function = request.header.function
-        stop = _ControlStop()
+        stop = _ControlStop(self.config.max_controls_per_request)
 
         for block in request.objects:
             if block.header.group == GROUP_CROB and block.header.variation == 1:
@@ -2250,6 +2281,10 @@ class Outstation:
         for crob in _parse_crob_block(block):
             if stop.stopped:
                 results.append((crob.index, CommandStatus.UNDEFINED))
+                continue
+
+            if not stop.take():
+                results.append((crob.index, CommandStatus.TOO_MANY_OBJS))
                 continue
 
             if crob.control_code is None:
@@ -2297,6 +2332,10 @@ class Outstation:
         for index, value in points:
             if stop.stopped:
                 results.append((index, CommandStatus.UNDEFINED))
+                continue
+
+            if not stop.take():
+                results.append((index, CommandStatus.TOO_MANY_OBJS))
                 continue
 
             status = self._run_control_point(
