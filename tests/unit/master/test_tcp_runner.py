@@ -25,9 +25,11 @@ from dnp3.application.qualifiers import ObjectHeader
 from dnp3.core.enums import FunctionCode, LinkFunctionCode
 from dnp3.datalink.builder import (
     build_ack,
+    build_confirmed_user_data,
     build_primary_frame,
     build_unconfirmed_user_data,
 )
+from dnp3.datalink.frame import DataLinkFrame
 from dnp3.datalink.parser import FrameParser
 from dnp3.master.config import MasterConfig
 from dnp3.master.handler import ResponseInfo
@@ -1885,3 +1887,140 @@ class TestTruncatedFragments:
         assert handler.analog_inputs == {}
         confirms = await peer.read_fragments(1, timeout=0.5)
         assert confirms == [bytes([0xC0 | seq_holder[0], FunctionCode.CONFIRM.value])]
+
+
+async def _read_link_frames(channel: SimulatorChannel, count: int, timeout: float = 2.0) -> list[DataLinkFrame]:
+    """Read until `count` frames without user data (link replies) arrive from the master."""
+    parser = FrameParser()
+    out: list[DataLinkFrame] = []
+    deadline = asyncio.get_running_loop().time() + timeout
+    while len(out) < count:
+        remaining = deadline - asyncio.get_running_loop().time()
+        if remaining <= 0:
+            pytest.fail(f"expected {count} link frames, got {len(out)}")
+        data = await asyncio.wait_for(channel.read(4096), timeout=remaining)
+        out.extend(frame for frame in parser.feed(data) if not frame.user_data)
+    return out
+
+
+def _link_frame(function: LinkFunctionCode) -> bytes:
+    return build_primary_frame(
+        destination=MASTER_ADDR, source=OUTSTATION_ADDR, function_code=function, dir_from_master=False
+    ).to_bytes()
+
+
+def _confirmed_fragment(app_bytes: bytes, *, fcb: bool) -> bytes:
+    segment = TransportSegment.build(fir=True, fin=True, seq=0, payload=app_bytes)
+    return build_confirmed_user_data(
+        destination=MASTER_ADDR,
+        source=OUTSTATION_ADDR,
+        dir_from_master=False,
+        fcb=fcb,
+        user_data=segment.to_bytes(),
+    ).to_bytes()
+
+
+class TestLinkLayerReplies:
+    """The master answers the outstation's primary link frames (IEEE 1815-2012 Clause 9)."""
+
+    async def test_confirmed_user_data_is_acknowledged_and_delivered(self) -> None:
+        """RESET_LINK_STATE and CONFIRMED_USER_DATA are each answered with ACK."""
+        channel_a, channel_b = create_channel_pair()
+        await channel_a.open()
+        await channel_b.open()
+        runner, handler = make_runner(channel_a)
+        await runner.open()
+        peer = FakeOutstation(channel_b)
+
+        async def respond() -> list[DataLinkFrame]:
+            seq = await peer.read_request_seq()
+            await peer.send_raw(_link_frame(LinkFunctionCode.PRI_RESET_LINK_STATE))
+            replies = await _read_link_frames(channel_b, 1)
+            response = analog_response(seq=seq, fir=True, fin=True, con=False, index=2, value=7.5)
+            await peer.send_raw(_confirmed_fragment(response, fcb=True))
+            replies += await _read_link_frames(channel_b, 1)
+            return replies
+
+        responder = asyncio.create_task(respond())
+        infos = await runner.integrity_poll()
+        replies = await responder
+
+        assert len(infos) == 1
+        assert handler.analog_inputs[2] == pytest.approx(7.5)
+        for reply in replies:
+            assert reply.header.control.prm is False
+            assert reply.header.control.function_code == LinkFunctionCode.SEC_ACK.value
+            assert reply.header.control.dir_from_master is True
+            assert reply.header.destination == OUTSTATION_ADDR
+            assert reply.header.source == MASTER_ADDR
+
+    async def test_repeated_frame_is_acknowledged_but_not_delivered_again(self) -> None:
+        """A retransmission (same FCB) gets its ACK again but is not taken as the next response."""
+        channel_a, channel_b = create_channel_pair()
+        await channel_a.open()
+        await channel_b.open()
+        runner, handler = make_runner(channel_a)
+        await runner.open()
+        peer = FakeOutstation(channel_b)
+
+        async def first() -> None:
+            seq = await peer.read_request_seq()
+            await peer.send_raw(_link_frame(LinkFunctionCode.PRI_RESET_LINK_STATE))
+            await _read_link_frames(channel_b, 1)
+            response = analog_response(seq=seq, fir=True, fin=True, con=False, index=0, value=1.0)
+            frame = _confirmed_fragment(response, fcb=True)
+            # The outstation sends the same frame again, as it does when an ACK is lost.
+            await peer.send_raw(frame + frame)
+            await _read_link_frames(channel_b, 1)
+
+        responder = asyncio.create_task(first())
+        infos = await runner.integrity_poll()
+        await responder
+        assert len(infos) == 1
+        assert handler.analog_inputs[0] == pytest.approx(1.0)
+
+        async def second() -> None:
+            seq = await peer.read_request_seq()
+            # The repeated frame is acknowledged when the master next reads.
+            await _read_link_frames(channel_b, 1)
+            response = analog_response(seq=seq, fir=True, fin=True, con=False, index=0, value=2.0)
+            await peer.send_raw(_confirmed_fragment(response, fcb=False))
+            await _read_link_frames(channel_b, 1)
+
+        responder = asyncio.create_task(second())
+        infos = await runner.integrity_poll()
+        await responder
+        assert len(infos) == 1
+        assert handler.analog_inputs[0] == pytest.approx(2.0)
+
+    @pytest.mark.parametrize(
+        ("function", "reply"),
+        [
+            (LinkFunctionCode.PRI_TEST_LINK_STATE, LinkFunctionCode.SEC_ACK),
+            (LinkFunctionCode.PRI_REQUEST_LINK_STATUS, LinkFunctionCode.SEC_LINK_STATUS),
+        ],
+    )
+    async def test_link_management_frames_are_answered(
+        self, function: LinkFunctionCode, reply: LinkFunctionCode
+    ) -> None:
+        """TEST_LINK_STATE is answered with ACK, REQUEST_LINK_STATUS with LINK_STATUS."""
+        channel_a, channel_b = create_channel_pair()
+        await channel_a.open()
+        await channel_b.open()
+        runner, _ = make_runner(channel_a)
+        await runner.open()
+        peer = FakeOutstation(channel_b)
+
+        async def respond() -> list[DataLinkFrame]:
+            seq = await peer.read_request_seq()
+            await peer.send_raw(_link_frame(function))
+            replies = await _read_link_frames(channel_b, 1)
+            await peer.send_fragment(analog_response(seq=seq, fir=True, fin=True, con=False, index=0, value=3.0))
+            return replies
+
+        responder = asyncio.create_task(respond())
+        await runner.integrity_poll()
+        replies = await responder
+
+        assert [r.header.control.function_code for r in replies] == [reply.value]
+        assert replies[0].header.control.prm is False
