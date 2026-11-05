@@ -1,11 +1,12 @@
-"""New point kinds from Annex A groups 13, 31, 33, 34, 41 and 43 are
+"""New point kinds from Annex A groups 13, 31, 33, 34 and 43 are
 framed by the wire-level parser, but never reach a decode function or a
 handler callback, end to end through ``Master.process_response``: master.py
 only batches and decodes a kind with an entry in its delivery table
 (``_DELIVERIES``), and none of these new kinds has one. IEEE 1815-2012 Annex A
 defines their wire shape; delivery is a separate, later step. One
 representative pair per new kind, built with ``struct`` from its own clause
-rather than the library's own encoder.
+rather than the library's own encoder. Command echoes (group 12 and 41) are
+delivered since they gained an entry; see ``test_command_responses.py``.
 """
 
 import struct
@@ -31,8 +32,6 @@ NEW_KIND_BLOCKS = [
     (31, 1, bytes([0x01]) + struct.pack("<i", 12345)),
     # A.18.1: UINT16 deadband, no flags (g34v1, ANALOG_DEADBAND).
     (34, 1, struct.pack("<H", 100)),
-    # A.20.1: INT32 requested value, control status octet (g41v1, ANALOG_COMMAND).
-    (41, 1, struct.pack("<i", 500) + bytes([0x00])),
     # A.22.1: UINT7 status, BSTR1 reserved, INT32 (g43v1, ANALOG_COMMAND_EVENT).
     (43, 1, bytes([0x00]) + struct.pack("<i", 500)),
     # A.33.2: BSTR4 characteristics octet, no flags (g86v2, DATA_SET_CHARACTERISTICS).
@@ -54,7 +53,6 @@ NEW_KIND_IDS = [
     "g13v1",
     "g31v1",
     "g34v1",
-    "g41v1",
     "g43v1",
     "g86v2",
     "g101v1",
@@ -73,7 +71,6 @@ G30V1_EXPECTED = AnalogValue(index=0, value=2401.0, quality=0x01)
 UNDELIVERED_NEW_KINDS = frozenset(
     {
         PointKind.BINARY_COMMAND_EVENT,
-        PointKind.ANALOG_COMMAND,
         PointKind.ANALOG_COMMAND_EVENT,
         PointKind.FROZEN_ANALOG_INPUT,
         PointKind.ANALOG_DEADBAND,
