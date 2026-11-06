@@ -27,7 +27,7 @@ ANALOG_LIMIT = 1000
 
 
 class PartlyAcceptingHandler(DefaultCommandHandler):
-    """Accepts binary output 0 only, and analog values below ANALOG_LIMIT."""
+    """Accepts binary output 0 only, and analog values below ANALOG_LIMIT, for SELECT, OPERATE and DIRECT_OPERATE."""
 
     def __init__(self) -> None:
         self.operated: list[tuple[str, int, float | ControlCode]] = []
@@ -52,9 +52,19 @@ class PartlyAcceptingHandler(DefaultCommandHandler):
         self.operated.append(("binary", index, code))
         return self._binary(index)
 
+    def _analog(self, value: float) -> CommandResult:
+        return CommandResult.success() if value < ANALOG_LIMIT else CommandResult.out_of_range()
+
+    def select_analog_output(self, index: int, value: float) -> CommandResult:
+        return self._analog(value)
+
+    def operate_analog_output(self, index: int, value: float, select_sequence: int) -> CommandResult:
+        self.operated.append(("analog", index, value))
+        return self._analog(value)
+
     def direct_operate_analog_output(self, index: int, value: float) -> CommandResult:
         self.operated.append(("analog", index, value))
-        return CommandResult.success() if value < ANALOG_LIMIT else CommandResult.out_of_range()
+        return self._analog(value)
 
 
 @pytest.fixture
@@ -137,3 +147,41 @@ class TestSelectAndOperateOverTcp:
 
         assert [r.status for r in responses] == [CommandStatus.SUCCESS, CommandStatus.NOT_SUPPORTED]
         assert handler.operated == []  # nothing reached an operate method
+
+    async def test_analog_setpoint_is_selected_then_operated(
+        self, stack: tuple[MasterTcpRunner, Master, PartlyAcceptingHandler]
+    ) -> None:
+        """SBO on an analog output: the setpoint reaches the operate hook once, after the SELECT echo."""
+        runner, master, handler = stack
+        select = master.command_builder().add_analog(0, 250).build_select()
+
+        responses = await asyncio.wait_for(runner.select_and_operate(select), timeout=EXCHANGE_TIMEOUT)
+
+        assert [(r.group, r.index, r.status) for r in responses] == [(41, 0, CommandStatus.SUCCESS)]
+        assert handler.operated == [("analog", 0, 250.0)]
+
+    async def test_analog_setpoint_refused_at_select_is_not_operated(
+        self, stack: tuple[MasterTcpRunner, Master, PartlyAcceptingHandler]
+    ) -> None:
+        runner, master, handler = stack
+        select = master.command_builder().add_analog(0, 5000).build_select()
+
+        responses = await asyncio.wait_for(runner.select_and_operate(select), timeout=EXCHANGE_TIMEOUT)
+
+        assert [(r.group, r.index, r.status) for r in responses] == [(41, 0, CommandStatus.OUT_OF_RANGE)]
+        assert handler.operated == []
+
+    async def test_binary_and_analog_controls_in_one_sequence(
+        self, stack: tuple[MasterTcpRunner, Master, PartlyAcceptingHandler]
+    ) -> None:
+        """One SELECT/OPERATE carrying a CROB and a setpoint operates both, in request order."""
+        runner, master, handler = stack
+        select = master.command_builder().latch_on(0).add_analog(0, 750).build_select()
+
+        responses = await asyncio.wait_for(runner.select_and_operate(select), timeout=EXCHANGE_TIMEOUT)
+
+        assert [(r.group, r.index, r.status) for r in responses] == [
+            (12, 0, CommandStatus.SUCCESS),
+            (41, 0, CommandStatus.SUCCESS),
+        ]
+        assert handler.operated == [("binary", 0, ControlCode.LATCH_ON), ("analog", 0, 750.0)]
