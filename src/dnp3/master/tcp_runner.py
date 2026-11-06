@@ -161,6 +161,10 @@ class MasterTcpRunner:
     _reassembler: Reassembler | None = field(default=None, init=False, repr=False)
     _owns_channel: bool = field(default=False, init=False, repr=False)
     _pending: deque[DataLinkFrame] = field(default_factory=deque, init=False, repr=False)
+    # One application exchange at a time: a request and the burst that answers it, or a whole
+    # SELECT/OPERATE sequence. Exchanges share one channel and one response stream, so a second
+    # request mid-exchange would consume the first's fragments or OPERATE against a stale selection.
+    _exchange_lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False, repr=False)
 
     @property
     def is_open(self) -> bool:
@@ -295,6 +299,10 @@ class MasterTcpRunner:
         Args:
             request: Application request to send.
 
+        Exchanges on one runner are serialised: a request issued while another
+        exchange (a request, or a SELECT/OPERATE sequence) is in flight waits
+        for it to finish, so no exchange consumes another's fragments.
+
         Returns:
             Info for each fragment of the burst, in arrival order.
 
@@ -307,6 +315,11 @@ class MasterTcpRunner:
                 burst's sequence walk, or the burst exceeded
                 `MAX_BURST_FRAGMENTS`.
         """
+        async with self._exchange_lock:
+            return await self._exchange(request)
+
+    async def _exchange(self, request: RequestFragment) -> list[ResponseInfo]:
+        """`request()` without the lock, for a caller that already holds it."""
         self._require_open()
         # One deadline for the whole exchange, writes included, not one per
         # fragment: a per fragment deadline lets a peer that answers slowly but
@@ -409,6 +422,9 @@ class MasterTcpRunner:
                 `select`, which is what the standard requires; pass one only to
                 control how the request is built.
 
+        The runner's other requests wait until the sequence has finished, as
+        `request()` describes.
+
         Returns:
             The statuses echoed for the OPERATE, or for the SELECT when it did
             not accept every control.
@@ -416,17 +432,21 @@ class MasterTcpRunner:
         Raises:
             ResponseTimeoutError, LinkError, MasterRunnerError: As `request()`.
         """
-        selected = _command_responses(await self.request(self.master.build_select(select)))
-        if len(selected) != len(select.operations) or not all(response.is_success for response in selected):
-            logger.info(
-                "SELECT of %d control(s) not accepted (%s); OPERATE not sent",
-                len(select.operations),
-                ", ".join(f"g{r.group} {r.index} {r.status.name}" for r in selected) or "no echo",
-            )
-            return selected
-        if operate is None:
-            operate = OperateTask(operations=list(select.operations))
-        return _command_responses(await self.request(self.master.build_operate(operate)))
+        # Hold the channel for the whole sequence: a request slipped in between would
+        # consume the SELECT echo, or the OPERATE would follow a selection the outstation
+        # has since replaced (4.4.4.3 pairs each OPERATE with the SELECT just before it).
+        async with self._exchange_lock:
+            selected = _command_responses(await self._exchange(self.master.build_select(select)))
+            if len(selected) != len(select.operations) or not all(response.is_success for response in selected):
+                logger.info(
+                    "SELECT of %d control(s) not accepted (%s); OPERATE not sent",
+                    len(select.operations),
+                    ", ".join(f"g{r.group} {r.index} {r.status.name}" for r in selected) or "no echo",
+                )
+                return selected
+            if operate is None:
+                operate = OperateTask(operations=list(select.operations))
+            return _command_responses(await self._exchange(self.master.build_operate(operate)))
 
     # -- unsolicited ----------------------------------------------------------
 
