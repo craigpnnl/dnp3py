@@ -637,8 +637,17 @@ class TestAnalogOutputVariations:
             CommandBuilder().add_analog(0, 1.0, variation=variation)
 
     def test_variation_is_ignored_for_binary_operations(self) -> None:
-        op = ControlOperation(index=0, control_code=ControlCode.LATCH_ON, variation=99)
-        assert op.variation == 99  # not validated: it does not reach the wire
+        """A CROB is always g12v1 on the wire, whatever `variation` the operation carries."""
+        marked = DirectOperateTask()
+        marked.add_operation(ControlOperation(index=0, control_code=ControlCode.LATCH_ON, variation=99))
+        plain = DirectOperateTask()
+        plain.add_operation(ControlOperation(index=0, control_code=ControlCode.LATCH_ON))
+
+        (block,) = marked.build_request().objects
+
+        assert (block.header.group, block.header.variation) == (CROB_GROUP, CROB_VARIATION)
+        assert len(block.data) == 1 + 1 + 11  # count, index, CROB record (A.8.1)
+        assert block.data == plain.build_request().objects[0].data
 
     @pytest.mark.parametrize(
         ("variation", "value"),
