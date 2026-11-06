@@ -130,13 +130,33 @@ request = master.build_direct_operate(builder.build_direct_operate())
 responses = outstation.process_request(request.to_bytes())
 ```
 
-`CommandBuilder.add_analog` always encodes the value as Group 41 Variation 1
-(32-bit signed integer): the analog value is truncated to an `int` before it
-is placed on the wire. If you need Variation 2 (16-bit), 3 (float32), or 4
-(float64), build the `ObjectBlock` directly against
-`dnp3.master.commands.ANALOG_OUTPUT_16_VARIATION` /
-`ANALOG_OUTPUT_FLOAT_VARIATION` / `ANALOG_OUTPUT_DOUBLE_VARIATION`; the
-builder's fluent interface does not expose variation selection.
+`CommandBuilder.add_analog` encodes the value as Group 41 Variation 1 (32-bit
+signed integer) unless told otherwise. Its `variation` argument selects the
+wire format, with the constants in `dnp3.master.commands` naming the four the
+standard defines (IEEE 1815-2012 A.20.1 to A.20.4):
+
+```python
+from dnp3.master.commands import ANALOG_OUTPUT_FLOAT_VARIATION, ANALOG_OUTPUT_16_VARIATION
+
+builder = master.command_builder()
+builder.add_analog(index=0, value=42.5, variation=ANALOG_OUTPUT_FLOAT_VARIATION)  # g41v3, FLT32
+builder.add_analog(index=1, value=-7, variation=ANALOG_OUTPUT_16_VARIATION)       # g41v2, INT16
+```
+
+| Constant | Variation | Encoding |
+|---|---|---|
+| `ANALOG_OUTPUT_32_VARIATION` (default) | 1 | 32-bit signed integer |
+| `ANALOG_OUTPUT_16_VARIATION` | 2 | 16-bit signed integer |
+| `ANALOG_OUTPUT_FLOAT_VARIATION` | 3 | single-precision float |
+| `ANALOG_OUTPUT_DOUBLE_VARIATION` | 4 | double-precision float |
+
+Integer variations truncate the value to an `int` and refuse, with
+`ValueError`, one that does not fit the width; a variation other than 1 to 4 is
+refused when the operation is created. Operations with different variations may
+share one request: the builder emits one Group 41 block per variation used, in
+the order the operations were added. `ControlOperation.variation` carries the
+same choice for a task assembled by hand; it is ignored for CROB operations,
+which are always Group 12 Variation 1.
 
 **SELECT and OPERATE are not currently wired for analog outputs on the
 outstation side.** `CommandBuilder.build_select()` and `.build_operate()`
