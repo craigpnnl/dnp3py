@@ -37,7 +37,8 @@ from dnp3.core.enums import LinkFunctionCode
 from dnp3.datalink.builder import build_reset_link_state, build_unconfirmed_user_data
 from dnp3.datalink.frame import DataLinkFrame
 from dnp3.datalink.parser import FrameParser
-from dnp3.master.handler import ResponseInfo
+from dnp3.master.commands import DirectOperateTask, OperateTask, SelectTask
+from dnp3.master.handler import CommandResponse, ResponseInfo
 from dnp3.master.master import Master
 from dnp3.master.polling import PollTask
 from dnp3.transport.reassembler import Reassembler, ReassemblyError
@@ -80,6 +81,11 @@ An outstation sends responses as primary frames reusing these codes
 (`build_primary_frame` sets PRM=1), so a master matches the same values a
 master sends.
 """
+
+
+def _command_responses(infos: list[ResponseInfo]) -> list[CommandResponse]:
+    """Every control status echoed across a response burst, in fragment order."""
+    return [response for info in infos for response in info.command_responses]
 
 
 class LinkResetPolicy(Enum):
@@ -155,6 +161,10 @@ class MasterTcpRunner:
     _reassembler: Reassembler | None = field(default=None, init=False, repr=False)
     _owns_channel: bool = field(default=False, init=False, repr=False)
     _pending: deque[DataLinkFrame] = field(default_factory=deque, init=False, repr=False)
+    # One application exchange at a time: a request and the burst that answers it, or a whole
+    # SELECT/OPERATE sequence. Exchanges share one channel and one response stream, so a second
+    # request mid-exchange would consume the first's fragments or OPERATE against a stale selection.
+    _exchange_lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False, repr=False)
 
     @property
     def is_open(self) -> bool:
@@ -289,6 +299,10 @@ class MasterTcpRunner:
         Args:
             request: Application request to send.
 
+        Exchanges on one runner are serialised: a request issued while another
+        exchange (a request, or a SELECT/OPERATE sequence) is in flight waits
+        for it to finish, so no exchange consumes another's fragments.
+
         Returns:
             Info for each fragment of the burst, in arrival order.
 
@@ -301,6 +315,11 @@ class MasterTcpRunner:
                 burst's sequence walk, or the burst exceeded
                 `MAX_BURST_FRAGMENTS`.
         """
+        async with self._exchange_lock:
+            return await self._exchange(request)
+
+    async def _exchange(self, request: RequestFragment) -> list[ResponseInfo]:
+        """`request()` without the lock, for a caller that already holds it."""
         self._require_open()
         # One deadline for the whole exchange, writes included, not one per
         # fragment: a per fragment deadline lets a peer that answers slowly but
@@ -365,6 +384,69 @@ class MasterTcpRunner:
                 ),
                 deadline,
             )
+
+    # -- commands -------------------------------------------------------------
+
+    async def direct_operate(self, task: DirectOperateTask) -> list[CommandResponse]:
+        """DIRECT_OPERATE the task's controls and return the status echoed for each.
+
+        Args:
+            task: The controls to operate, from `CommandBuilder.build_direct_operate()`.
+
+        Returns:
+            One `CommandResponse` per control the outstation echoed, in fragment
+            order (IEEE 1815-2012 4.4.4.2). Empty when it echoed none; the
+            response's IIN, on the handler's `last_response`, then says why.
+
+        Raises:
+            ResponseTimeoutError, LinkError, MasterRunnerError: As `request()`.
+        """
+        return _command_responses(await self.request(self.master.build_direct_operate(task)))
+
+    async def select_and_operate(
+        self,
+        select: SelectTask,
+        operate: OperateTask | None = None,
+    ) -> list[CommandResponse]:
+        """SELECT the controls, then OPERATE them if every one was accepted.
+
+        IEEE 1815-2012 4.4.4.3: OPERATE follows a SELECT whose echo reports
+        SUCCESS for each control sent, and names the same controls. OPERATE is
+        sent only then; otherwise the SELECT statuses are returned as they are
+        and nothing is operated, so a caller tells the two outcomes apart by
+        the statuses alone.
+
+        Args:
+            select: The controls to select, from `CommandBuilder.build_select()`.
+            operate: The controls to operate. Defaults to the same controls as
+                `select`, which is what the standard requires; pass one only to
+                control how the request is built.
+
+        The runner's other requests wait until the sequence has finished, as
+        `request()` describes.
+
+        Returns:
+            The statuses echoed for the OPERATE, or for the SELECT when it did
+            not accept every control.
+
+        Raises:
+            ResponseTimeoutError, LinkError, MasterRunnerError: As `request()`.
+        """
+        # Hold the channel for the whole sequence: a request slipped in between would
+        # consume the SELECT echo, or the OPERATE would follow a selection the outstation
+        # has since replaced (4.4.4.3 pairs each OPERATE with the SELECT just before it).
+        async with self._exchange_lock:
+            selected = _command_responses(await self._exchange(self.master.build_select(select)))
+            if len(selected) != len(select.operations) or not all(response.is_success for response in selected):
+                logger.info(
+                    "SELECT of %d control(s) not accepted (%s); OPERATE not sent",
+                    len(select.operations),
+                    ", ".join(f"g{r.group} {r.index} {r.status.name}" for r in selected) or "no echo",
+                )
+                return selected
+            if operate is None:
+                operate = OperateTask(operations=list(select.operations))
+            return _command_responses(await self._exchange(self.master.build_operate(operate)))
 
     # -- unsolicited ----------------------------------------------------------
 

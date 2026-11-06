@@ -20,7 +20,7 @@ from dnp3.application.builder import (
 from dnp3.application.fragment import ObjectBlock, RequestFragment, ResponseFragment
 from dnp3.application.header import RequestHeader
 from dnp3.application.parser import ParseError, parse_response
-from dnp3.core.enums import FunctionCode
+from dnp3.core.enums import CommandStatus, FunctionCode
 from dnp3.master.commands import (
     CommandBuilder,
     DirectOperateTask,
@@ -38,10 +38,12 @@ from dnp3.master.double_bit import (
 from dnp3.master.handler import (
     AnalogValue,
     BinaryValue,
+    CommandResponse,
     CounterValue,
     DefaultSOEHandler,
     ResponseInfo,
     SOEHandler,
+    deliver_command_response,
 )
 from dnp3.master.polling import (
     ClassPollTask,
@@ -58,6 +60,10 @@ logger = logging.getLogger(__name__)
 # Quality flag mask
 QUALITY_ONLINE = 0x01
 QUALITY_STATE = 0x80
+
+# A.8.1.2.3, A.20.1.3: the control status is the low seven bits of an echoed
+# object's last octet; bit 7 is reserved.
+COMMAND_STATUS_MASK = 0x7F
 
 
 # Qualifier field masks (IEEE 1815-2012 Table 4-1).
@@ -431,6 +437,30 @@ def _decode_double_bit(block: ObjectBlock, wire: WireLayout, cto: datetime | Non
     ]
 
 
+def _decode_command(block: ObjectBlock, wire: WireLayout) -> list[CommandResponse]:
+    """Decode the controls echoed in a command response (g12v1, g41v1 to v4).
+
+    An outstation answers SELECT, OPERATE and DIRECT_OPERATE by echoing each
+    control object with its status octet set (IEEE 1815-2012 4.4.4.2); the
+    status is the last octet of the record. A status code the standard does not
+    define is reported as UNDEFINED rather than dropped, so a control that was
+    sent still gets an answer.
+    """
+    slots = _block_slots(block)
+    if wire.codec is not ValueCodec.RECORD or slots is None:
+        return []
+    data = block.data
+    responses: list[CommandResponse] = []
+    for index, payload in _iter_object_slots(slots, data, wire.width):
+        code = data[payload + wire.width - 1] & COMMAND_STATUS_MASK
+        try:
+            status = CommandStatus(code)
+        except ValueError:
+            status = CommandStatus.UNDEFINED
+        responses.append(CommandResponse(index=index, status=status, group=block.header.group))
+    return responses
+
+
 class _Timed(Protocol):
     """A decoded value, which may carry a timestamp."""
 
@@ -496,9 +526,38 @@ class _KindBatch(Generic[_V]):
             self.delivery.deliver(handler, self.values, info)
 
 
+@dataclass(slots=True)
+class _CommandBatch:
+    """Controls echoed by one run of consecutive command blocks in a response, in block order.
+
+    A command echo carries no time field, so none of its values is ever untimed.
+    """
+
+    responses: list[CommandResponse] = field(default_factory=list)
+
+    def add(self, block: ObjectBlock, wire: WireLayout, cto: datetime | None) -> int:
+        """Decode a block into the batch; command echoes carry no relative time."""
+        self.responses.extend(_decode_command(block, wire))
+        return 0
+
+    def deliver(self, handler: SOEHandler, info: ResponseInfo) -> None:
+        """Record the statuses on ``info`` and hand them to a handler that takes them."""
+        if self.responses:
+            deliver_command_response(handler, self.responses, info)
+
+
+class _CommandDelivery:
+    """How command echoes (g12, g41) are decoded and delivered."""
+
+    def batch(self) -> _CommandBatch:
+        """Start an empty batch for one run of consecutive command blocks."""
+        return _CommandBatch()
+
+
 # Point kinds the master decodes, each with the callback its values go to.
-# A kind absent here (commands and command events, frozen analog, deadband, time, class)
-# is framed but not delivered. Double-bit values reach only a handler with that callback.
+# A kind absent here (command events, frozen analog, deadband, time, class) is
+# framed but not delivered. Double-bit values and command statuses reach only a
+# handler with that callback; command statuses also fill info.command_responses.
 _DELIVERIES: Mapping[PointKind, _Delivery] = MappingProxyType(
     {
         PointKind.BINARY_INPUT: _KindDelivery(_decode_binary, lambda h, v, i: h.on_binary_input(v, i)),
@@ -508,6 +567,8 @@ _DELIVERIES: Mapping[PointKind, _Delivery] = MappingProxyType(
         PointKind.ANALOG_OUTPUT: _KindDelivery(_decode_analog, lambda h, v, i: h.on_analog_output(v, i)),
         PointKind.COUNTER: _KindDelivery(_decode_counter, lambda h, v, i: h.on_counter(v, i)),
         PointKind.FROZEN_COUNTER: _KindDelivery(_decode_counter, lambda h, v, i: h.on_frozen_counter(v, i)),
+        PointKind.BINARY_COMMAND: _CommandDelivery(),
+        PointKind.ANALOG_COMMAND: _CommandDelivery(),
     }
 )
 

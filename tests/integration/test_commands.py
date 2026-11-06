@@ -4,11 +4,11 @@ Tests control operations between master and outstation including
 SELECT-BEFORE-OPERATE and DIRECT_OPERATE commands.
 """
 
-from dnp3.core.enums import ControlCode, FunctionCode
-from dnp3.database import BinaryOutputConfig, Database
-from dnp3.master import Master
+from dnp3.core.enums import CommandStatus, ControlCode, FunctionCode
+from dnp3.database import AnalogOutputConfig, BinaryOutputConfig, Database
+from dnp3.master import DefaultSOEHandler, Master
 from dnp3.master.commands import ControlOperation
-from dnp3.outstation import DefaultCommandHandler, Outstation
+from dnp3.outstation import CommandResult, DefaultCommandHandler, Outstation
 
 
 class TestDirectOperate:
@@ -353,3 +353,79 @@ class TestCommandSequence:
         seq2 = request2.header.control.seq
 
         assert seq2 == (seq1 + 1) % 16
+
+
+class AcceptingHandler(DefaultCommandHandler):
+    """Accepts every binary output control and every analog output below 1000."""
+
+    def select_binary_output(
+        self, index: int, code: ControlCode, count: int, on_time: int, off_time: int
+    ) -> CommandResult:
+        return CommandResult.success()
+
+    def operate_binary_output(
+        self, index: int, code: ControlCode, count: int, on_time: int, off_time: int, select_sequence: int
+    ) -> CommandResult:
+        return CommandResult.success()
+
+    def direct_operate_binary_output(
+        self, index: int, code: ControlCode, count: int, on_time: int, off_time: int
+    ) -> CommandResult:
+        return CommandResult.success()
+
+    def direct_operate_analog_output(self, index: int, value: float) -> CommandResult:
+        return CommandResult.success() if value < 1000 else CommandResult.out_of_range()
+
+
+class TestCommandStatusesReachTheMaster:
+    """The statuses an outstation echoes are what the master reports (4.4.4.2)."""
+
+    @staticmethod
+    def _outstation(handler: DefaultCommandHandler | None = None) -> Outstation:
+        database = Database()
+        database.add_binary_output(0, BinaryOutputConfig())
+        database.add_binary_output(1, BinaryOutputConfig())
+        database.add_analog_output(0, AnalogOutputConfig())
+        return Outstation(database=database, handler=handler) if handler else Outstation(database=database)
+
+    def test_direct_operate_statuses_per_point(self) -> None:
+        outstation = self._outstation(AcceptingHandler())
+        soe = DefaultSOEHandler()
+        master = Master(handler=soe)
+        task = master.command_builder().latch_on(0).latch_off(1).add_analog(0, 5000).build_direct_operate()
+
+        (response,) = outstation.process_request(master.build_direct_operate(task).to_bytes())
+        info = master.process_response(response.to_bytes())
+
+        assert info is not None
+        assert [(r.group, r.index, r.status) for r in info.command_responses] == [
+            (12, 0, CommandStatus.SUCCESS),
+            (12, 1, CommandStatus.SUCCESS),
+            (41, 0, CommandStatus.OUT_OF_RANGE),
+        ]
+        assert soe.get_command_response(41, 0).status is CommandStatus.OUT_OF_RANGE
+
+    def test_default_handler_refuses_and_the_master_sees_it(self) -> None:
+        outstation = self._outstation()
+        master = Master()
+        task = master.command_builder().latch_on(0).build_direct_operate()
+
+        (response,) = outstation.process_request(master.build_direct_operate(task).to_bytes())
+        info = master.process_response(response.to_bytes())
+
+        assert info is not None
+        assert [r.status for r in info.command_responses] == [CommandStatus.NOT_SUPPORTED]
+
+    def test_select_then_operate_statuses(self) -> None:
+        outstation = self._outstation(AcceptingHandler())
+        master = Master()
+        builder = master.command_builder().latch_on(0)
+
+        (select_response,) = outstation.process_request(master.build_select(builder.build_select()).to_bytes())
+        select_info = master.process_response(select_response.to_bytes())
+        (operate_response,) = outstation.process_request(master.build_operate(builder.build_operate()).to_bytes())
+        operate_info = master.process_response(operate_response.to_bytes())
+
+        assert select_info is not None and operate_info is not None
+        assert [r.status for r in select_info.command_responses] == [CommandStatus.SUCCESS]
+        assert [r.status for r in operate_info.command_responses] == [CommandStatus.SUCCESS]

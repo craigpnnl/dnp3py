@@ -4,7 +4,7 @@ Handlers for processing responses from outstations, including
 static data, events, and command responses.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
@@ -75,11 +75,14 @@ class CommandResponse:
         index: Point index.
         status: Command status.
         message: Optional status message.
+        group: Object group of the echoed command: 12 for a control relay output
+            block, 41 for an analog output command; 0 when not known.
     """
 
     index: int
     status: CommandStatus
     message: str = ""
+    group: int = 0
 
     @property
     def is_success(self) -> bool:
@@ -108,6 +111,11 @@ class ResponseInfo:
             occurrence (group 51) preceded them in the fragment or because
             their time falls past year 9999. Counted as the objects are
             decoded, so a callback sees the count so far.
+        command_responses: The status of every control echoed in this fragment
+            (group 12 and 41 objects of a SELECT, OPERATE or DIRECT_OPERATE
+            response, IEEE 1815-2012 4.4.4.2), in fragment order. Empty for a
+            response that echoes no control. Filled as the objects are decoded,
+            so a callback sees the statuses so far.
     """
 
     function: FunctionCode
@@ -119,6 +127,7 @@ class ResponseInfo:
     con: bool = False
     truncation: Truncation | None = None
     relative_time_without_cto: int = 0
+    command_responses: list[CommandResponse] = field(default_factory=list)
 
 
 @runtime_checkable
@@ -188,6 +197,38 @@ class SOEHandler(Protocol):
 
 
 @runtime_checkable
+class CommandResponseHandler(Protocol):
+    """A handler that accepts the statuses echoed for a control command.
+
+    Separate from ``SOEHandler`` so existing handlers need no new method; a
+    handler without this callback is not given command responses, which stay
+    available on ``ResponseInfo.command_responses``. On Python 3.12 and later
+    the callback must be found without ``__getattr__``, so a handler that
+    forwards calls that way also receives none.
+    """
+
+    def on_command_response(self, values: list[CommandResponse], info: ResponseInfo) -> None:
+        """Called when a SELECT, OPERATE or DIRECT_OPERATE response echoes controls.
+
+        Args:
+            values: The echoed controls with their statuses, in fragment order.
+            info: Response information.
+        """
+        ...
+
+
+def deliver_command_response(handler: object, values: list[CommandResponse], info: ResponseInfo) -> None:
+    """Record echoed command statuses on ``info`` and hand them to a handler that takes them.
+
+    The statuses always reach ``info.command_responses``, so a caller holding the
+    response needs no handler callback to learn whether a control was accepted.
+    """
+    info.command_responses.extend(values)
+    if isinstance(handler, CommandResponseHandler):
+        handler.on_command_response(values, info)
+
+
+@runtime_checkable
 class ResponseHandler(Protocol):
     """Protocol for handling general response events."""
 
@@ -228,6 +269,7 @@ class DefaultSOEHandler:
         self._counters: dict[int, CounterValue] = {}
         self._frozen_counters: dict[int, CounterValue] = {}
         self._double_bit_inputs: dict[int, DoubleBitValue] = {}
+        self._command_responses: dict[tuple[int, int], CommandResponse] = {}
         self._last_response: ResponseInfo | None = None
 
     @property
@@ -264,6 +306,11 @@ class DefaultSOEHandler:
     def double_bit_inputs(self) -> "dict[int, DoubleBitValue]":
         """Get all double-bit binary input values by index."""
         return self._double_bit_inputs.copy()
+
+    @property
+    def command_responses(self) -> dict[tuple[int, int], CommandResponse]:
+        """The latest echoed status of each control, keyed by (group, index)."""
+        return self._command_responses.copy()
 
     @property
     def last_response(self) -> ResponseInfo | None:
@@ -312,6 +359,12 @@ class DefaultSOEHandler:
             self._double_bit_inputs[value.index] = value
         self._last_response = info
 
+    def on_command_response(self, values: list[CommandResponse], info: ResponseInfo) -> None:
+        """Store the echoed status of each control."""
+        for value in values:
+            self._command_responses[(value.group, value.index)] = value
+        self._last_response = info
+
     def get_binary_input(self, index: int) -> BinaryValue | None:
         """Get a specific binary input value."""
         return self._binary_inputs.get(index)
@@ -340,6 +393,10 @@ class DefaultSOEHandler:
         """Get a specific double-bit binary input value."""
         return self._double_bit_inputs.get(index)
 
+    def get_command_response(self, group: int, index: int) -> CommandResponse | None:
+        """Get the latest echoed status of one control (group 12 or 41)."""
+        return self._command_responses.get((group, index))
+
     def clear(self) -> None:
         """Clear all stored values."""
         self._binary_inputs.clear()
@@ -349,4 +406,5 @@ class DefaultSOEHandler:
         self._counters.clear()
         self._frozen_counters.clear()
         self._double_bit_inputs.clear()
+        self._command_responses.clear()
         self._last_response = None

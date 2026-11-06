@@ -15,8 +15,11 @@ from dnp3.master.commands import (
 from dnp3.master.config import MasterConfig, PollingConfig
 from dnp3.master.double_bit import DoubleBitInputHandler, DoubleBitValue
 from dnp3.master.handler import (
+    CommandResponse,
+    CommandResponseHandler,
     DefaultSOEHandler,
     ResponseHandler,
+    ResponseInfo,
     SOEHandler,
 )
 from dnp3.master.master import Master
@@ -39,6 +42,8 @@ from dnp3.master.tcp_runner import (
 __all__ = [
     "ClassPollTask",
     "CommandBuilder",
+    "CommandResponse",
+    "CommandResponseHandler",
     "CommandTask",
     "ControlOperation",
     "DefaultSOEHandler",
@@ -60,6 +65,7 @@ __all__ = [
     "PollingConfig",
     "RangePollTask",
     "ResponseHandler",
+    "ResponseInfo",
     "ResponseTimeoutError",
     "SOEHandler",
     "SelectTask",
