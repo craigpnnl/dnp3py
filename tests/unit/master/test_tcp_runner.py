@@ -2024,3 +2024,66 @@ class TestCommands:
         await responder
 
         assert seen[1][2:] == seen[0][2:]  # OPERATE names exactly the SELECTed controls
+
+    async def test_select_and_operate_holds_the_channel_against_a_concurrent_request(self) -> None:
+        """A request started mid-sequence waits until OPERATE has been answered (4.4.4.3).
+
+        Without that, the concurrent request's fragment lands between SELECT
+        and OPERATE and the two exchanges consume each other's responses.
+        """
+        runner, peer = await self._runner_and_peer()
+        builder = CommandBuilder().latch_on(3)
+        functions: list[int] = []
+        poll: asyncio.Task[object] | None = None
+
+        async def respond() -> None:
+            nonlocal poll
+            for position in range(3):
+                (request,) = await peer.read_fragments(1)
+                functions.append(request[1])
+                if position == 0:
+                    # SELECT is on the wire and unanswered: start a competing request and
+                    # give it every chance to send before the SELECT echo goes back.
+                    poll = asyncio.create_task(runner.integrity_poll())
+                    for _ in range(5):
+                        await asyncio.sleep(0)
+                if request[1] == FunctionCode.READ.value:
+                    await peer.send_fragment(
+                        build_response(objects=(), seq=request[0] & 0x0F, fir=True, fin=True).to_bytes()
+                    )
+                else:
+                    await peer.send_fragment(
+                        command_echo(seq=request[0] & 0x0F, request=request, statuses=[CommandStatus.SUCCESS])
+                    )
+
+        responder = asyncio.create_task(respond())
+        responses = await runner.select_and_operate(builder.build_select())
+        await responder
+        assert poll is not None
+        await poll
+
+        assert functions == [FunctionCode.SELECT.value, FunctionCode.OPERATE.value, FunctionCode.READ.value]
+        assert [(r.index, r.status) for r in responses] == [(3, CommandStatus.SUCCESS)]
+
+    async def test_concurrent_requests_take_the_channel_in_turn(self) -> None:
+        """Two requests issued together are sent one at a time, each after the other's response."""
+        runner, peer = await self._runner_and_peer()
+        on_wire: list[int] = []
+
+        async def respond() -> None:
+            for _ in range(2):
+                (request,) = await peer.read_fragments(1)
+                on_wire.append(len(on_wire) + 1)
+                # Nothing else may arrive while this request is unanswered.
+                with pytest.raises(TimeoutError):
+                    await asyncio.wait_for(peer.channel.read(4096), timeout=0.05)  # type: ignore[attr-defined]
+                await peer.send_fragment(
+                    build_response(objects=(), seq=request[0] & 0x0F, fir=True, fin=True).to_bytes()
+                )
+
+        responder = asyncio.create_task(respond())
+        first, second = await asyncio.gather(runner.integrity_poll(), runner.integrity_poll())
+        await responder
+
+        assert on_wire == [1, 2]
+        assert len(first) == 1 and len(second) == 1
