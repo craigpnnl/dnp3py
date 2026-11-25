@@ -34,6 +34,16 @@ QUALIFIER_2BYTE_INDEX = 0x28  # 2-byte count, 2-byte index prefix
 MAX_1BYTE_INDEX = 255  # Maximum index for 1-byte qualifier
 
 
+def _count_field(qualifier: int, count: int) -> bytes:
+    """The object count, as wide as the index prefix the qualifier names (IEEE 1815-2012 Table 4-3).
+
+    One octet under qualifier 0x17, two under 0x28. A one-octet count under 0x28 makes the
+    outstation read the first index's low byte as part of the count, so every control to an
+    index above 255 is parsed as garbage and never reaches the handler.
+    """
+    return bytes([count]) if qualifier == QUALIFIER_1BYTE_INDEX else count.to_bytes(2, "little")
+
+
 class ControlMode(Enum):
     """Mode of control operation."""
 
@@ -137,7 +147,7 @@ class SelectTask(CommandTask):
 
         data = bytearray()
         # Count
-        data.append(len(operations))
+        data.extend(_count_field(qualifier, len(operations)))
 
         for op in operations:
             # Index (1 or 2 bytes)
@@ -169,7 +179,7 @@ class SelectTask(CommandTask):
 
         data = bytearray()
         # Count
-        data.append(len(operations))
+        data.extend(_count_field(qualifier, len(operations)))
 
         for op in operations:
             # Index
@@ -225,7 +235,7 @@ class OperateTask(CommandTask):
             QUALIFIER_1BYTE_INDEX if max(op.index for op in operations) <= MAX_1BYTE_INDEX else QUALIFIER_2BYTE_INDEX
         )
         data = bytearray()
-        data.append(len(operations))
+        data.extend(_count_field(qualifier, len(operations)))
 
         for op in operations:
             if qualifier == QUALIFIER_1BYTE_INDEX:
@@ -252,7 +262,7 @@ class OperateTask(CommandTask):
             QUALIFIER_1BYTE_INDEX if max(op.index for op in operations) <= MAX_1BYTE_INDEX else QUALIFIER_2BYTE_INDEX
         )
         data = bytearray()
-        data.append(len(operations))
+        data.extend(_count_field(qualifier, len(operations)))
 
         for op in operations:
             if qualifier == QUALIFIER_1BYTE_INDEX:
@@ -305,7 +315,7 @@ class DirectOperateTask(CommandTask):
             QUALIFIER_1BYTE_INDEX if max(op.index for op in operations) <= MAX_1BYTE_INDEX else QUALIFIER_2BYTE_INDEX
         )
         data = bytearray()
-        data.append(len(operations))
+        data.extend(_count_field(qualifier, len(operations)))
 
         for op in operations:
             if qualifier == QUALIFIER_1BYTE_INDEX:
@@ -332,7 +342,7 @@ class DirectOperateTask(CommandTask):
             QUALIFIER_1BYTE_INDEX if max(op.index for op in operations) <= MAX_1BYTE_INDEX else QUALIFIER_2BYTE_INDEX
         )
         data = bytearray()
-        data.append(len(operations))
+        data.extend(_count_field(qualifier, len(operations)))
 
         for op in operations:
             if qualifier == QUALIFIER_1BYTE_INDEX:
