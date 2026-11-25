@@ -10,6 +10,8 @@ from dnp3.master.commands import (
     ANALOG_OUTPUT_GROUP,
     CROB_GROUP,
     CROB_VARIATION,
+    QUALIFIER_1BYTE_INDEX,
+    QUALIFIER_2BYTE_INDEX,
     CommandBuilder,
     CommandTask,
     ControlMode,
@@ -184,8 +186,11 @@ class TestSelectTask:
 
         fragment = task.build_request()
 
-        # Should use 2-byte index qualifier (0x28)
-        assert fragment.objects[0].header.qualifier == 0x28
+        # Should use 2-byte index qualifier (0x28), with a two-octet count ahead of the two-octet index
+        block = fragment.objects[0]
+        assert block.header.qualifier == 0x28
+        assert block.data[:2] == (1).to_bytes(2, "little")
+        assert block.data[2:4] == (500).to_bytes(2, "little")
 
 
 class TestOperateTask:
@@ -547,3 +552,56 @@ class TestCROBConstants:
         """Test analog output constants."""
         assert ANALOG_OUTPUT_GROUP == 41
         assert ANALOG_OUTPUT_32_VARIATION == 1
+
+
+class TestCountFieldWidth:
+    """The count field is as wide as the index prefix (IEEE 1815-2012 Table 4-3).
+
+    Under 0x28 an outstation reads two octets of count, so a one-octet count would make it take the
+    first index's low byte as the count's high byte and parse the rest of the block as garbage.
+    """
+
+    @pytest.mark.parametrize("task_type", [SelectTask, OperateTask, DirectOperateTask])
+    def test_crob_above_255_has_a_two_octet_count(self, task_type: type[CommandTask]) -> None:
+        """A CROB block to index 300 starts with count 1 in two octets, then index 300 in two octets."""
+        task = task_type()
+        task.add_operation(ControlOperation(index=300, control_code=ControlCode.LATCH_ON))
+
+        block = task.build_request().objects[0]
+
+        assert block.header.qualifier == QUALIFIER_2BYTE_INDEX
+        assert block.data[:4] == (1).to_bytes(2, "little") + (300).to_bytes(2, "little")
+        assert len(block.data) == 2 + 2 + 11  # count, index, g12v1 record
+
+    @pytest.mark.parametrize("task_type", [SelectTask, OperateTask, DirectOperateTask])
+    def test_analog_above_255_has_a_two_octet_count(self, task_type: type[CommandTask]) -> None:
+        """An analog block to index 3000 starts with count 1 in two octets, then index 3000 in two octets."""
+        task = task_type()
+        task.add_operation(ControlOperation(index=3000, analog_value=5.0, is_analog=True))
+
+        block = task.build_request().objects[0]
+
+        assert block.header.qualifier == QUALIFIER_2BYTE_INDEX
+        assert block.data[:4] == (1).to_bytes(2, "little") + (3000).to_bytes(2, "little")
+        assert len(block.data) == 2 + 2 + 5  # count, index, g41v1 record
+
+    def test_two_operations_count_both(self) -> None:
+        """The two-octet count carries the number of operations, not one."""
+        task = DirectOperateTask()
+        task.add_operation(ControlOperation(index=300, control_code=ControlCode.LATCH_ON))
+        task.add_operation(ControlOperation(index=301, control_code=ControlCode.LATCH_OFF))
+
+        block = task.build_request().objects[0]
+
+        assert block.data[:2] == (2).to_bytes(2, "little")
+
+    def test_index_up_to_255_keeps_the_one_octet_count(self) -> None:
+        """Qualifier 0x17 is unchanged: one octet of count, one of index."""
+        task = DirectOperateTask()
+        task.add_operation(ControlOperation(index=7, analog_value=5.0, is_analog=True))
+
+        block = task.build_request().objects[0]
+
+        assert block.header.qualifier == QUALIFIER_1BYTE_INDEX
+        assert block.data[0] == 1
+        assert block.data[1] == 7
